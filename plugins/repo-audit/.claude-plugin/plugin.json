@@ -1,0 +1,8 @@
+{
+  "name": "repo-audit",
+  "version": "1.0.0",
+  "description": "Comprehensive, language-aware repository audit using sub-agents. Auto-detects languages and frameworks, spawns per-module agents, and generates audit reports, project maps, dependency graphs, and CLAUDE.md updates.",
+  "author": {
+    "name": "dvideby0"
+  }
+}

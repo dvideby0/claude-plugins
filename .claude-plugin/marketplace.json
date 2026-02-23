@@ -1,0 +1,16 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "sdlc-plugins",
+  "description": "SDLC Plugins for Claude Code",
+  "owner": {
+    "name": "dvideby0"
+  },
+  "plugins": [
+    {
+      "name": "repo-audit",
+      "description": "Comprehensive, language-aware repository audit. Auto-detects languages and frameworks, spawns per-module sub-agents, and generates audit reports, project maps, dependency graphs, and CLAUDE.md updates.",
+      "source": "./plugins/repo-audit",
+      "category": "development"
+    }
+  ]
+}
