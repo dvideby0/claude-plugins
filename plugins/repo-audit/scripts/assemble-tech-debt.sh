@@ -80,7 +80,8 @@ ALL_ISSUES=$(jq -s '
     [ -f "$tc_file" ] || continue
     HAS_LINTER=true
     name=$(basename "$tc_file" .txt)
-    count=$(grep -c "error" "$tc_file" 2>/dev/null || echo "0")
+    count=$(grep -c "error" "$tc_file" 2>/dev/null)
+    count="${count:-0}"
     if [ "$count" -gt 0 ]; then
       echo "### ${name} type errors (${count})"
       echo ""
@@ -110,7 +111,7 @@ ALL_ISSUES=$(jq -s '
     if length > 0 then
       "### Code-level quick fixes (" + (length | tostring) + ")\n\n" +
       (sort_by(.category) | .[:20] | map(
-        "- **" + .file_path + "**: " + .description +
+        "- **" + (.file_path // "unknown") + "**: " + (.description // "(no description)") +
         (if .suggestion then " → " + .suggestion else "" end)
       ) | join("\n"))
     else empty end
@@ -129,7 +130,7 @@ ALL_ISSUES=$(jq -s '
     )] |
     if length > 0 then
       (sort_by(.file_path) | map(
-        "- **" + .file_path + "** (" + .category + "): " + .description +
+        "- **" + (.file_path // "unknown") + "** (" + (.category // "uncategorized") + "): " + (.description // "(no description)") +
         (if .suggestion then "\n  > " + .suggestion else "" end)
       ) | join("\n\n"))
     else "No strategic improvements identified." end
@@ -145,7 +146,7 @@ ALL_ISSUES=$(jq -s '
     [.[] | select(.severity == "critical")] |
     if length > 0 then
       (sort_by(.category) | map(
-        "- **" + .file_path + "** (" + .category + "): " + .description +
+        "- **" + (.file_path // "unknown") + "** (" + (.category // "uncategorized") + "): " + (.description // "(no description)") +
         (if .suggestion then "\n  > " + .suggestion else "" end)
       ) | join("\n\n"))
     else "No major refactors identified." end
@@ -162,10 +163,10 @@ ALL_ISSUES=$(jq -s '
     echo "| Module | Risk Score | Issues | Test Coverage | Lines |"
     echo "|--------|-----------|--------|---------------|-------|"
     jq -r '.scores[:10][] |
-      "| " + .module + " | " + (.risk_score | tostring) +
-      " | " + (.issue_count | tostring) +
-      " | " + .test_coverage +
-      " | " + (.total_lines | tostring) + " |"
+      "| " + (.module // "unknown") + " | " + ((.risk_score // 0) | tostring) +
+      " | " + ((.issue_count // 0) | tostring) +
+      " | " + (.test_coverage // "unknown") +
+      " | " + ((.total_lines // 0) | tostring) + " |"
     ' "$RISK_FILE" 2>/dev/null
     echo ""
   fi

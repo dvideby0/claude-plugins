@@ -135,7 +135,7 @@ RISK_FILE="${DATA_DIR}/risk-scores.json"
     ] |
     if length > 0 then
       sort_by(.severity) | map(
-        "- **" + .file_path + "**: " + .description
+        "- **" + (.file_path // "unknown") + "**: " + (.description // "(no description)")
       ) | join("\n")
     else "No testing-specific issues found." end
   ' "${MODULE_FILES[@]}" 2>/dev/null

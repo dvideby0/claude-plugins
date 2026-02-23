@@ -139,9 +139,29 @@ Run the prerequisite checker to detect available tools on the user's system:
 bash ${CLAUDE_PLUGIN_ROOT}/scripts/check-prereqs.sh .
 ```
 
-Read the printed output and present it to the user. Then read
-`sdlc-audit/data/tool-availability.json` to determine which optimizations
-are available for subsequent phases.
+Read `sdlc-audit/data/tool-availability.json` to determine which tools are
+available and which are missing.
+
+**If there are missing tools**, you MUST notify the user using `AskUserQuestion`
+before proceeding. Build the question dynamically from the JSON data:
+
+- List each missing tool by name with a brief description of what it enables
+- Include the combined install command from `install_commands.all_missing`
+- Present the user with these options:
+  1. **"Install and re-check"** — The user will install the tools themselves.
+     After they select this, run `check-prereqs.sh` again to refresh
+     `tool-availability.json`, then continue with the updated availability.
+  2. **"Proceed without them"** — Continue the audit using LLM-based fallbacks
+     for any missing tool capabilities. The audit still works, but will be
+     slower and less thorough for the affected checks.
+
+Example question format:
+> "The following optional tools are missing: **rg** (fast pattern scanning),
+> **tree** (directory visualization). These make the audit faster and more
+> thorough. To install, run: `brew install ripgrep && brew install tree`.
+> How would you like to proceed?"
+
+**If all tools are available**, skip the prompt and continue immediately.
 
 Throughout all subsequent phases, check `tool-availability.json` before using
 any optional tool. If a tool is not available, use the fallback approach

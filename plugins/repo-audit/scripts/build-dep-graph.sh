@@ -114,8 +114,11 @@ $modules | direct_cycles as $cycles |
 ' > "$OUTPUT_FILE"
 
 # Print summary
-MCOUNT=$(jq '.module_graph | keys | length' "$OUTPUT_FILE")
-CCOUNT=$(jq '.circular_dependencies | length' "$OUTPUT_FILE")
-HCOUNT=$(jq '.hub_modules | length' "$OUTPUT_FILE")
+MCOUNT=$(jq '.module_graph | keys | length' "$OUTPUT_FILE" 2>/dev/null)
+MCOUNT="${MCOUNT:-0}"
+CCOUNT=$(jq '.circular_dependencies | length' "$OUTPUT_FILE" 2>/dev/null)
+CCOUNT="${CCOUNT:-0}"
+HCOUNT=$(jq '.hub_modules | length' "$OUTPUT_FILE" 2>/dev/null)
+HCOUNT="${HCOUNT:-0}"
 echo "Graph: ${MCOUNT} modules, ${CCOUNT} cycles, ${HCOUNT} hubs"
 echo "Wrote: ${OUTPUT_FILE}"

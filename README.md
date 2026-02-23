@@ -16,7 +16,7 @@ A collection of Claude Code plugins distributed as a plugin marketplace.
 In Claude Code, run:
 
 ```
-/plugin marketplace add github:dvideby0/claude-plugins
+/plugin marketplace add dvideby0/claude-plugins
 ```
 
 ### Step 2: Install individual plugins
@@ -115,6 +115,24 @@ plugins/my-new-plugin/
 ```
 
 5. Push to GitHub. Anyone who has added your marketplace can now install it.
+
+## Uninstalling
+
+### Remove a plugin
+
+```
+/plugin uninstall repo-audit
+```
+
+This removes the plugin and its commands from your Claude Code environment. Your project files (e.g., `sdlc-audit/` output) are not affected.
+
+### Remove this marketplace
+
+```
+/plugin marketplace remove dvideby0/claude-plugins
+```
+
+This removes the marketplace and all plugins installed from it. You can re-add it at any time with the install command above.
 
 ## Plugin Component Types
 

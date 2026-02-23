@@ -83,9 +83,9 @@ mkdir -p "$OUTPUT_DIR"
   jq -r '
     .all_directories // {} | to_entries |
     sort_by(.key) | .[] |
-    "- **" + .key + "** — " + .value.category +
+    "- **" + .key + "** — " + (.value.category // "unknown") +
     " (" + (.value.languages // [] | join(", ")) + ", ~" +
-    (.value.est_files // 0 | tostring) + " files)"
+    ((.value.est_files // 0) | tostring) + " files)"
   ' "$DETECTION" 2>/dev/null
   echo ""
 
@@ -112,6 +112,7 @@ mkdir -p "$OUTPUT_DIR"
     echo ""
 
     CYCLES=$(jq '.circular_dependencies | length' "$DEP_FILE" 2>/dev/null)
+    CYCLES="${CYCLES:-0}"
     if [ "$CYCLES" -gt 0 ]; then
       echo "**Circular dependencies detected:**"
       jq -r '.circular_dependencies[] | "- " + join(" → ")' "$DEP_FILE" 2>/dev/null

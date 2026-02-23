@@ -32,11 +32,16 @@ mkdir -p "$OUTPUT_DIR"
   echo "# Dependency Graph"
   echo ""
 
-  MODULE_COUNT=$(jq '.module_graph | keys | length' "$DEP_FILE")
-  CYCLE_COUNT=$(jq '.circular_dependencies | length' "$DEP_FILE")
-  HUB_COUNT=$(jq '.hub_modules | length' "$DEP_FILE")
-  ORPHAN_COUNT=$(jq '.orphan_modules | length' "$DEP_FILE")
-  EXT_COUNT=$(jq '.external_dependencies | keys | length' "$DEP_FILE")
+  MODULE_COUNT=$(jq '.module_graph | keys | length' "$DEP_FILE" 2>/dev/null)
+  MODULE_COUNT="${MODULE_COUNT:-0}"
+  CYCLE_COUNT=$(jq '.circular_dependencies | length' "$DEP_FILE" 2>/dev/null)
+  CYCLE_COUNT="${CYCLE_COUNT:-0}"
+  HUB_COUNT=$(jq '.hub_modules | length' "$DEP_FILE" 2>/dev/null)
+  HUB_COUNT="${HUB_COUNT:-0}"
+  ORPHAN_COUNT=$(jq '.orphan_modules | length' "$DEP_FILE" 2>/dev/null)
+  ORPHAN_COUNT="${ORPHAN_COUNT:-0}"
+  EXT_COUNT=$(jq '.external_dependencies | keys | length' "$DEP_FILE" 2>/dev/null)
+  EXT_COUNT="${EXT_COUNT:-0}"
 
   echo "**${MODULE_COUNT} modules**, ${EXT_COUNT} external dependencies, ${CYCLE_COUNT} circular dependencies"
   echo ""
@@ -48,12 +53,12 @@ mkdir -p "$OUTPUT_DIR"
   jq -r '
     .module_graph | to_entries | sort_by(.key) | .[] |
     .key + (
-      if (.value.depends_on | length) > 0
-      then " → " + (.value.depends_on | join(", "))
+      if ((.value.depends_on // []) | length) > 0
+      then " → " + ((.value.depends_on // []) | join(", "))
       else " (leaf)"
       end
-    ) + " [in:" + (.value.fan_in | tostring) + " out:" + (.value.fan_out | tostring) + "]"
-  ' "$DEP_FILE"
+    ) + " [in:" + ((.value.fan_in // 0) | tostring) + " out:" + ((.value.fan_out // 0) | tostring) + "]"
+  ' "$DEP_FILE" 2>/dev/null
   echo '```'
   echo ""
 
@@ -64,7 +69,7 @@ mkdir -p "$OUTPUT_DIR"
     echo "**${CYCLE_COUNT} cycles detected** — these create tight coupling and make"
     echo "modules harder to test and refactor independently."
     echo ""
-    jq -r '.circular_dependencies[] | "- " + join(" → ")' "$DEP_FILE"
+    jq -r '.circular_dependencies[] | "- " + join(" → ")' "$DEP_FILE" 2>/dev/null
     echo ""
   fi
 
@@ -78,9 +83,9 @@ mkdir -p "$OUTPUT_DIR"
     jq -r '
       .hub_modules[] as $hub |
       .module_graph[$hub] |
-      "- **" + $hub + "** — " + (.fan_in | tostring) +
-      " dependents: " + (.depended_on_by | join(", "))
-    ' "$DEP_FILE"
+      "- **" + $hub + "** — " + ((.fan_in // 0) | tostring) +
+      " dependents: " + ((.depended_on_by // []) | join(", "))
+    ' "$DEP_FILE" 2>/dev/null
     echo ""
   fi
 
@@ -91,7 +96,7 @@ mkdir -p "$OUTPUT_DIR"
     echo "These modules depend on others but nothing depends on them."
     echo "They may be entry points, or they may be dead code."
     echo ""
-    jq -r '.orphan_modules[] | "- " + .' "$DEP_FILE"
+    jq -r '.orphan_modules[] | "- " + .' "$DEP_FILE" 2>/dev/null
     echo ""
   fi
 
@@ -103,8 +108,8 @@ mkdir -p "$OUTPUT_DIR"
   jq -r '
     .external_dependencies | to_entries |
     sort_by(.value | length) | reverse | .[] |
-    "| " + .key + " | " + (.value | join(", ")) + " |"
-  ' "$DEP_FILE"
+    "| " + .key + " | " + ((.value // []) | join(", ")) + " |"
+  ' "$DEP_FILE" 2>/dev/null
   echo ""
 
   # --- Duplicate externals (potential conflicts) ---
@@ -118,8 +123,9 @@ mkdir -p "$OUTPUT_DIR"
     sort_by(.value | length) | reverse | .[] |
     "- **" + .key + "** — used by " + (.value | length | tostring) +
     " modules: " + (.value | join(", "))
-  ' "$DEP_FILE"
-  SHARED=$(jq '[.external_dependencies | to_entries[] | select(.value | length >= 3)] | length' "$DEP_FILE")
+  ' "$DEP_FILE" 2>/dev/null
+  SHARED=$(jq '[.external_dependencies | to_entries[] | select(.value | length >= 3)] | length' "$DEP_FILE" 2>/dev/null)
+  SHARED="${SHARED:-0}"
   if [ "$SHARED" = "0" ]; then
     echo "None found."
   fi

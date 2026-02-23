@@ -23,7 +23,8 @@ mkdir -p "$OUTPUT_DIR"
   git -C "$PROJECT_ROOT" log --format=format: --name-only --since="6 months ago" 2>/dev/null \
     | grep -v '^$' \
     | sort | uniq -c | sort -rn | head -30 \
-    | awk '{print "  {\"changes\": " $1 ", \"file\": \"" $2 "\"},"}'
+    | awk '{if(NR>1) printf ",\n"; printf "  {\"changes\": %d, \"file\": \"%s\"}", $1, $2}'
+  echo ''
   echo ']}'
 } > "${OUTPUT_DIR}/git-hotspots.txt"
 

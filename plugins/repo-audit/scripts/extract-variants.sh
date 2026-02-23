@@ -86,8 +86,11 @@ length as $total |
 ' "${MODULE_FILES[@]}" > "$OUTPUT_FILE"
 
 # Print summary
-TOTAL=$(jq '.total_high_severity' "$OUTPUT_FILE")
-SYS=$(jq '.systemic_patterns | keys | length' "$OUTPUT_FILE")
-SINGLE=$(jq '.single_critical | keys | length' "$OUTPUT_FILE")
+TOTAL=$(jq '.total_high_severity' "$OUTPUT_FILE" 2>/dev/null)
+TOTAL="${TOTAL:-0}"
+SYS=$(jq '.systemic_patterns | keys | length' "$OUTPUT_FILE" 2>/dev/null)
+SYS="${SYS:-0}"
+SINGLE=$(jq '.single_critical | keys | length' "$OUTPUT_FILE" 2>/dev/null)
+SINGLE="${SINGLE:-0}"
 echo "Issues: ${TOTAL} total, ${SYS} systemic patterns, ${SINGLE} single-critical for variant search"
 echo "Wrote: ${OUTPUT_FILE}"

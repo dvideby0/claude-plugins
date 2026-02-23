@@ -55,7 +55,7 @@ SUMMARY=$(echo "$ALL_ISSUES" | jq '
   }) | from_entries
 ')
 
-CATEGORIES=$(echo "$ALL_ISSUES" | jq -r '[.[].category] | unique | .[]' | sort)
+CATEGORIES=$(echo "$ALL_ISSUES" | jq -r '[.[].category // "uncategorized"] | unique | .[]' | sort)
 CRIT_TOTAL=$(echo "$ALL_ISSUES" | jq '[.[] | select(.severity == "critical")] | length')
 WARN_TOTAL=$(echo "$ALL_ISSUES" | jq '[.[] | select(.severity == "warning")] | length')
 INFO_TOTAL=$(echo "$ALL_ISSUES" | jq '[.[] | select(.severity == "info")] | length')
@@ -80,11 +80,12 @@ GRAND_TOTAL=$(echo "$ALL_ISSUES" | jq 'length')
   printf "--------|\n"
 
   for sev in critical warning info; do
-    SEV_DISPLAY=$(echo "$sev" | sed 's/^./\U&/')
+    SEV_DISPLAY="$(echo "$sev" | awk '{print toupper(substr($0,1,1)) substr($0,2)}')"
     printf "| **%s** |" "$SEV_DISPLAY"
     for cat in $CATEGORIES; do
-      count=$(echo "$SUMMARY" | jq -r ".\"${sev}\".\"${cat}\" // 0")
-      if [ "$count" = "0" ]; then
+      count=$(echo "$SUMMARY" | jq -r ".\"${sev}\".\"${cat}\" // 0" 2>/dev/null)
+      count="${count:-0}"
+      if [ "$count" = "0" ] || [ "$count" = "null" ]; then
         printf " - |"
       else
         printf " %s |" "$count"
@@ -118,7 +119,8 @@ GRAND_TOTAL=$(echo "$ALL_ISSUES" | jq 'length')
     for tc_file in "${TOOL_DIR}/typecheck"/*.txt; do
       [ -f "$tc_file" ] || continue
       name=$(basename "$tc_file" .txt)
-      count=$(grep -c "error" "$tc_file" 2>/dev/null || echo "0")
+      count=$(grep -c "error" "$tc_file" 2>/dev/null)
+      count="${count:-0}"
       echo "| ${name} | Ran | ${count} errors |"
     done
 
@@ -131,7 +133,8 @@ GRAND_TOTAL=$(echo "$ALL_ISSUES" | jq 'length')
 
     # Metrics
     if [ -f "${DATA_DIR}/metrics.json" ]; then
-      total_code=$(jq '.SUM.code // .Total.code // "?" ' "${DATA_DIR}/metrics.json" 2>/dev/null)
+      total_code=$(jq -r '.SUM.code // .Total.code // "?"' "${DATA_DIR}/metrics.json" 2>/dev/null)
+      total_code="${total_code:-?}"
       echo "| cloc/tokei | Ran | ${total_code} lines of code |"
     fi
 
@@ -185,7 +188,8 @@ GRAND_TOTAL=$(echo "$ALL_ISSUES" | jq 'length')
   for tc_file in "${TOOL_DIR}/typecheck"/*.txt; do
     [ -f "$tc_file" ] || continue
     name=$(basename "$tc_file" .txt)
-    error_count=$(grep -c "error" "$tc_file" 2>/dev/null || echo "0")
+    error_count=$(grep -c "error" "$tc_file" 2>/dev/null)
+    error_count="${error_count:-0}"
     if [ "$error_count" -gt 0 ]; then
       echo "## Type Check Errors (${name})"
       echo ""
@@ -202,7 +206,7 @@ GRAND_TOTAL=$(echo "$ALL_ISSUES" | jq 'length')
 
   # --- Findings by severity ---
   for sev in critical warning info; do
-    SEV_DISPLAY=$(echo "$sev" | sed 's/^./\U&/')
+    SEV_DISPLAY="$(echo "$sev" | awk '{print toupper(substr($0,1,1)) substr($0,2)}')"
     count=$(echo "$ALL_ISSUES" | jq "[.[] | select(.severity == \"${sev}\")] | length")
     [ "$count" = "0" ] && continue
 
@@ -212,11 +216,11 @@ GRAND_TOTAL=$(echo "$ALL_ISSUES" | jq 'length')
     echo "$ALL_ISSUES" | jq -r "
       [.[] | select(.severity == \"${sev}\")] |
       group_by(.category)[] |
-      \"### \" + .[0].category + \" (\" + (length | tostring) + \")\\n\\n\" +
+      \"### \" + (.[0].category // \"uncategorized\") + \" (\" + (length | tostring) + \")\\n\\n\" +
       (map(
-        \"- **\" + .file_path + \"** \" +
+        \"- **\" + (.file_path // \"unknown\") + \"** \" +
         (if .line_range then \"(lines \" + (.line_range | map(tostring) | join(\"-\")) + \")\" else \"\" end) +
-        \": \" + .description +
+        \": \" + (.description // \"(no description)\") +
         (if .suggestion then \"\\n  > \" + .suggestion else \"\" end)
       ) | join(\"\\n\\n\"))
     " 2>/dev/null

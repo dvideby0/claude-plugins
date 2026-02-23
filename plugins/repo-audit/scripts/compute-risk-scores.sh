@@ -88,7 +88,9 @@ sort_by(-.risk_score) |
 ' "${MODULE_FILES[@]}" > "$OUTPUT_FILE"
 
 # Print summary
-SCORED=$(jq '.scores | length' "$OUTPUT_FILE")
-TOP3=$(jq -r '.top_10_highest_risk[:3] | join(", ")' "$OUTPUT_FILE")
+SCORED=$(jq '.scores | length' "$OUTPUT_FILE" 2>/dev/null)
+SCORED="${SCORED:-0}"
+TOP3=$(jq -r '.top_10_highest_risk[:3] | join(", ")' "$OUTPUT_FILE" 2>/dev/null)
+TOP3="${TOP3:-none}"
 echo "Scored ${SCORED} modules. Top risk: ${TOP3}"
 echo "Wrote: ${OUTPUT_FILE}"
