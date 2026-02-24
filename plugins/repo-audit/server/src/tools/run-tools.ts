@@ -1,7 +1,8 @@
 import { readFile, readdir, access, mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { runBashScript, runScript } from "../lib/subprocess.js";
+import { runScript } from "../lib/subprocess.js";
 import { updateState, persistState, addError, getState } from "../lib/state.js";
+import { runPreAnalysisTools } from "../scripts/run-pre-analysis-tools.js";
 
 // ----- Prescan pattern definitions -----
 
@@ -451,27 +452,13 @@ export async function runTools(
     };
   }
 
-  // Run the main pre-analysis script
+  // Run the main pre-analysis tools (TypeScript implementation)
   try {
-    const scriptPath = join(pluginRoot, "scripts", "run-pre-analysis-tools.sh");
-    const result = await runBashScript(scriptPath, [projectRoot], {
-      cwd: projectRoot,
-      timeout: 300_000, // 5 minutes for all tools
-    });
-
-    // Parse success/failure counts from stdout
-    const summaryMatch = result.stdout.match(
-      /Succeeded:\s*(\d+)\s*\|\s*Failed:\s*(\d+)/,
-    );
-
-    if (!summaryMatch) {
-      // Fallback: parse the failure log
-      const logResult = await parseFailureLog(dataDir);
-    }
+    await runPreAnalysisTools({ projectRoot });
   } catch (err) {
     addError(
       "audit_run_tools",
-      `run-pre-analysis-tools.sh failed: ${err instanceof Error ? err.message : String(err)}`,
+      `Pre-analysis tools failed: ${err instanceof Error ? err.message : String(err)}`,
     );
   }
 

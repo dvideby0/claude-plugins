@@ -2,30 +2,18 @@
 
 ## Step 0-pre: Prerequisites Check
 
-Run the prerequisite checker to detect available tools on the user's system:
+Run the prerequisite checker via the `audit_discover` MCP tool, which
+detects available tools on the user's system and writes
+`sdlc-audit/data/tool-availability.json`.
 
-```bash
-bash ${CLAUDE_PLUGIN_ROOT}/scripts/check-prereqs.sh .
-```
-
-Read `sdlc-audit/data/tool-availability.json` to determine which tools are
-available and which are missing.
-
-**If `check-prereqs.sh` exits with a non-zero status**, jq is missing. jq is a
-hard requirement for the audit. Tell the user:
-> "jq is required but not installed. Install it with: `[install command from output]`
-> Then re-run the audit."
-
-Do NOT proceed without jq. Wait for the user to install it and re-run `check-prereqs.sh`.
-
-**If there are other missing tools** (rg, tree, cloc, etc.), notify the user
+**If there are missing optional tools** (rg, tree, cloc, etc.), notify the user
 using `AskUserQuestion`. Build the question dynamically from the JSON data:
 
 - List each missing tool by name with a brief description of what it enables
 - Include the combined install command from `install_commands.all_missing`
 - Present the user with these options:
   1. **"Install and re-check"** — The user will install the tools themselves.
-     After they select this, run `check-prereqs.sh` again to refresh
+     After they select this, re-run discovery to refresh
      `tool-availability.json`, then continue with the updated availability.
   2. **"Proceed without them"** — Continue the audit without these optional
      tools. The audit still works, but will be slower and less thorough for

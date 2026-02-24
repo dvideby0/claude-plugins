@@ -95,7 +95,7 @@ To completely undo: `rm -rf sdlc-audit/` — zero side effects.
 8. **Cross-module** (~1-2min) — MCP tool builds dependency graph and risk scores.
    Spawns cross-module agents for DRY violations, inconsistencies, architecture,
    and coverage.
-9. **Reports** (~30s) — MCP tool runs assembly scripts in parallel, generates
+9. **Reports** (~30s) — MCP tool assembles reports in parallel, generates
    TASKS.json, returns synthesis prompts for PATTERNS.md and CLAUDE.md.
 10. **Summary** — Presents dashboard with all findings.
 
@@ -265,10 +265,9 @@ warn you that a full audit is recommended.
 | Tool | Why | Install (macOS) | Install (Linux) |
 |------|-----|-----------------|-----------------|
 | Node.js >= 18 | MCP server runtime | `brew install node` | `apt install nodejs` |
-| jq | Dependency graph, risk scores, report assembly, schema validation | `brew install jq` | `apt install jq` |
 
-The audit will not proceed without jq. The MCP server requires Node.js.
-The prerequisite checker detects missing tools and provides install commands.
+The MCP server requires Node.js. All data processing is done in TypeScript —
+no other runtime dependencies are required.
 
 **Optional enhancements:**
 
@@ -332,15 +331,19 @@ budgeting), while LLM judgment work is done by Task agents with assembled prompt
 │  build_graphs, plan_specialists,                │
 │  get_specialist_context, assemble_outputs,      │
 │  get_status                                     │
+│                                                 │
+│  TypeScript utility modules:                    │
+│  scripts/ — analysis, graphs, reports           │
+│  lib/ — types, state, subprocess, modules       │
 └────────────────────┬────────────────────────────┘
                      │
-     ┌───────────────┼───────────────┐
-     ▼               ▼               ▼
-┌─────────┐  ┌──────────────┐  ┌──────────────┐
-│ Scripts  │  │ Module Agents │  │ Specialist   │
-│ (bash)   │  │ (per-module   │  │ Agents (6)   │
-│ 18 tools │  │  sub-agents)  │  │ + cross-mod  │
-└─────────┘  └──────────────┘  └──────────────┘
+          ┌──────────┼──────────┐
+          ▼                     ▼
+   ┌──────────────┐      ┌──────────────┐
+   │ Module Agents │      │ Specialist   │
+   │ (per-module   │      │ Agents (6)   │
+   │  sub-agents)  │      │ + cross-mod  │
+   └──────────────┘      └──────────────┘
 ```
 
 **MCP tools handle:**
@@ -352,7 +355,7 @@ budgeting), while LLM judgment work is done by Task agents with assembled prompt
 - Building dependency graphs and risk scores
 - Planning specialist agent assignments
 - Assembling specialist context with guide section filtering
-- Running report assembly scripts and generating TASKS.json
+- Running report assembly and generating TASKS.json
 
 **LLM agents handle:**
 - Deep code analysis requiring judgment
@@ -363,15 +366,11 @@ budgeting), while LLM judgment work is done by Task agents with assembled prompt
 ## Running Tests
 
 ```bash
-# Bash script tests (18 suites)
-bash plugins/repo-audit/tests/run-tests.sh
-
-# MCP server build
-cd plugins/repo-audit/server && npm run build
+cd plugins/repo-audit/server && npm test
 ```
 
-Tests cover all bash scripts and the Python AST parser with fixture-based
-assertions. Runs in under 30 seconds on macOS and Linux.
+165 Vitest tests cover all TypeScript utility modules with fixture-based
+assertions. Runs in under 15 seconds.
 
 ## Adding a Language
 
@@ -387,12 +386,13 @@ repo-audit/
 ├── .claude-plugin/
 │   └── plugin.json              # Plugin manifest (v3.0.0)
 ├── .mcp.json                    # MCP server configuration
-├── server/                      # TypeScript MCP server (NEW in v3)
+├── server/                      # TypeScript MCP server
 │   ├── package.json
 │   ├── tsconfig.json
+│   ├── vitest.config.ts
 │   └── src/
 │       ├── index.ts             # Server entry point, 10 tool registrations
-│       ├── tools/               # Tool implementations
+│       ├── tools/               # MCP tool implementations
 │       │   ├── get-status.ts
 │       │   ├── discover.ts
 │       │   ├── run-tools.ts
@@ -403,11 +403,26 @@ repo-audit/
 │       │   ├── plan-specialists.ts
 │       │   ├── get-specialist-context.ts
 │       │   └── assemble-outputs.ts
-│       └── lib/                 # Shared utilities
-│           ├── state.ts         # Audit state management
-│           ├── subprocess.ts    # Script execution wrapper
-│           ├── tokens.ts        # Token estimation
-│           └── detection.ts     # Detection JSON helpers
+│       ├── scripts/             # TypeScript utility modules
+│       │   ├── git-analysis.ts
+│       │   ├── write-audit-meta.ts
+│       │   ├── extract-variants.ts
+│       │   ├── build-dep-graph.ts
+│       │   ├── compute-risk-scores.ts
+│       │   ├── validate-module-json.ts
+│       │   ├── check-prereqs.ts
+│       │   ├── merge-module-findings.ts
+│       │   ├── run-pre-analysis-tools.ts
+│       │   ├── skeletons/       # Code skeleton extractors
+│       │   └── reports/         # Report assemblers
+│       ├── lib/                 # Shared utilities
+│       │   ├── state.ts         # Audit state management
+│       │   ├── subprocess.ts    # External tool execution
+│       │   ├── modules.ts       # Module JSON reader
+│       │   ├── types.ts         # Shared type definitions
+│       │   ├── tokens.ts        # Token estimation
+│       │   └── detection.ts     # Detection JSON helpers
+│       └── __tests__/           # Vitest test suites
 ├── commands/
 │   ├── audit.md                 # Full audit orchestrator (~140 lines)
 │   ├── audit-quick.md           # Fast deterministic scan
@@ -430,37 +445,13 @@ repo-audit/
 ├── schemas/
 │   ├── enums.json               # Canonical enum definitions
 │   └── tasks.schema.json        # TASKS.json schema (NEW in v3)
-├── scripts/                     # Bash scripts (called by MCP server)
-│   ├── check-prereqs.sh
-│   ├── run-pre-analysis-tools.sh
-│   ├── git-analysis.sh
-│   ├── build-dep-graph.sh
-│   ├── compute-risk-scores.sh
-│   ├── extract-variants.sh
-│   ├── extract-skeletons.py
-│   ├── extract-skeletons-ts.sh
-│   ├── extract-skeletons-go.sh
-│   ├── extract-skeletons-rust.sh
-│   ├── extract-skeletons-java.sh
-│   ├── validate-module-json.sh
-│   ├── merge-module-findings.sh
-│   ├── fill-cross-module-placeholders.sh
-│   ├── write-audit-meta.sh
-│   ├── assemble-audit-report.sh
-│   ├── assemble-project-map.sh
-│   ├── assemble-tech-debt.sh
-│   ├── assemble-test-coverage.sh
-│   └── assemble-dep-graph.sh
 ├── lang/                        # 15 language-specific audit guides
 │   ├── typescript.md
 │   ├── python.md
 │   ├── go.md
 │   └── ...
 ├── tests/
-│   ├── fixtures/                # Test fixtures
-│   ├── test-*.sh                # Per-script test files (18 suites)
-│   ├── test-extract-skeletons.py
-│   └── run-tests.sh             # Test runner
+│   └── fixtures/                # Test fixtures (used by Vitest suites)
 ├── README.md
 └── LICENSE
 ```
@@ -505,7 +496,7 @@ Yes, Node.js >= 18 is required for the MCP server. Run
 `cd server && npm install && npm run build` after installing the plugin.
 
 **Do I need to install anything else?**
-jq is the only other required dependency. Optional tools (ripgrep, cloc, tree)
+No other runtime dependencies are required. Optional tools (ripgrep, cloc, tree)
 make the audit faster and more thorough. The prerequisite checker tells you
 exactly what to install.
 

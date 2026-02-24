@@ -1,6 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
-import { runBashScript } from "../lib/subprocess.js";
+import { createHash } from "node:crypto";
 import {
   runDetection,
   readDetectionJson,
@@ -14,16 +14,37 @@ import {
   persistState,
   addError,
   type AuditMeta,
+  type DetectionData,
 } from "../lib/state.js";
+import { checkPrereqs } from "../scripts/check-prereqs.js";
+import type { ToolAvailability } from "../lib/types.js";
 
-interface ToolAvailability {
-  tools: Record<string, { available: boolean; path?: string }>;
-  project_tools: Record<string, { available: boolean }>;
-  install_commands: {
-    all_missing: string | null;
-    per_tool: Record<string, string>;
+/**
+ * Convert DetectionResult (from runDetection) to DetectionData (for state storage).
+ * These types differ in field names and structure.
+ */
+function toDetectionData(det: DetectionResult): DetectionData {
+  const allDirs: DetectionData["all_directories"] = {};
+  for (const [dir, info] of Object.entries(det.all_directories)) {
+    allDirs[dir] = {
+      category: info.category,
+      languages: info.languages,
+      files: info.est_files,
+      guide_files: info.guide_files,
+    };
+  }
+
+  return {
+    languages: det.primary_languages,
+    frameworks: Object.keys(det.frameworks),
+    all_directories: allDirs,
+    secondary_languages: det.secondary_languages,
+    tooling: det.tooling,
+    monorepo: det.monorepo,
+    package_managers: det.package_managers,
+    total_source_files: det.total_source_files,
+    total_directories: det.total_directories,
   };
-  [key: string]: unknown;
 }
 
 interface DiscoverInput {
@@ -46,25 +67,10 @@ interface DiscoverResult {
   totalDirectories: number;
   totalFiles: number;
   toolsMissing: string[];
-  jqAvailable: boolean;
   previousAudit: PreviousAuditInfo | null;
   monorepo: boolean;
   packageManagers: Record<string, string>;
   detectionPath: string;
-}
-
-async function readToolAvailability(
-  auditDir: string,
-): Promise<ToolAvailability | null> {
-  try {
-    const data = await readFile(
-      join(auditDir, "data", "tool-availability.json"),
-      "utf-8",
-    );
-    return JSON.parse(data) as ToolAvailability;
-  } catch {
-    return null;
-  }
 }
 
 async function getCurrentPluginVersion(pluginRoot: string): Promise<string | null> {
@@ -84,11 +90,23 @@ async function computeDetectionHash(
   auditDir: string,
 ): Promise<string | null> {
   try {
-    // Use jq + shasum to compute hash the same way write-audit-meta.sh does
-    const { execSync } = await import("node:child_process");
-    const cmd = `jq -S '.all_directories | to_entries | map({key: .key, category: .value.category, languages: .value.languages}) | sort_by(.key)' "${join(auditDir, "data", "detection.json")}" 2>/dev/null | shasum -a 256 | cut -d' ' -f1`;
-    const result = execSync(cmd, { encoding: "utf-8" }).trim();
-    return result || null;
+    const raw = await readFile(join(auditDir, "data", "detection.json"), "utf-8");
+    const detection = JSON.parse(raw);
+    const allDirs = (detection.all_directories ?? {}) as Record<
+      string,
+      { category?: string; languages?: string[] }
+    >;
+
+    const entries = Object.entries(allDirs)
+      .map(([key, val]) => ({
+        key,
+        category: val.category ?? "",
+        languages: val.languages ?? [],
+      }))
+      .sort((a, b) => a.key.localeCompare(b.key));
+
+    const canonical = JSON.stringify(entries);
+    return createHash("sha256").update(canonical).digest("hex");
   } catch {
     return null;
   }
@@ -109,26 +127,11 @@ export async function discover(
   // Step 1: Run prerequisites check
   let toolAvailability: ToolAvailability | null = null;
   try {
-    const prereqScript = join(pluginRoot, "scripts", "check-prereqs.sh");
-    const result = await runBashScript(prereqScript, [projectRoot], {
-      cwd: projectRoot,
-      timeout: 30_000,
-    });
-
-    // Read the tool-availability.json it wrote
-    toolAvailability = await readToolAvailability(auditDir);
-
-    if (result.exitCode !== 0) {
-      // jq is missing — hard requirement
-      addError(
-        "audit_discover",
-        "jq is required but not installed. check-prereqs.sh exited with non-zero status.",
-      );
-    }
+    toolAvailability = await checkPrereqs(projectRoot);
   } catch (err) {
     addError(
       "audit_discover",
-      `Failed to run check-prereqs.sh: ${err instanceof Error ? err.message : String(err)}`,
+      `Failed to check prerequisites: ${err instanceof Error ? err.message : String(err)}`,
     );
   }
 
@@ -187,7 +190,7 @@ export async function discover(
     }
   }
 
-  updateState({ detection: detection as any });
+  updateState({ detection: toDetectionData(detection) });
 
   // Step 4: Check for previous audit
   let previousAudit: PreviousAuditInfo | null = null;
@@ -225,8 +228,6 @@ export async function discover(
     }
   }
 
-  const jqAvailable = toolMap["jq"] ?? false;
-
   await persistState();
 
   return {
@@ -235,7 +236,6 @@ export async function discover(
     totalDirectories: detection.total_directories,
     totalFiles: detection.total_source_files,
     toolsMissing,
-    jqAvailable,
     previousAudit,
     monorepo: detection.monorepo,
     packageManagers: detection.package_managers,

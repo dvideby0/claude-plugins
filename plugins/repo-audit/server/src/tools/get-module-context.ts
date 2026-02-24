@@ -530,7 +530,7 @@ export async function getModuleContext(
 
   const totalTokens = estimateTokens(taskPrompt);
 
-  const validationCommand = `bash ${pluginRoot}/scripts/validate-module-json.sh ${projectRoot}`;
+  const validationCommand = "Call the audit_validate_modules MCP tool to validate your output.";
 
   return {
     assignmentId: input.assignmentId,

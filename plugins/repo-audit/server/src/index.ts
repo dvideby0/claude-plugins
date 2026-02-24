@@ -235,7 +235,7 @@ server.tool(
 // --- audit_validate_modules ---
 server.tool(
   "audit_validate_modules",
-  "Validate all module JSON files against the schema. Runs validate-module-json.sh, reads validation results, updates state with passed/failed modules.",
+  "Validate all module JSON files against the schema. Reads validation results, updates state with passed/failed modules.",
   {
     modules: z
       .array(z.string())

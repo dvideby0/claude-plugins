@@ -1,7 +1,15 @@
 import { readFile, readdir, writeFile, mkdir, access } from "node:fs/promises";
 import { join } from "node:path";
-import { runBashScript } from "../lib/subprocess.js";
 import { getState, updateState, persistState, addError } from "../lib/state.js";
+import {
+  assembleAuditReport,
+  assembleDepGraphReport,
+  assembleProjectMap,
+  assembleTechDebtReport,
+  assembleTestCoverageReport,
+  fillCrossModulePlaceholders,
+} from "../scripts/reports/index.js";
+import { writeAuditMeta } from "../scripts/write-audit-meta.js";
 
 // ----- Interfaces -----
 
@@ -516,22 +524,17 @@ export async function assembleOutputs(
   await mkdir(join(auditDir, "reports"), { recursive: true });
   await mkdir(join(auditDir, "staged"), { recursive: true });
 
-  // Step 1: Run assembly scripts in parallel
-  const assemblyScripts = [
-    "assemble-audit-report.sh",
-    "assemble-project-map.sh",
-    "assemble-tech-debt.sh",
-    "assemble-test-coverage.sh",
-    "assemble-dep-graph.sh",
+  // Step 1: Run assembly functions in parallel
+  const assemblers = [
+    { name: "audit-report", fn: () => assembleAuditReport(projectRoot) },
+    { name: "project-map", fn: () => assembleProjectMap(projectRoot) },
+    { name: "tech-debt", fn: () => assembleTechDebtReport(projectRoot) },
+    { name: "test-coverage", fn: () => assembleTestCoverageReport(projectRoot) },
+    { name: "dep-graph", fn: () => assembleDepGraphReport(projectRoot) },
   ];
 
   const scriptResults = await Promise.allSettled(
-    assemblyScripts.map((script) =>
-      runBashScript(join(pluginRoot, "scripts", script), [projectRoot], {
-        cwd: projectRoot,
-        timeout: 60_000,
-      }),
-    ),
+    assemblers.map((a) => a.fn()),
   );
 
   for (let i = 0; i < scriptResults.length; i++) {
@@ -539,37 +542,34 @@ export async function assembleOutputs(
     if (result.status === "rejected") {
       addError(
         "audit_assemble_outputs",
-        `${assemblyScripts[i]} failed: ${result.reason instanceof Error ? result.reason.message : String(result.reason)}`,
+        `${assemblers[i].name} failed: ${result.reason instanceof Error ? result.reason.message : String(result.reason)}`,
       );
     }
   }
 
   // Step 2: Fill cross-module placeholders
   try {
-    await runBashScript(
-      join(pluginRoot, "scripts", "fill-cross-module-placeholders.sh"),
-      [projectRoot],
-      { cwd: projectRoot, timeout: 60_000 },
-    );
+    await fillCrossModulePlaceholders(projectRoot);
   } catch (err) {
     addError(
       "audit_assemble_outputs",
-      `fill-cross-module-placeholders.sh failed: ${err instanceof Error ? err.message : String(err)}`,
+      `fill-cross-module-placeholders failed: ${err instanceof Error ? err.message : String(err)}`,
     );
   }
 
   // Step 3: Write audit metadata
   try {
     const moduleNames = state.moduleAssignments.map((a) => a.directories[0]);
-    await runBashScript(
-      join(pluginRoot, "scripts", "write-audit-meta.sh"),
-      [projectRoot, auditType, pluginRoot, ...moduleNames],
-      { cwd: projectRoot, timeout: 30_000 },
-    );
+    await writeAuditMeta({
+      projectRoot,
+      auditType,
+      pluginRoot,
+      modules: moduleNames,
+    });
   } catch (err) {
     addError(
       "audit_assemble_outputs",
-      `write-audit-meta.sh failed: ${err instanceof Error ? err.message : String(err)}`,
+      `write-audit-meta failed: ${err instanceof Error ? err.message : String(err)}`,
     );
   }
 

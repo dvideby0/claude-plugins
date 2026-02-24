@@ -1,7 +1,7 @@
 import { readFile, access } from "node:fs/promises";
 import { join } from "node:path";
-import { runBashScript } from "../lib/subprocess.js";
 import { getState, updateState, persistState, addError } from "../lib/state.js";
+import { validateModuleJson } from "../scripts/validate-module-json.js";
 
 // ----- Interfaces -----
 
@@ -34,36 +34,15 @@ export async function validateModules(
   const projectRoot = state.projectRoot;
   const auditDir = state.auditDir;
 
-  // Run the validation script
-  const scriptPath = join(pluginRoot, "scripts", "validate-module-json.sh");
-  try {
-    await runBashScript(scriptPath, [projectRoot], {
-      cwd: projectRoot,
-      timeout: 60_000,
-    });
-  } catch (err) {
-    // Script exits 1 if any modules fail validation — that's expected
-    // Only add error if the script truly crashed (no output file produced)
-    const resultsPath = join(auditDir, "data", "validation-results.json");
-    try {
-      await access(resultsPath);
-    } catch {
-      addError(
-        "audit_validate_modules",
-        `validate-module-json.sh failed: ${err instanceof Error ? err.message : String(err)}`,
-      );
-      return { total: 0, passed: 0, failed: [] };
-    }
-  }
-
-  // Read results
-  const resultsPath = join(auditDir, "data", "validation-results.json");
+  // Run validation
   let results: { validated: number; passed: number; failed: number; errors: { file: string; errors: string[] }[] };
   try {
-    const data = await readFile(resultsPath, "utf-8");
-    results = JSON.parse(data);
-  } catch {
-    addError("audit_validate_modules", "Could not read validation-results.json");
+    results = await validateModuleJson(projectRoot);
+  } catch (err) {
+    addError(
+      "audit_validate_modules",
+      `validate-module-json failed: ${err instanceof Error ? err.message : String(err)}`,
+    );
     return { total: 0, passed: 0, failed: [] };
   }
 

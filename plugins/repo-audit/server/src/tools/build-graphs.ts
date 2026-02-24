@@ -1,7 +1,11 @@
 import { readFile, readdir, writeFile, mkdir, access } from "node:fs/promises";
 import { join } from "node:path";
-import { runBashScript, runScript } from "../lib/subprocess.js";
+import { runScript } from "../lib/subprocess.js";
 import { getState, updateState, persistState, addError } from "../lib/state.js";
+import { buildDepGraph } from "../scripts/build-dep-graph.js";
+import { computeRiskScores } from "../scripts/compute-risk-scores.js";
+import { extractVariants } from "../scripts/extract-variants.js";
+import { mergeModuleFindings } from "../scripts/merge-module-findings.js";
 
 // ----- Interfaces -----
 
@@ -225,29 +229,16 @@ export async function buildGraphs(
   // Step 1: Build dependency graph
   let depGraphResult = { modules: 0, edges: 0, cycles: 0 };
   try {
-    const scriptPath = join(pluginRoot, "scripts", "build-dep-graph.sh");
-    await runBashScript(scriptPath, [projectRoot], {
-      cwd: projectRoot,
-      timeout: 60_000,
-    });
-
-    // Read results
-    const depDataPath = join(auditDir, "data", "dependency-data.json");
-    if (await fileExists(depDataPath)) {
-      const data = await readFile(depDataPath, "utf-8");
-      const depData = JSON.parse(data);
-      const graph = depData.module_graph ?? {};
-      const modules = Object.keys(graph).length;
-      const edges = Object.values(graph).reduce(
-        (sum: number, m: any) => sum + (m.depends_on?.length ?? 0), 0,
-      );
-      const cycles = (depData.circular_dependencies ?? []).length;
-      depGraphResult = { modules, edges, cycles };
-    }
+    const { data: depData, summary } = await buildDepGraph(projectRoot);
+    const edges = Object.values(depData.module_graph).reduce(
+      (sum, m) => sum + m.depends_on.length,
+      0,
+    );
+    depGraphResult = { modules: summary.modules, edges, cycles: summary.cycles };
   } catch (err) {
     addError(
       "audit_build_graphs",
-      `build-dep-graph.sh failed: ${err instanceof Error ? err.message : String(err)}`,
+      `build-dep-graph failed: ${err instanceof Error ? err.message : String(err)}`,
     );
   }
 
@@ -256,40 +247,25 @@ export async function buildGraphs(
     highRisk: [], mediumRisk: [], lowRisk: [],
   };
   try {
-    const scriptPath = join(pluginRoot, "scripts", "compute-risk-scores.sh");
-    await runBashScript(scriptPath, [projectRoot], {
-      cwd: projectRoot,
-      timeout: 60_000,
-    });
+    const riskData = await computeRiskScores(projectRoot);
+    const scores = riskData.scores;
+    const n = scores.length;
 
-    // Read results
-    const riskPath = join(auditDir, "data", "risk-scores.json");
-    if (await fileExists(riskPath)) {
-      const data = await readFile(riskPath, "utf-8");
-      const riskData = JSON.parse(data);
-      const dist = riskData.risk_distribution ?? {};
-      const scores = riskData.scores ?? [];
+    if (n > 0) {
+      const allScoreVals = scores.map((s) => s.risk_score).sort((a, b) => a - b);
+      const p75 = n > 1 ? allScoreVals[Math.floor(n * 0.75)] : allScoreVals[0];
+      const p50 = n > 1 ? allScoreVals[Math.floor(n * 0.5)] : allScoreVals[0];
 
-      // Categorize by percentile boundaries (matching the script's logic)
-      const sortedScores = [...scores].sort((a: any, b: any) => b.risk_score - a.risk_score);
-      const n = sortedScores.length;
-
-      if (n > 0) {
-        const allScoreVals = scores.map((s: any) => s.risk_score).sort((a: number, b: number) => a - b);
-        const p75 = n > 1 ? allScoreVals[Math.floor(n * 0.75)] : allScoreVals[0];
-        const p50 = n > 1 ? allScoreVals[Math.floor(n * 0.5)] : allScoreVals[0];
-
-        riskScoreResult = {
-          highRisk: scores.filter((s: any) => s.risk_score >= p75).map((s: any) => s.module),
-          mediumRisk: scores.filter((s: any) => s.risk_score >= p50 && s.risk_score < p75).map((s: any) => s.module),
-          lowRisk: scores.filter((s: any) => s.risk_score < p50).map((s: any) => s.module),
-        };
-      }
+      riskScoreResult = {
+        highRisk: scores.filter((s) => s.risk_score >= p75).map((s) => s.module),
+        mediumRisk: scores.filter((s) => s.risk_score >= p50 && s.risk_score < p75).map((s) => s.module),
+        lowRisk: scores.filter((s) => s.risk_score < p50).map((s) => s.module),
+      };
     }
   } catch (err) {
     addError(
       "audit_build_graphs",
-      `compute-risk-scores.sh failed: ${err instanceof Error ? err.message : String(err)}`,
+      `compute-risk-scores failed: ${err instanceof Error ? err.message : String(err)}`,
     );
   }
 
@@ -297,11 +273,7 @@ export async function buildGraphs(
   let variantResult: { systemicPatterns: number; newInstances: number } | null = null;
   if (includeVariantAnalysis) {
     try {
-      const scriptPath = join(pluginRoot, "scripts", "extract-variants.sh");
-      await runBashScript(scriptPath, [projectRoot], {
-        cwd: projectRoot,
-        timeout: 60_000,
-      });
+      await extractVariants(projectRoot);
 
       // Run deterministic variant search
       variantResult = await runVariantSearch(projectRoot, auditDir);
@@ -320,22 +292,17 @@ export async function buildGraphs(
       const specialistFiles = await readdir(specialistDir);
       const jsonFiles = specialistFiles.filter((f) => f.endsWith(".json"));
 
-      if (jsonFiles.length > 0) {
-        // Use merge-module-findings.sh for each specialist output
-        const mergeScript = join(pluginRoot, "scripts", "merge-module-findings.sh");
-        if (await fileExists(mergeScript)) {
-          for (const file of jsonFiles) {
-            const specialistPath = join(specialistDir, file);
-            const sourceName = `specialist-${file.replace("-findings.json", "")}`;
-            try {
-              await runBashScript(mergeScript, [specialistPath, projectRoot, sourceName], {
-                cwd: projectRoot,
-                timeout: 30_000,
-              });
-            } catch {
-              // Non-fatal — specialist merge failure shouldn't block the build
-            }
-          }
+      for (const file of jsonFiles) {
+        const specialistPath = join(specialistDir, file);
+        const sourceName = `specialist-${file.replace("-findings.json", "")}`;
+        try {
+          await mergeModuleFindings({
+            projectRoot,
+            findingsFile: specialistPath,
+            sourceCommand: sourceName,
+          });
+        } catch {
+          // Non-fatal — specialist merge failure shouldn't block the build
         }
       }
     } catch {

@@ -1,0 +1,173 @@
+import { describe, it, expect, afterEach } from "vitest";
+import { readFile, writeFile } from "node:fs/promises";
+import { join } from "node:path";
+import { assembleProjectMap } from "../../../scripts/reports/project-map.js";
+import {
+  createTestProject,
+  copyFixture,
+  type TestProject,
+} from "../../helpers.js";
+
+let project: TestProject | null = null;
+
+afterEach(async () => {
+  if (project) {
+    await project.cleanup();
+    project = null;
+  }
+});
+
+describe("assembleProjectMap", () => {
+  it("handles missing detection.json gracefully", async () => {
+    project = await createTestProject();
+
+    await assembleProjectMap(project.projectRoot);
+
+    const report = await readFile(
+      join(project.reportsDir, "PROJECT_MAP.md"),
+      "utf-8",
+    );
+    expect(report).toContain("# Project Map");
+    expect(report).toContain("No detection data available");
+  });
+
+  it("shows primary and secondary languages", async () => {
+    project = await createTestProject();
+    await writeFile(
+      join(project.dataDir, "detection.json"),
+      JSON.stringify({
+        primary_languages: ["TypeScript", "Python"],
+        secondary_languages: ["Shell"],
+        all_directories: {},
+      }),
+    );
+
+    await assembleProjectMap(project.projectRoot);
+
+    const report = await readFile(
+      join(project.reportsDir, "PROJECT_MAP.md"),
+      "utf-8",
+    );
+    expect(report).toContain("TypeScript, Python");
+    expect(report).toContain("Shell");
+  });
+
+  it("includes frameworks section when present", async () => {
+    project = await createTestProject();
+    await writeFile(
+      join(project.dataDir, "detection.json"),
+      JSON.stringify({
+        primary_languages: ["TypeScript"],
+        frameworks: { express: ["4.18"], react: ["18.2"] },
+        all_directories: {},
+      }),
+    );
+
+    await assembleProjectMap(project.projectRoot);
+
+    const report = await readFile(
+      join(project.reportsDir, "PROJECT_MAP.md"),
+      "utf-8",
+    );
+    expect(report).toContain("## Frameworks");
+    expect(report).toContain("express");
+    expect(report).toContain("react");
+  });
+
+  it("includes code metrics table", async () => {
+    project = await createTestProject();
+    await writeFile(
+      join(project.dataDir, "detection.json"),
+      JSON.stringify({ primary_languages: ["Go"], all_directories: {} }),
+    );
+    await writeFile(
+      join(project.dataDir, "metrics.json"),
+      JSON.stringify({
+        Go: { nFiles: 50, code: 5000, comment: 500, blank: 300 },
+        SUM: { nFiles: 50, code: 5000, comment: 500, blank: 300 },
+      }),
+    );
+
+    await assembleProjectMap(project.projectRoot);
+
+    const report = await readFile(
+      join(project.reportsDir, "PROJECT_MAP.md"),
+      "utf-8",
+    );
+    expect(report).toContain("## Code Metrics");
+    expect(report).toContain("5000");
+    expect(report).toContain("**Total:**");
+  });
+
+  it("includes directory structure from detection", async () => {
+    project = await createTestProject();
+    await writeFile(
+      join(project.dataDir, "detection.json"),
+      JSON.stringify({
+        primary_languages: ["TypeScript"],
+        all_directories: {
+          src: { category: "source", languages: ["TypeScript"] },
+          tests: { category: "test", languages: ["TypeScript"] },
+        },
+      }),
+    );
+
+    await assembleProjectMap(project.projectRoot);
+
+    const report = await readFile(
+      join(project.reportsDir, "PROJECT_MAP.md"),
+      "utf-8",
+    );
+    expect(report).toContain("## Directory Structure");
+    expect(report).toContain("`src/`");
+    expect(report).toContain("`tests/`");
+  });
+
+  it("includes module purposes", async () => {
+    project = await createTestProject();
+    await writeFile(
+      join(project.dataDir, "detection.json"),
+      JSON.stringify({ primary_languages: ["Python"], all_directories: {} }),
+    );
+
+    // Create a module with purpose
+    await writeFile(
+      join(project.modulesDir, "src_api.json"),
+      JSON.stringify({
+        directory: "src_api",
+        purpose: "HTTP API layer",
+        files: [],
+        internal_dependencies: [],
+        external_dependencies: [],
+        test_coverage: "none",
+        documentation_quality: "missing",
+      }),
+    );
+
+    await assembleProjectMap(project.projectRoot);
+
+    const report = await readFile(
+      join(project.reportsDir, "PROJECT_MAP.md"),
+      "utf-8",
+    );
+    expect(report).toContain("## Module Purposes");
+    expect(report).toContain("src_api");
+    expect(report).toContain("HTTP API layer");
+  });
+
+  it("includes report footer", async () => {
+    project = await createTestProject();
+    await writeFile(
+      join(project.dataDir, "detection.json"),
+      JSON.stringify({ primary_languages: [], all_directories: {} }),
+    );
+
+    await assembleProjectMap(project.projectRoot);
+
+    const report = await readFile(
+      join(project.reportsDir, "PROJECT_MAP.md"),
+      "utf-8",
+    );
+    expect(report).toContain("Generated by repo-audit");
+  });
+});

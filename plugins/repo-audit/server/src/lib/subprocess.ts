@@ -50,11 +50,3 @@ export function runScript(
     );
   });
 }
-
-export function runBashScript(
-  scriptPath: string,
-  args: string[] = [],
-  options: ExecOptions = {},
-): Promise<ExecResult> {
-  return runScript("bash", [scriptPath, ...args], options);
-}
