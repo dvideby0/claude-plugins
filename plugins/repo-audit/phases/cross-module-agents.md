@@ -1,36 +1,7 @@
-# Phase 2: Cross-Module Analysis
+# Cross-Module Analysis Agents
 
-Once ALL sub-agent JSON files are written to `sdlc-audit/modules/`,
-Phase 2 runs in two stages: **programmatic analysis** (scripts), then
-**parallel LLM agents** for judgment-based work.
-
-## Stage 1: Programmatic Analysis (run sequentially)
-
-Run these scripts first — they produce data files the LLM agents need.
-
-### 2a: Dependency Graph
-
-```bash
-bash ${CLAUDE_PLUGIN_ROOT}/scripts/build-dep-graph.sh .
-```
-
-### 2b: Risk Scoring
-
-```bash
-bash ${CLAUDE_PLUGIN_ROOT}/scripts/compute-risk-scores.sh .
-```
-
-### 2c: Incorporate Variant Analysis
-
-Read `sdlc-audit/data/variant-analysis.json` (if it exists from Phase 1.5).
-- Merge `variant_search_results` new matches into the relevant module findings
-- Systemic patterns feed into the AUDIT_REPORT.md Systemic Patterns section
-- Adjust risk scores upward for modules with systemic pattern involvement
-
-## Stage 2: Parallel Cross-Module Agents
-
-Spawn these agents in parallel using Claude Code's Task tool. Each agent reads
-ALL module JSONs from `sdlc-audit/modules/` plus the programmatic data files.
+Parallel LLM agents for judgment-based cross-module analysis. Each agent reads
+ALL module JSONs from `sdlc-audit/modules/` plus programmatic data files.
 Each agent writes its findings as a JSON file to `sdlc-audit/data/`.
 
 **Important:** Each agent works on an independent concern. They read shared

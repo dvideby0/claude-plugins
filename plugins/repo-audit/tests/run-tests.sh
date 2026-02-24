@@ -89,6 +89,19 @@ run_test "test-validate-module-json" \
 run_test "test-merge-module-findings" \
   "bash '${SCRIPT_DIR}/test-merge-module-findings.sh'"
 
+# --- MCP Server build check (if Node.js available) ---
+
+SERVER_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)/server"
+if command -v node >/dev/null 2>&1 && [ -f "${SERVER_DIR}/package.json" ]; then
+  if [ -d "${SERVER_DIR}/node_modules" ]; then
+    run_test "server-build" \
+      "cd '${SERVER_DIR}' && npm run build 2>&1"
+  else
+    echo ""
+    echo "  [skip] server-build: run 'cd server && npm install' first"
+  fi
+fi
+
 # --- Summary ---
 
 END_TIME=$(date +%s)

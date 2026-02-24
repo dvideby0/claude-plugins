@@ -1,0 +1,97 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "required": ["version", "generated", "summary", "tasks"],
+  "properties": {
+    "version": { "const": "1.0.0" },
+    "generated": { "type": "string", "format": "date-time" },
+    "auditType": {
+      "enum": ["full", "incremental", "quick", "security", "deps", "arch", "patterns", "coverage"]
+    },
+    "summary": {
+      "type": "object",
+      "properties": {
+        "totalTasks": { "type": "integer" },
+        "bySeverity": {
+          "type": "object",
+          "properties": {
+            "critical": { "type": "integer" },
+            "high": { "type": "integer" },
+            "medium": { "type": "integer" },
+            "low": { "type": "integer" }
+          }
+        },
+        "byCategory": { "type": "object" },
+        "estimatedTotalEffort": { "type": "string" }
+      }
+    },
+    "tasks": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "title", "severity", "confidence", "category", "files", "description", "acceptance_criteria"],
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Unique ID: category prefix + number, e.g. SEC-001, ERR-003, PERF-012"
+          },
+          "title": { "type": "string", "maxLength": 120 },
+          "severity": { "enum": ["critical", "high", "medium", "low"] },
+          "confidence": { "enum": ["definite", "high", "medium", "low"] },
+          "category": {
+            "enum": [
+              "security", "error_handling", "performance", "type_design",
+              "test_quality", "complexity", "consistency", "dependency",
+              "documentation", "architecture", "maintainability"
+            ]
+          },
+          "source": {
+            "enum": [
+              "linter", "typecheck", "prescan", "module-agent",
+              "specialist", "cross-module", "variant-analysis"
+            ]
+          },
+          "files": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "Affected files with optional line ranges: path/file.ts:10-25"
+          },
+          "description": {
+            "type": "string",
+            "description": "What is wrong and why it matters."
+          },
+          "suggestion": {
+            "type": "string",
+            "description": "How to fix it."
+          },
+          "acceptance_criteria": {
+            "type": "string",
+            "description": "How to verify the fix is correct."
+          },
+          "depends_on": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "Task IDs that should be completed first."
+          },
+          "estimated_effort": {
+            "enum": ["trivial", "small", "medium", "large", "epic"],
+            "description": "trivial=<5min, small=<30min, medium=<2hr, large=<1day, epic=multi-day"
+          },
+          "agent_hint": {
+            "type": "string",
+            "description": "Context to help an agent fix this efficiently."
+          },
+          "systemic": {
+            "type": "boolean",
+            "description": "True if this is a codebase-wide pattern."
+          },
+          "related_findings": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "IDs of related tasks."
+          }
+        }
+      }
+    }
+  }
+}

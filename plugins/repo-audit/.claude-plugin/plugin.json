@@ -1,6 +1,6 @@
 {
   "name": "repo-audit",
-  "version": "2.0.0",
+  "version": "3.0.0",
   "description": "Comprehensive, language-aware repository audit with composable sub-commands. Run /audit for full analysis or /audit-quick, /audit-security, /audit-deps, /audit-arch, /audit-patterns, /audit-coverage for targeted scans.",
   "author": {
     "name": "dvideby0"

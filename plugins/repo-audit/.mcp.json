@@ -1,0 +1,10 @@
+{
+  "repo-audit": {
+    "command": "node",
+    "args": ["${CLAUDE_PLUGIN_ROOT}/server/build/index.js"],
+    "env": {
+      "PLUGIN_ROOT": "${CLAUDE_PLUGIN_ROOT}",
+      "AUDIT_DIR": "sdlc-audit"
+    }
+  }
+}

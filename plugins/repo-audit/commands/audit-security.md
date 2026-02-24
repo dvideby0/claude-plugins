@@ -1,14 +1,13 @@
 ---
 description: Security-focused audit — scans for secrets, dependency vulnerabilities, injection patterns, auth issues, and OWASP Top 10 concerns. Runs in 2-3 minutes.
-allowed-tools: Bash, Read, Write, Edit, Glob, Grep, Task, AskUserQuestion
+allowed-tools: Bash, Read, Write, Edit, Glob, Grep, Task, AskUserQuestion, mcp__plugin_repo-audit_repo-audit__audit_discover, mcp__plugin_repo-audit_repo-audit__audit_run_tools, mcp__plugin_repo-audit_repo-audit__audit_plan_analysis, mcp__plugin_repo-audit_repo-audit__audit_get_module_context, mcp__plugin_repo-audit_repo-audit__audit_get_specialist_context, mcp__plugin_repo-audit_repo-audit__audit_assemble_outputs, mcp__plugin_repo-audit_repo-audit__audit_get_status
 ---
 
 # Security Audit
 
-Read `${CLAUDE_PLUGIN_ROOT}/phases/shared-preamble.md` for critical rules.
+## CRITICAL RULE: Do Not Modify Existing Files
 
-This is a security-focused audit that targets secrets, vulnerabilities,
-injection patterns, and authentication issues.
+This audit is READ-ONLY. ALL output goes inside `sdlc-audit/` — nothing else is touched.
 
 ---
 
@@ -32,175 +31,44 @@ Ask the user to confirm before proceeding.
 
 ## Step 2: Discovery
 
-If `sdlc-audit/data/detection.json` does not exist, read and execute
-`${CLAUDE_PLUGIN_ROOT}/phases/discovery.md`.
+Call `audit_discover` (reuses cached detection.json if available).
 
-Report: **[1/4] Discovery complete**
+Report: **[1/5] Discovery complete**
 
-## Step 3: Deterministic Security Scans
+## Step 3: Security-Focused Pre-Analysis
 
-### 3a: Secrets Scanning
+Call `audit_run_tools` with `tools: ["secrets-scan", "dep-audit"]`. This runs
+secrets scanning and dependency vulnerability audits.
 
-Use Claude Code's Grep tool to scan for hardcoded secrets across all files:
+Report: **[2/5] Deterministic security scans complete**
 
-- `(?i)(password|passwd|pwd)\s*=\s*["'][^"']+["']` — hardcoded passwords
-- `(?i)(api_key|apikey|api_secret)\s*=\s*["'][^"']+["']` — API keys
-- `(?i)(secret|token|bearer)\s*=\s*["'][^"']+["']` — secrets and tokens
-- `(?i)(aws_access_key|aws_secret)\s*=\s*["']` — AWS credentials
-- `-----BEGIN (RSA |EC |DSA )?PRIVATE KEY-----` — private keys
-- `(?i)(database_url|db_url|connection_string)\s*=\s*["']` — database URLs
+## Step 4: Module Analysis (Security-Focused)
 
-Exclude `*.md`, `*.txt`, `*.example`, `.env.example`, test fixtures.
+Call `audit_plan_analysis`. For each assignment, call `audit_get_module_context`
+and spawn a Task agent with the returned `taskPrompt` plus security focus:
 
-Write results to `sdlc-audit/data/security-secrets.json`.
+Add to each agent's prompt:
+> Focus primarily on security concerns — injection patterns, auth issues,
+> input validation, secrets exposure. Non-security findings are secondary.
 
-### 3b: Dependency Vulnerability Audit
+Run agents in parallel batches.
 
-Run the dependency audit section from `${CLAUDE_PLUGIN_ROOT}/phases/pre-analysis.md`
-(Step 0m only). This runs npm audit, pip-audit, cargo audit, etc.
+Report: **[3/5] Module security analysis complete**
 
-### 3c: Injection Pattern Scanning
+## Step 5: Security Specialist
 
-Use Grep to search for injection-prone patterns:
+Call `audit_get_specialist_context` with `domain: "security"`. Spawn the
+security-specialist agent with the returned `taskPrompt`.
 
-**SQL Injection:**
-- `(?i)(query|execute|raw)\s*\(.*\$\{` — template literal in SQL
-- `(?i)(query|execute|raw)\s*\(.*\+\s*` — string concatenation in SQL
-- `(?i)\.raw\(` — raw query usage
+The specialist writes to `sdlc-audit/specialists/security-findings.json`.
 
-**XSS:**
-- `innerHTML\s*=` — direct innerHTML assignment
-- `dangerouslySetInnerHTML` — React unsafe HTML
-- `\beval\(` — eval usage
-- `document\.write\(` — document.write
+Report: **[4/5] Security specialist analysis complete**
 
-**Command Injection:**
-- `(?i)subprocess.*shell\s*=\s*True` — Python shell=True
-- `exec\(.*\$` — shell exec with variables
-- `child_process.*exec\(` — Node.js exec
+## Step 6: Generate Security Report
 
-Write results to `sdlc-audit/data/security-injections.json`.
+Call `audit_assemble_outputs` with `auditType: "security"`.
 
-Report: **[2/4] Deterministic scans complete** — [counts per category]
+Report: **[5/5] Security report complete**
 
-## Step 4: Security Sub-Agents
-
-Read `sdlc-audit/data/detection.json` to get the directory list.
-
-Spawn 1-3 security-focused sub-agents (grouped by language, NOT per-directory):
-
-```
-You are a security auditor for [LANGUAGE] code in this repository.
-
-Directories to analyze: [list of dirs with this language]
-
-Read the security-relevant files in your assigned directories. Focus ONLY on
-security concerns — skip style, naming, and non-security issues.
-
-Read only the guide files for your language:
-=== LANGUAGE GUIDE (security sections only) ===
-[Include ONLY the security-related checks from the relevant language guide]
-=== END GUIDE ===
-
-=== DETERMINISTIC FINDINGS (confidence: definite) ===
-[Include secrets scan, injection scan, and CVE results for these directories]
-=== END FINDINGS ===
-
-Analyze for:
-1. Authentication and authorization flaws
-2. Input validation gaps (beyond what grep found)
-3. Session management issues
-4. Cryptographic weaknesses (weak algorithms, hardcoded IVs)
-5. Sensitive data exposure (logging PII, error message leakage)
-6. Access control issues (missing permission checks)
-7. Security misconfigurations
-8. Unsafe deserialization
-9. Insufficient logging/monitoring of security events
-
-Use confidence, severity, and source values as defined in
-`${CLAUDE_PLUGIN_ROOT}/schemas/enums.json`. Default confidence by source:
-linter=definite, typecheck=definite, prescan=high, llm-analysis=medium.
-
-Output to sdlc-audit/data/security-[language].json:
-{
-  "findings": [
-    {
-      "severity": "critical | warning | info",
-      "confidence": "definite | high | medium | low",
-      "category": "secrets | injection | auth | crypto | data_exposure | access_control | config | other",
-      "source": "prescan | llm-analysis",
-      "owasp": "A01:Broken Access Control | A02:Crypto | A03:Injection | ... | null",
-      "file": "path/to/file",
-      "line_range": [start, end],
-      "description": "what is wrong",
-      "impact": "what could happen",
-      "remediation": "how to fix it"
-    }
-  ]
-}
-```
-
-Report: **[3/4] Security analysis complete** — [findings count]
-
-## Step 4b: Merge Security Findings into Module JSONs
-
-Merge security findings into the standard module JSON format so they can be
-reused by subsequent audit commands:
-
-```bash
-# For each security findings file
-for findings_file in sdlc-audit/data/security-*.json; do
-  bash ${CLAUDE_PLUGIN_ROOT}/scripts/merge-module-findings.sh . "$findings_file" "audit-security"
-done
-```
-
-This allows `/audit`, `/audit-arch`, and other commands to see security
-findings without re-running the security analysis.
-
-## Step 5: Generate Security Report
-
-Write `sdlc-audit/reports/SECURITY_REPORT.md`:
-
-```markdown
-# Security Report
-
-*Generated by repo-audit (security mode)*
-
-## Executive Summary
-- **Critical:** [count] | **Warning:** [count] | **Info:** [count]
-- **High-confidence findings:** [count] (definite + high confidence)
-
-## Critical Findings (Action Required)
-[List all critical findings, sorted by confidence then category]
-[Each finding includes: file, line, description, impact, remediation]
-
-## Secrets and Credentials
-[All secrets scan findings]
-[Remediation: use environment variables, secrets manager]
-
-## Dependency Vulnerabilities
-[CVEs from dependency audits, sorted by severity]
-[Include: package, version, CVE ID, fix version]
-[Link to raw output files]
-
-## Injection Risks
-[SQL, XSS, command injection findings]
-
-## Authentication & Authorization
-[Auth-related findings from sub-agents]
-
-## OWASP Top 10 Coverage
-[Map findings to OWASP categories]
-[Note which categories had no findings]
-
-## Recommendations
-[Prioritized list of security improvements]
-[Quick wins first, then strategic improvements]
-
----
-*Generated by repo-audit (security mode)*
-```
-
-Report: **[4/4] Security report complete**
-
-Present summary and suggest running `/audit` for the full codebase analysis.
+Present summary: critical/warning/info counts, top findings.
+Suggest running `/audit` for the full codebase analysis.
