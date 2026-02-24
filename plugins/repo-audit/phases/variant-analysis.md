@@ -10,10 +10,6 @@ follow recurring patterns — finding one usually means there are more.
 bash ${CLAUDE_PLUGIN_ROOT}/scripts/extract-variants.sh .
 ```
 
-**If jq is NOT available:** The script exits gracefully. Manually read each
-module JSON, extract critical/warning issues, and group by `guide_rule` to
-identify patterns.
-
 ## Step 2: Search for Variants of Single-Occurrence Critical Issues
 
 Read `sdlc-audit/data/variant-candidates.json`. For each entry in `single_critical`:

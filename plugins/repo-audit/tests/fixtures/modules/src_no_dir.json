@@ -1,0 +1,14 @@
+{
+  "total_lines": 150,
+  "test_coverage": "full",
+  "documentation_quality": "adequate",
+  "internal_dependencies": [],
+  "external_dependencies": ["express"],
+  "files": [
+    {
+      "path": "unknown/file.py",
+      "issues": [],
+      "functions": []
+    }
+  ]
+}

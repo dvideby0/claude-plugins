@@ -1,0 +1,15 @@
+{
+  "directory": "src_self_ref",
+  "total_lines": 200,
+  "test_coverage": "partial",
+  "documentation_quality": "adequate",
+  "internal_dependencies": ["src_self_ref", "src_utils"],
+  "external_dependencies": [],
+  "files": [
+    {
+      "path": "src/self_ref/core.py",
+      "issues": [],
+      "functions": [{"name": "init", "complexity": "low"}]
+    }
+  ]
+}

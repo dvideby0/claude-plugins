@@ -1,0 +1,56 @@
+{
+  "directory": "src_valid",
+  "directories_analyzed": ["src_valid"],
+  "category": "source",
+  "languages_found": ["typescript"],
+  "purpose": "A fully valid module for testing",
+  "file_count": 2,
+  "total_lines": 300,
+  "files": [
+    {
+      "path": "src/valid/index.ts",
+      "language": "typescript",
+      "lines": 150,
+      "purpose": "Entry point",
+      "exports": ["main"],
+      "imports_from": {
+        "internal": ["src/utils"],
+        "external": ["express"]
+      },
+      "functions": [
+        {
+          "name": "main",
+          "visibility": "public",
+          "complexity": "medium"
+        }
+      ],
+      "issues": [
+        {
+          "severity": "warning",
+          "confidence": "high",
+          "category": "maintainability",
+          "source": "llm-analysis",
+          "description": "Function is too long",
+          "line_range": [10, 80]
+        },
+        {
+          "severity": "info",
+          "confidence": "definite",
+          "category": "documentation",
+          "source": "linter",
+          "description": "Missing JSDoc comment"
+        }
+      ]
+    },
+    {
+      "path": "src/valid/helper.ts",
+      "language": "typescript",
+      "lines": 150,
+      "issues": []
+    }
+  ],
+  "internal_dependencies": ["src/utils"],
+  "external_dependencies": ["express"],
+  "test_coverage": "partial",
+  "documentation_quality": "adequate"
+}

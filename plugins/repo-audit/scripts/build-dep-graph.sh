@@ -15,11 +15,6 @@ MODULES_DIR="${PROJECT_ROOT}/sdlc-audit/modules"
 OUTPUT_DIR="${PROJECT_ROOT}/sdlc-audit/data"
 OUTPUT_FILE="${OUTPUT_DIR}/dependency-data.json"
 
-if ! command -v jq &>/dev/null; then
-  echo "jq not available — skipping programmatic dependency graph."
-  exit 0
-fi
-
 shopt -s nullglob
 MODULE_FILES=("${MODULES_DIR}"/*.json)
 shopt -u nullglob
@@ -33,12 +28,18 @@ mkdir -p "$OUTPUT_DIR"
 
 # Step 1: Extract deps from each module into a single merged object
 # { "module_name": { "depends_on": [...], "external": [...] }, ... }
+# Note: internal_dependencies may be strings or objects (LLM variation).
+# We normalize both to strings.
 MERGED=$(jq -s '
   [.[] | {
-    key: (.directory // input_filename | gsub(".*/"; "") | gsub("\\.json$"; "")),
+    key: (.directory // "unknown"),
     value: {
-      depends_on: (.internal_dependencies // []),
-      external: (.external_dependencies // [])
+      depends_on: ([(.internal_dependencies // [])[] |
+        if type == "object" then (.path // .module // .name // "unknown")
+        else . end] | map(strings)),
+      external: ([(.external_dependencies // [])[] |
+        if type == "object" then (.name // .package // "unknown")
+        else . end] | map(strings))
     }
   }] | from_entries
 ' "${MODULE_FILES[@]}" 2>/dev/null)
@@ -122,3 +123,5 @@ HCOUNT=$(jq '.hub_modules | length' "$OUTPUT_FILE" 2>/dev/null)
 HCOUNT="${HCOUNT:-0}"
 echo "Graph: ${MCOUNT} modules, ${CCOUNT} cycles, ${HCOUNT} hubs"
 echo "Wrote: ${OUTPUT_FILE}"
+
+exit 0

@@ -117,6 +117,10 @@ Analyze for:
 8. Unsafe deserialization
 9. Insufficient logging/monitoring of security events
 
+Use confidence, severity, and source values as defined in
+`${CLAUDE_PLUGIN_ROOT}/schemas/enums.json`. Default confidence by source:
+linter=definite, typecheck=definite, prescan=high, llm-analysis=medium.
+
 Output to sdlc-audit/data/security-[language].json:
 {
   "findings": [
@@ -137,6 +141,21 @@ Output to sdlc-audit/data/security-[language].json:
 ```
 
 Report: **[3/4] Security analysis complete** — [findings count]
+
+## Step 4b: Merge Security Findings into Module JSONs
+
+Merge security findings into the standard module JSON format so they can be
+reused by subsequent audit commands:
+
+```bash
+# For each security findings file
+for findings_file in sdlc-audit/data/security-*.json; do
+  bash ${CLAUDE_PLUGIN_ROOT}/scripts/merge-module-findings.sh . "$findings_file" "audit-security"
+done
+```
+
+This allows `/audit`, `/audit-arch`, and other commands to see security
+findings without re-running the security analysis.
 
 ## Step 5: Generate Security Report
 

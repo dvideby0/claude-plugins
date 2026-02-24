@@ -62,7 +62,7 @@ assert_match() {
 echo "=== Test 1: JSON structure with modules ==="
 TMPDIR=$(mktemp -d)
 
-bash "$SCRIPT_UNDER_TEST" "$TMPDIR" "full" "src_auth" "src_utils" "src_api" >/dev/null 2>&1
+bash "$SCRIPT_UNDER_TEST" "$TMPDIR" "full" "" "src_auth" "src_utils" "src_api" >/dev/null 2>&1
 
 OUTPUT_FILE="$TMPDIR/sdlc-audit/data/.audit-meta.json"
 
@@ -113,7 +113,7 @@ git add . && git commit -q -m "initial"
 EXPECTED_SHA=$(git rev-parse HEAD)
 cd "$SCRIPT_DIR"
 
-bash "$SCRIPT_UNDER_TEST" "$TMPDIR" "incremental" "src_auth" >/dev/null 2>&1
+bash "$SCRIPT_UNDER_TEST" "$TMPDIR" "incremental" "" "src_auth" >/dev/null 2>&1
 
 OUTPUT_FILE="$TMPDIR/sdlc-audit/data/.audit-meta.json"
 
@@ -160,6 +160,99 @@ OUTPUT_FILE="$TMPDIR/sdlc-audit/data/.audit-meta.json"
 
 AUDIT_TYPE=$(jq -r '.last_audit_type' "$OUTPUT_FILE")
 assert_eq "Default audit type is full" "full" "$AUDIT_TYPE"
+
+rm -rf "$TMPDIR"
+TMPDIR=""
+
+# ======================================================================
+# Test 5: Plugin version is read from plugin.json
+# ======================================================================
+echo "=== Test 5: Plugin version from plugin.json ==="
+TMPDIR=$(mktemp -d)
+
+# Create a mock plugin root with plugin.json
+MOCK_PLUGIN="$TMPDIR/mock-plugin"
+mkdir -p "$MOCK_PLUGIN/.claude-plugin"
+echo '{"name":"test-plugin","version":"3.1.4"}' > "$MOCK_PLUGIN/.claude-plugin/plugin.json"
+
+bash "$SCRIPT_UNDER_TEST" "$TMPDIR" "full" "$MOCK_PLUGIN" "src_auth" >/dev/null 2>&1
+
+OUTPUT_FILE="$TMPDIR/sdlc-audit/data/.audit-meta.json"
+
+PLUGIN_VER=$(jq -r '.plugin_version' "$OUTPUT_FILE")
+assert_eq "Plugin version is 3.1.4" "3.1.4" "$PLUGIN_VER"
+
+rm -rf "$TMPDIR"
+TMPDIR=""
+
+# ======================================================================
+# Test 6: Detection hash is computed from detection.json
+# ======================================================================
+echo "=== Test 6: Detection hash computed ==="
+TMPDIR=$(mktemp -d)
+mkdir -p "$TMPDIR/sdlc-audit/data"
+
+# Create a mock detection.json
+cat > "$TMPDIR/sdlc-audit/data/detection.json" <<'DETEOF'
+{
+  "all_directories": {
+    "src/auth": {"category": "source", "languages": ["typescript"]},
+    "src/api": {"category": "source", "languages": ["typescript"]}
+  }
+}
+DETEOF
+
+bash "$SCRIPT_UNDER_TEST" "$TMPDIR" "full" "" >/dev/null 2>&1
+
+OUTPUT_FILE="$TMPDIR/sdlc-audit/data/.audit-meta.json"
+
+HASH=$(jq -r '.detection_hash' "$OUTPUT_FILE")
+# Hash should be a 64-char hex string (SHA-256)
+if echo "$HASH" | grep -qE '^[a-f0-9]{64}$'; then
+  echo "  PASS: Detection hash is a valid SHA-256"
+  PASS_COUNT=$((PASS_COUNT + 1))
+else
+  echo "  FAIL: Detection hash is not a valid SHA-256: $HASH"
+  FAIL_COUNT=$((FAIL_COUNT + 1))
+fi
+
+rm -rf "$TMPDIR"
+TMPDIR=""
+
+# ======================================================================
+# Test 7: Missing plugin-root writes null for version
+# ======================================================================
+echo "=== Test 7: Missing plugin-root ==="
+TMPDIR=$(mktemp -d)
+
+bash "$SCRIPT_UNDER_TEST" "$TMPDIR" "full" "" >/dev/null 2>&1
+
+OUTPUT_FILE="$TMPDIR/sdlc-audit/data/.audit-meta.json"
+
+PLUGIN_VER=$(jq -r '.plugin_version' "$OUTPUT_FILE")
+assert_eq "Plugin version is null when no plugin-root" "null" "$PLUGIN_VER"
+
+rm -rf "$TMPDIR"
+TMPDIR=""
+
+# ======================================================================
+# Test 8: All expected fields present
+# ======================================================================
+echo "=== Test 8: All fields present ==="
+TMPDIR=$(mktemp -d)
+
+MOCK_PLUGIN="$TMPDIR/mock-plugin"
+mkdir -p "$MOCK_PLUGIN/.claude-plugin"
+echo '{"version":"1.0.0"}' > "$MOCK_PLUGIN/.claude-plugin/plugin.json"
+
+bash "$SCRIPT_UNDER_TEST" "$TMPDIR" "full" "$MOCK_PLUGIN" >/dev/null 2>&1
+
+OUTPUT_FILE="$TMPDIR/sdlc-audit/data/.audit-meta.json"
+
+for field in last_audit last_audit_type modules_analyzed total_modules git_sha plugin_version detection_hash; do
+  HAS=$(jq --arg f "$field" 'has($f)' "$OUTPUT_FILE")
+  assert_eq "Has field: $field" "true" "$HAS"
+done
 
 rm -rf "$TMPDIR"
 TMPDIR=""

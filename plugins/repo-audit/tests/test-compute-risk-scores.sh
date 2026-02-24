@@ -90,23 +90,27 @@ else
   LAST_SCORE=$(jq '.scores[-1].risk_score' "$OUTPUT_FILE")
   assert_gt "Scores sorted descending" "$FIRST_SCORE" "$LAST_SCORE"
 
-  # src_api: total_lines=1200, issue_count=3, high_complexity_functions=2
-  #   complexity = 1200 + 3 + (2*2) = 1207
+  # src_api: total_lines=1200, issues=3 (no confidence => 0.5 each)
+  #   weighted_issue_count = 3 * 0.5 = 1.5
+  #   high_complexity_functions=2
+  #   complexity = 1200 + 1.5 + (2*2) = 1205.5
   #   test_coverage = "none" -> 0.5, doc_quality = "missing" -> 0.5
   #   safety_net = 0.5 + 0.5 = 1.0
   #   fan_in for src_api = 0, blast_radius = max(0, 1) = 1
-  #   risk = (1 * 1207) / 1.0 = 1207.0
+  #   risk = (1 * 1205.5) / 1.0 = 1205.5
   API_SCORE=$(jq '[.scores[] | select(.module == "src_api")] | .[0].risk_score' "$OUTPUT_FILE")
-  assert_eq "src_api risk score = 1207" "1207" "$API_SCORE"
+  assert_eq "src_api risk score = 1205.5" "1205.5" "$API_SCORE"
 
-  # src_utils: total_lines=420, issue_count=1, high_complexity=0
-  #   complexity = 420 + 1 + 0 = 421
+  # src_utils: total_lines=420, issues=1 (no confidence => 0.5)
+  #   weighted_issue_count = 1 * 0.5 = 0.5
+  #   high_complexity=0
+  #   complexity = 420 + 0.5 + 0 = 420.5
   #   test_coverage = "full" -> 3, doc_quality = "adequate" -> 2
   #   safety_net = 3 + 2 = 5.0
   #   fan_in = 2, blast_radius = max(2, 1) = 2
-  #   risk = (2 * 421) / 5.0 = 168.4
+  #   risk = (2 * 420.5) / 5.0 = 168.2
   UTILS_SCORE=$(jq '[.scores[] | select(.module == "src_utils")] | .[0].risk_score' "$OUTPUT_FILE")
-  assert_eq "src_utils risk score = 168.4" "168.4" "$UTILS_SCORE"
+  assert_eq "src_utils risk score = 168.2" "168.2" "$UTILS_SCORE"
 
   # Verify top_10_highest_risk is populated
   TOP_RISK=$(jq '.top_10_highest_risk | length' "$OUTPUT_FILE")

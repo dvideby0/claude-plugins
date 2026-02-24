@@ -181,7 +181,10 @@ Output structured JSON to sdlc-audit/modules/[directory-name].json:
 
 ### Confidence Scoring Rules
 
-Every issue MUST include a `confidence` and `source` field:
+Every issue MUST include a `confidence` and `source` field.
+
+The canonical confidence/severity/source enum definitions and confidence weights
+are defined in `${CLAUDE_PLUGIN_ROOT}/schemas/enums.json`. The defaults are:
 
 | Source | Default Confidence | Description |
 |--------|-------------------|-------------|
@@ -190,6 +193,9 @@ Every issue MUST include a `confidence` and `source` field:
 | `prescan` | `high` | From grep-based pattern detection. Pattern matched but context might make it valid. |
 | `llm-analysis` | `medium` | From sub-agent code reading with clear evidence (specific code cited). |
 | `cross-module` | `low` | From cross-module analysis or architectural opinions. Subjective. |
+
+Risk scoring weights issues by confidence (definite=1.0, high=0.8, medium=0.5,
+low=0.2). Higher-confidence issues contribute more to a module's risk score.
 
 Sub-agents may upgrade confidence from the default when evidence is strong
 (e.g., an `llm-analysis` finding of SQL injection with visible string
@@ -209,3 +215,23 @@ For **docs** sub-agents, the analysis focuses on:
 - Staleness (do docs reference things that no longer exist in the code?)
 - Completeness (are all public APIs documented?)
 - Accuracy (do examples actually match current code patterns?)
+
+## Post-Analysis Validation
+
+After all sub-agents complete (and any missing modules have been re-spawned),
+run the schema validator on all module JSONs:
+
+```bash
+bash ${CLAUDE_PLUGIN_ROOT}/scripts/validate-module-json.sh .
+```
+
+If validation fails, read `sdlc-audit/data/validation-results.json` to identify
+which modules have schema errors. For each failed module:
+
+1. Read the error details to understand what's wrong
+2. Re-spawn a sub-agent for that module with an explicit note about the schema
+   requirement that was violated
+3. Re-validate after the re-spawn
+
+If a module fails validation twice, flag it to the user and proceed (don't
+loop indefinitely).

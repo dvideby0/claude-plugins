@@ -65,6 +65,20 @@ Spawn the Coverage agent from `${CLAUDE_PLUGIN_ROOT}/phases/cross-module.md`
 
 Report: **[3/4] Coverage analysis complete**
 
+## Step 4c: Merge Coverage Findings into Module JSONs
+
+Merge coverage findings into the standard module JSON format so they can be
+reused by subsequent audit commands:
+
+```bash
+if [ -f sdlc-audit/data/cross-module-coverage.json ]; then
+  bash ${CLAUDE_PLUGIN_ROOT}/scripts/merge-module-findings.sh . "sdlc-audit/data/cross-module-coverage.json" "audit-coverage"
+fi
+```
+
+This allows `/audit`, `/audit-arch`, `/audit-security`, and other commands to
+see coverage findings without re-running the coverage analysis.
+
 ## Step 5: Generate Coverage Report
 
 Run the test coverage assembly script:

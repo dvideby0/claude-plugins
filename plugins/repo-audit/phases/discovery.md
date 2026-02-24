@@ -11,8 +11,15 @@ bash ${CLAUDE_PLUGIN_ROOT}/scripts/check-prereqs.sh .
 Read `sdlc-audit/data/tool-availability.json` to determine which tools are
 available and which are missing.
 
-**If there are missing tools**, you MUST notify the user using `AskUserQuestion`
-before proceeding. Build the question dynamically from the JSON data:
+**If `check-prereqs.sh` exits with a non-zero status**, jq is missing. jq is a
+hard requirement for the audit. Tell the user:
+> "jq is required but not installed. Install it with: `[install command from output]`
+> Then re-run the audit."
+
+Do NOT proceed without jq. Wait for the user to install it and re-run `check-prereqs.sh`.
+
+**If there are other missing tools** (rg, tree, cloc, etc.), notify the user
+using `AskUserQuestion`. Build the question dynamically from the JSON data:
 
 - List each missing tool by name with a brief description of what it enables
 - Include the combined install command from `install_commands.all_missing`
@@ -20,9 +27,9 @@ before proceeding. Build the question dynamically from the JSON data:
   1. **"Install and re-check"** — The user will install the tools themselves.
      After they select this, run `check-prereqs.sh` again to refresh
      `tool-availability.json`, then continue with the updated availability.
-  2. **"Proceed without them"** — Continue the audit using LLM-based fallbacks
-     for any missing tool capabilities. The audit still works, but will be
-     slower and less thorough for the affected checks.
+  2. **"Proceed without them"** — Continue the audit without these optional
+     tools. The audit still works, but will be slower and less thorough for
+     the affected checks.
 
 Example question format:
 > "The following optional tools are missing: **rg** (fast pattern scanning),
@@ -33,8 +40,7 @@ Example question format:
 **If all tools are available**, skip the prompt and continue immediately.
 
 Throughout all subsequent phases, check `tool-availability.json` before using
-any optional tool. If a tool is not available, use the fallback approach
-specified in that phase's instructions (or skip the optimization).
+any optional tool. If a tool is not available, skip the optimization.
 
 ## Step 0a: Full Directory Map
 Run a complete structural scan of the repository.

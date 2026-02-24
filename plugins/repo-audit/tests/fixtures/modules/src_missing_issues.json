@@ -1,0 +1,10 @@
+{
+  "directory": "src_missing_issues",
+  "files": [
+    {
+      "path": "src/missing/index.ts"
+    }
+  ],
+  "test_coverage": "partial",
+  "documentation_quality": "sparse"
+}

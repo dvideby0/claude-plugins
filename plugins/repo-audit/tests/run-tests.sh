@@ -56,6 +56,39 @@ run_test "test-write-audit-meta" \
 run_test "test-check-prereqs" \
   "bash '${SCRIPT_DIR}/test-check-prereqs.sh'"
 
+run_test "test-build-dep-graph-edge-cases" \
+  "bash '${SCRIPT_DIR}/test-build-dep-graph-edge-cases.sh'"
+
+run_test "test-compute-risk-scores-edge-cases" \
+  "bash '${SCRIPT_DIR}/test-compute-risk-scores-edge-cases.sh'"
+
+run_test "test-run-pre-analysis-tools" \
+  "bash '${SCRIPT_DIR}/test-run-pre-analysis-tools.sh'"
+
+run_test "test-assemble-audit-report" \
+  "bash '${SCRIPT_DIR}/test-assemble-audit-report.sh'"
+
+run_test "test-assemble-dep-graph" \
+  "bash '${SCRIPT_DIR}/test-assemble-dep-graph.sh'"
+
+run_test "test-assemble-project-map" \
+  "bash '${SCRIPT_DIR}/test-assemble-project-map.sh'"
+
+run_test "test-assemble-tech-debt" \
+  "bash '${SCRIPT_DIR}/test-assemble-tech-debt.sh'"
+
+run_test "test-assemble-test-coverage" \
+  "bash '${SCRIPT_DIR}/test-assemble-test-coverage.sh'"
+
+run_test "test-fill-cross-module-placeholders" \
+  "bash '${SCRIPT_DIR}/test-fill-cross-module-placeholders.sh'"
+
+run_test "test-validate-module-json" \
+  "bash '${SCRIPT_DIR}/test-validate-module-json.sh'"
+
+run_test "test-merge-module-findings" \
+  "bash '${SCRIPT_DIR}/test-merge-module-findings.sh'"
+
 # --- Summary ---
 
 END_TIME=$(date +%s)

@@ -14,20 +14,11 @@ Run these scripts first — they produce data files the LLM agents need.
 bash ${CLAUDE_PLUGIN_ROOT}/scripts/build-dep-graph.sh .
 ```
 
-**If jq is NOT available:** The script exits gracefully. Fall back to LLM
-analysis of the module JSONs (read each one and manually build the graph).
-
 ### 2b: Risk Scoring
 
 ```bash
 bash ${CLAUDE_PLUGIN_ROOT}/scripts/compute-risk-scores.sh .
 ```
-
-**If jq is NOT available:** Compute risk scores manually using the formula:
-- **Blast radius** = fan-in (from dependency-data.json or internal_dependencies count)
-- **Complexity** = lines + issue_count + high-complexity function count
-- **Safety net** = test coverage score + documentation quality score
-- **Risk score** = (blast_radius x complexity) / safety_net
 
 ### 2c: Incorporate Variant Analysis
 

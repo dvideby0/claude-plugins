@@ -16,11 +16,6 @@ MODULES_DIR="${PROJECT_ROOT}/sdlc-audit/modules"
 OUTPUT_DIR="${PROJECT_ROOT}/sdlc-audit/data"
 OUTPUT_FILE="${OUTPUT_DIR}/variant-candidates.json"
 
-if ! command -v jq &>/dev/null; then
-  echo "jq not available — skipping programmatic variant extraction."
-  exit 0
-fi
-
 shopt -s nullglob
 MODULE_FILES=("${MODULES_DIR}"/*.json)
 shopt -u nullglob
@@ -94,3 +89,5 @@ SINGLE=$(jq '.single_critical | keys | length' "$OUTPUT_FILE" 2>/dev/null)
 SINGLE="${SINGLE:-0}"
 echo "Issues: ${TOTAL} total, ${SYS} systemic patterns, ${SINGLE} single-critical for variant search"
 echo "Wrote: ${OUTPUT_FILE}"
+
+exit 0

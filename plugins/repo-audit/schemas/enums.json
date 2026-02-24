@@ -1,0 +1,31 @@
+{
+  "severity": {
+    "values": ["critical", "warning", "info"],
+    "description": "Issue impact level"
+  },
+  "confidence": {
+    "values": ["definite", "high", "medium", "low"],
+    "weights": { "definite": 1.0, "high": 0.8, "medium": 0.5, "low": 0.2 },
+    "description": "How certain we are this is a real issue"
+  },
+  "source": {
+    "values": ["linter", "typecheck", "prescan", "llm-analysis", "cross-module"],
+    "default_confidence": {
+      "linter": "definite",
+      "typecheck": "definite",
+      "prescan": "high",
+      "llm-analysis": "medium",
+      "cross-module": "low"
+    },
+    "description": "Where this finding originated"
+  },
+  "test_coverage": {
+    "values": ["full", "partial", "none", "not-applicable"]
+  },
+  "documentation_quality": {
+    "values": ["comprehensive", "adequate", "sparse", "missing"]
+  },
+  "issue_category": {
+    "values": ["security", "performance", "maintainability", "dry", "consistency", "correctness", "testing", "documentation"]
+  }
+}

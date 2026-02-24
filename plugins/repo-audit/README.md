@@ -78,16 +78,17 @@ To completely undo: `rm -rf sdlc-audit/` — zero side effects.
    type checkers (tsc, mypy, go vet), dependency audit tools (npm audit, pip-audit),
    code metrics (cloc/tokei), git history analysis, and pattern pre-scans.
 5. **Code skeletons** — Extracts imports, exports, and function signatures using
-   deterministic tools (Python AST, grep) so sub-agents can focus on judgment.
+   deterministic tools (Python AST, grep-based extractors for TypeScript/JS, Go,
+   Rust, and Java) so sub-agents can focus on judgment.
 6. **Deep analysis** (~3-10min) — Spawns parallel sub-agents, each analyzing a
    section of your codebase with language-specific expertise and pre-analysis results.
 7. **Variant analysis** — Takes the highest-severity findings and systematically
    searches for the same patterns across your entire repo.
 8. **Cross-reference** (~1-2min) — Scripts build the dependency graph and risk scores,
    then parallel LLM agents analyze DRY violations, inconsistencies, and architecture.
-9. **Reports** (~30s) — Assembly scripts (bash+jq) generate quantitative reports in
-   parallel, then LLM agents synthesize PATTERNS.md, staged CLAUDE.md, and add
-   qualitative commentary to the script-generated reports.
+9. **Reports** (~30s) — Assembly scripts (bash+jq) generate quantitative reports
+   with placeholders, a second script fills cross-module data into those
+   placeholders, then LLM agents synthesize PATTERNS.md and staged CLAUDE.md.
 10. **Review** — Presents a summary dashboard and lets you decide what to apply.
 
 **Progress reporting**: Every phase reports status as it completes. Sub-agent
@@ -106,6 +107,9 @@ Every finding includes a confidence level so you can focus on what matters:
 | **Low** | Cross-module / architectural opinions | Subjective assessment. Worth considering but may not apply. |
 
 Reports show a "high-confidence findings" summary at the top for quick triage.
+Risk scoring weights issues by confidence (definite=1.0, high=0.8, medium=0.5,
+low=0.2) so higher-confidence findings have more impact on a module's risk score.
+All enum values are defined in `schemas/enums.json`.
 
 ## Output
 
@@ -136,6 +140,8 @@ sdlc-audit/
 │   ├── dependency-data.json         # Programmatic dependency graph
 │   ├── risk-scores.json             # Per-module risk scores
 │   ├── variant-analysis.json        # Systemic pattern detection
+│   ├── validation-results.json     # Module JSON schema validation results
+│   ├── cross-module-*.json         # Cross-module analysis (DRY, arch, etc.)
 │   ├── .audit-meta.json             # Audit metadata (enables incremental mode)
 │   └── skeletons/                   # Deterministic code structure extraction
 │
@@ -184,18 +190,29 @@ When you run `/audit` and a previous audit exists, you'll be offered:
 
 Incremental mode still runs full cross-module analysis and regenerates all reports.
 
-## Optional Prerequisites
+The audit tracks the plugin version and a hash of the project structure in
+`.audit-meta.json`. If either changes between runs, the incremental mode will
+warn you that a full audit is recommended.
 
-The audit works **out of the box with zero dependencies**. Installing optional
-tools makes it faster and more thorough. The prerequisite checker runs
-automatically and tells you exactly what to install.
+## Prerequisites
 
-**Core enhancements:**
+**Required:**
+
+| Tool | Why | Install (macOS) | Install (Linux) |
+|------|-----|-----------------|-----------------|
+| jq | Dependency graph, risk scores, report assembly, schema validation | `brew install jq` | `apt install jq` |
+
+The audit will not proceed without jq. The prerequisite checker detects this
+and provides the install command for your OS.
+
+**Optional enhancements:**
+
+Installing optional tools makes the audit faster and more thorough. The
+prerequisite checker runs automatically and tells you exactly what to install.
 
 | Tool | What It Improves | Install (macOS) | Install (Linux) |
 |------|-----------------|-----------------|-----------------|
-| jq | Dependency graph, risk scores, report assembly | `brew install jq` | `apt install jq` |
-| ripgrep | Fast pattern pre-scanning | `brew install ripgrep` | `apt install ripgrep` |
+| ripgrep | Fast pattern pre-scanning, skeleton extraction | `brew install ripgrep` | `apt install ripgrep` |
 | tree | Directory visualization | `brew install tree` | `apt install tree` |
 | cloc | Accurate code metrics | `brew install cloc` | `apt install cloc` |
 
@@ -256,17 +273,20 @@ Phase 2: Cross-Module Analysis
   Output: sdlc-audit/data/dependency-data.json, risk-scores.json, cross-module-*.json
        │
 Phase 3: Reports
-  Stage 1: Assembly scripts (bash+jq, parallel)
-  Stage 2: Patterns, CLAUDE.md, report enrichment (parallel LLM agents)
+  Stage 1:  Assembly scripts (bash+jq, parallel) → reports with placeholders
+  Stage 1b: Cross-module placeholder fill (bash+jq) → complete reports
+  Stage 2:  Patterns + CLAUDE.md (parallel LLM agents)
   Output: sdlc-audit/reports/, sdlc-audit/staged/
        │
 Phase 4: Review
   Summary dashboard, user decides what to adopt
 ```
 
-**Progressive disclosure**: The orchestrator (`audit.md`, ~290 lines) loads
-phase instructions on demand from `phases/` files. Each sub-command shares
-the discovery and pre-analysis phases, avoiding redundant work.
+**Task-based phases**: The orchestrator (`audit.md`) spawns each phase as its
+own Task agent with a clean context window, preventing stale instructions from
+earlier phases from consuming context space. Each sub-command shares discovery
+and pre-analysis phases, and merges its findings into the standard module JSON
+format so subsequent commands can reuse prior analysis.
 
 ## Running Tests
 
@@ -306,14 +326,23 @@ repo-audit/
 │   ├── cross-module.md          # Phase 2: cross-module agents
 │   ├── report-generation.md     # Phase 3: assembly + synthesis
 │   └── review-and-apply.md      # Phase 4: user review
+├── schemas/
+│   └── enums.json               # Canonical enum definitions (severity, confidence, source)
 ├── scripts/
-│   ├── check-prereqs.sh         # Prerequisite checker
+│   ├── check-prereqs.sh         # Prerequisite checker (jq required)
 │   ├── git-analysis.sh          # Git hotspot and bus factor
 │   ├── build-dep-graph.sh       # Dependency graph builder (bash+jq)
-│   ├── compute-risk-scores.sh   # Risk score calculator (bash+jq)
+│   ├── compute-risk-scores.sh   # Confidence-weighted risk scoring (bash+jq)
 │   ├── extract-variants.sh      # Variant pattern extractor (bash+jq)
 │   ├── extract-skeletons.py     # Python AST skeleton extractor
-│   ├── write-audit-meta.sh      # Audit metadata writer
+│   ├── extract-skeletons-ts.sh  # TypeScript/JS skeleton extractor (grep)
+│   ├── extract-skeletons-go.sh  # Go skeleton extractor (grep)
+│   ├── extract-skeletons-rust.sh # Rust skeleton extractor (grep)
+│   ├── extract-skeletons-java.sh # Java skeleton extractor (grep)
+│   ├── validate-module-json.sh  # Module JSON schema validator
+│   ├── merge-module-findings.sh # Merge sub-command findings into module JSONs
+│   ├── fill-cross-module-placeholders.sh # Fill report placeholders with cross-module data
+│   ├── write-audit-meta.sh      # Audit metadata writer (version + detection hash)
 │   ├── assemble-audit-report.sh # Report assembly: findings by severity
 │   ├── assemble-project-map.sh  # Report assembly: project map
 │   ├── assemble-tech-debt.sh    # Report assembly: tech debt backlog
@@ -325,8 +354,8 @@ repo-audit/
 │   ├── go.md
 │   └── ...
 ├── tests/
-│   ├── fixtures/                # Test fixtures (sample module JSONs)
-│   ├── test-*.sh                # Per-script test files
+│   ├── fixtures/                # Test fixtures (module JSONs, findings JSONs)
+│   ├── test-*.sh                # Per-script test files (18 suites)
 │   ├── test-extract-skeletons.py
 │   └── run-tests.sh             # Test runner
 ├── README.md
@@ -368,8 +397,9 @@ cross-analyzed.
 The audit continues and notes incomplete coverage in the report.
 
 **Do I need to install anything?**
-No. The audit works out of the box. Optional tools make it faster and more
-thorough. The prerequisite checker tells you what to install for your OS.
+jq is the only required dependency. The prerequisite checker will detect if
+it's missing and provide the install command for your OS. Beyond jq, optional
+tools (ripgrep, cloc, tree) make the audit faster and more thorough.
 
 **What's the difference between the confidence levels?**
 *Definite* = from a tool (linter, type checker, CVE database). Always accurate.

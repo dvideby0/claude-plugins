@@ -1,0 +1,48 @@
+{
+  "findings": [
+    {
+      "severity": "critical",
+      "confidence": "definite",
+      "category": "secrets",
+      "source": "prescan",
+      "file": "src/auth/config.py",
+      "line_range": [12, 12],
+      "description": "Hardcoded database password in source code",
+      "impact": "Database credentials exposed in repository",
+      "remediation": "Move to environment variable or secrets manager"
+    },
+    {
+      "severity": "warning",
+      "confidence": "high",
+      "category": "injection",
+      "source": "llm-analysis",
+      "file": "src/auth/login.py",
+      "line_range": [30, 35],
+      "description": "SQL injection via string concatenation in login query",
+      "impact": "Attacker can bypass authentication",
+      "remediation": "Use parameterized queries"
+    },
+    {
+      "severity": "warning",
+      "confidence": "medium",
+      "category": "auth",
+      "source": "llm-analysis",
+      "file": "src/utils/helpers.py",
+      "line_range": [100, 110],
+      "description": "Missing input validation on user-supplied data",
+      "impact": "Potential for injection attacks",
+      "remediation": "Add input sanitization"
+    },
+    {
+      "severity": "info",
+      "confidence": "low",
+      "category": "config",
+      "source": "llm-analysis",
+      "file": "src/api/routes.py",
+      "line_range": null,
+      "description": "CORS configured to allow all origins in development",
+      "impact": "Cross-origin requests not restricted",
+      "remediation": "Restrict CORS to specific origins in production"
+    }
+  ]
+}

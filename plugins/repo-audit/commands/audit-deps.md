@@ -151,6 +151,20 @@ Analyze and write sdlc-audit/data/dependency-analysis.json:
 
 Report: **[3/4] Dependency analysis complete**
 
+## Step 4d: Merge Dependency Findings into Module JSONs
+
+Merge dependency findings into the standard module JSON format so they can be
+reused by subsequent audit commands:
+
+```bash
+if [ -f sdlc-audit/data/dependency-analysis.json ]; then
+  bash ${CLAUDE_PLUGIN_ROOT}/scripts/merge-module-findings.sh . "sdlc-audit/data/dependency-analysis.json" "audit-deps"
+fi
+```
+
+This allows `/audit`, `/audit-arch`, `/audit-security`, and other commands to
+see dependency findings without re-running the dependency analysis.
+
 ## Step 5: Generate Dependency Report
 
 Run the dependency graph assembly script:

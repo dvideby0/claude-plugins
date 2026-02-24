@@ -120,36 +120,22 @@ their assigned directories) in a section:
 
 This helps sub-agents focus on UNDERSTANDING issues rather than FINDING them.
 
-## Step 0n-ts: Extract TypeScript/JavaScript Skeletons (Grep-based)
+## Step 0n: Code Skeleton Extractors
 
-**TypeScript/JavaScript** (if detected — grep-based, zero dependencies):
+Skeleton extractors run automatically via `run-pre-analysis-tools.sh` for all
+detected languages. The following extractors are available:
 
-Use Claude Code's Grep tool (not bash grep) to extract structural data.
-Run these searches and compile the results into `sdlc-audit/data/skeletons/typescript.json`:
+| Language              | Script                        | Output                                        |
+|-----------------------|-------------------------------|-----------------------------------------------|
+| Python                | `extract-skeletons.py`        | `sdlc-audit/data/skeletons/python.json`       |
+| TypeScript/JavaScript | `extract-skeletons-ts.sh`     | `sdlc-audit/data/skeletons/typescript.json`   |
+| Go                    | `extract-skeletons-go.sh`     | `sdlc-audit/data/skeletons/go.json`           |
+| Rust                  | `extract-skeletons-rust.sh`   | `sdlc-audit/data/skeletons/rust.json`         |
+| Java                  | `extract-skeletons-java.sh`   | `sdlc-audit/data/skeletons/java.json`         |
 
-1. Extract exports: search pattern `^export\s+(default\s+)?(async\s+)?(function|const|let|var|class|interface|type|enum)\s+\w+` in `*.ts`, `*.tsx`, `*.js`, `*.jsx`
-2. Extract imports: search pattern `^import\s+` in `*.ts`, `*.tsx`, `*.js`, `*.jsx`
-3. Extract function signatures: search pattern `(export\s+)?(async\s+)?function\s+\w+\s*\(` in `*.ts`, `*.tsx`
+Each extractor uses grep (rg if available, fallback to grep) to extract
+structural data: imports, exports/declarations, function/method signatures,
+and type definitions. No language-specific toolchains are required.
 
-Compile the grep results into a JSON structure per file:
-```json
-{
-  "src/auth/oauth.ts": {
-    "exports": ["authenticateUser (function)", "OAuthConfig (interface)"],
-    "imports": ["jsonwebtoken", "../utils/http"],
-    "functions": ["authenticateUser", "refreshToken"],
-    "line_count": 245
-  }
-}
-```
-
-Write to `sdlc-audit/data/skeletons/typescript.json`.
-
-**Other languages** — generic grep-based extraction:
-
-Use Claude Code's Grep tool to search for:
-- Pattern `^(pub |public |export |def |func |fn |fun )` in relevant file types
-- Write results to `sdlc-audit/data/skeletons/generic.json`
-
-**If no collectors succeed:** Skip entirely. Sub-agents will extract structure
-manually (current behavior). Skeletons are an optimization, not a requirement.
+Skeletons are an optimization, not a requirement. If no extractors succeed,
+sub-agents will extract structure manually (slower but functional).

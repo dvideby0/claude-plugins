@@ -1,0 +1,26 @@
+{
+  "findings": [
+    {
+      "severity": "warning",
+      "confidence": "medium",
+      "category": "architecture",
+      "source": "llm-analysis",
+      "file": "src/auth/login.py",
+      "line_range": [1, 55],
+      "description": "God module: login.py handles authentication, session management, and rate limiting",
+      "impact": "Hard to test and maintain",
+      "remediation": "Split into auth, session, and rate-limiting modules"
+    },
+    {
+      "severity": "info",
+      "confidence": "medium",
+      "category": "architecture",
+      "source": "llm-analysis",
+      "file": "src/utils/helpers.py",
+      "line_range": [1, 200],
+      "description": "Utility module has grown to handle unrelated concerns",
+      "impact": "Low cohesion makes it hard to understand module purpose",
+      "remediation": "Split by domain: string utils, validation utils, formatting utils"
+    }
+  ]
+}

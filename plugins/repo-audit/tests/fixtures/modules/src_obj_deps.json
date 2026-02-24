@@ -1,0 +1,30 @@
+{
+  "directory": "src_obj_deps",
+  "total_lines": 500,
+  "test_coverage": "partial",
+  "documentation_quality": "sparse",
+  "internal_dependencies": [
+    {"path": "src_utils"},
+    {"module": "src_auth", "version": "1.0"}
+  ],
+  "external_dependencies": [
+    {"name": "axios", "version": "^1.6"},
+    "lodash"
+  ],
+  "files": [
+    {
+      "path": "src/obj_deps/handler.py",
+      "issues": [
+        {
+          "severity": "warning",
+          "category": "maintainability",
+          "description": "Handler has complex branching logic",
+          "guide_rule": "MAINT-001"
+        }
+      ],
+      "functions": [
+        {"name": "handle", "complexity": "medium"}
+      ]
+    }
+  ]
+}

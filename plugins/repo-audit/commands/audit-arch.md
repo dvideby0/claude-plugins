@@ -69,6 +69,20 @@ data, and risk scores.
 
 Report: **[3/4] Architecture analysis complete**
 
+## Step 4c: Merge Architecture Findings into Module JSONs
+
+Merge architecture findings into the standard module JSON format so they can
+be reused by subsequent audit commands:
+
+```bash
+if [ -f sdlc-audit/data/cross-module-architecture.json ]; then
+  bash ${CLAUDE_PLUGIN_ROOT}/scripts/merge-module-findings.sh . "sdlc-audit/data/cross-module-architecture.json" "audit-arch"
+fi
+```
+
+This allows `/audit`, `/audit-security`, `/audit-deps`, and other commands to
+see architecture findings without re-running the architecture analysis.
+
 ## Step 5: Generate Architecture Report
 
 Write `sdlc-audit/reports/ARCHITECTURE_REVIEW.md`:

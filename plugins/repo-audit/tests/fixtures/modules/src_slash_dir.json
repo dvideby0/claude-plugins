@@ -1,0 +1,15 @@
+{
+  "directory": "src/slash_dir",
+  "total_lines": 300,
+  "test_coverage": "none",
+  "documentation_quality": "missing",
+  "internal_dependencies": ["src_utils"],
+  "external_dependencies": [],
+  "files": [
+    {
+      "path": "src/slash_dir/main.py",
+      "issues": [],
+      "functions": [{"name": "main", "complexity": "low"}]
+    }
+  ]
+}

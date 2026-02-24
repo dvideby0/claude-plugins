@@ -3,8 +3,11 @@
 #
 # Formula: risk = (blast_radius * complexity) / safety_net
 #   blast_radius: fan-in from dependency graph
-#   complexity:   total_lines + issue_count + (high_complexity_functions * 2)
+#   complexity:   total_lines + weighted_issue_count + (high_complexity_functions * 2)
 #   safety_net:   test_coverage_score + documentation_quality_score
+#
+# Issues are weighted by confidence level (see schemas/enums.json):
+#   definite=1.0, high=0.8, medium=0.5, low=0.2, missing=0.5
 #
 # Requires: jq
 # Usage: bash compute-risk-scores.sh [project-root]
@@ -18,11 +21,6 @@ DEP_FILE="${PROJECT_ROOT}/sdlc-audit/data/dependency-data.json"
 OUTPUT_DIR="${PROJECT_ROOT}/sdlc-audit/data"
 OUTPUT_FILE="${OUTPUT_DIR}/risk-scores.json"
 
-if ! command -v jq &>/dev/null; then
-  echo "jq not available — skipping programmatic risk scoring."
-  exit 0
-fi
-
 shopt -s nullglob
 MODULE_FILES=("${MODULES_DIR}"/*.json)
 shopt -u nullglob
@@ -34,10 +32,14 @@ fi
 
 mkdir -p "$OUTPUT_DIR"
 
-# Load dependency graph fan-in data (may not exist)
+# Load dependency graph fan-in data (may not exist or may be invalid)
 DEP_GRAPH="{}"
-if [ -f "$DEP_FILE" ]; then
-  DEP_GRAPH=$(jq '.module_graph // {}' "$DEP_FILE" 2>/dev/null || echo "{}")
+if [ -f "$DEP_FILE" ] && [ -s "$DEP_FILE" ]; then
+  _tmp=$(jq '.module_graph // {}' "$DEP_FILE" 2>/dev/null)
+  # Validate it's non-empty and actual JSON before using it
+  if [ -n "$_tmp" ] && echo "$_tmp" | jq empty 2>/dev/null; then
+    DEP_GRAPH="$_tmp"
+  fi
 fi
 
 # Process all modules and compute scores
@@ -53,13 +55,20 @@ def dq_score:
   module: (.directory // "unknown"),
   total_lines: (.total_lines // 0),
   issue_count: ([.files[]?.issues[]?] | length),
+  weighted_issue_count: ([.files[]?.issues[]? |
+    (if .confidence == "definite" then 1.0
+     elif .confidence == "high" then 0.8
+     elif .confidence == "medium" then 0.5
+     elif .confidence == "low" then 0.2
+     else 0.5 end)
+  ] | add // 0 | . * 10 | round / 10),
   high_complexity: ([.files[]?.functions[]? | select(.complexity == "high")] | length),
   test_coverage: (.test_coverage // "unknown"),
   documentation_quality: (.documentation_quality // "unknown"),
   fan_in: ($graph[.directory // ""]?.fan_in // 0)
 } | . + {
   blast_radius: ([.fan_in, 1] | max),
-  complexity: (.total_lines + .issue_count + (.high_complexity * 2)),
+  complexity: (.total_lines + .weighted_issue_count + (.high_complexity * 2)),
   safety_net: ((.test_coverage | tc_score) + (.documentation_quality | dq_score))
 } | . + {
   risk_score: ((.blast_radius * .complexity) / ([.safety_net, 0.5] | max) | . * 10 | round / 10)
@@ -94,3 +103,5 @@ TOP3=$(jq -r '.top_10_highest_risk[:3] | join(", ")' "$OUTPUT_FILE" 2>/dev/null)
 TOP3="${TOP3:-none}"
 echo "Scored ${SCORED} modules. Top risk: ${TOP3}"
 echo "Wrote: ${OUTPUT_FILE}"
+
+exit 0

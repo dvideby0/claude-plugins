@@ -78,6 +78,30 @@ If `.audit-meta.json` doesn't exist (old format), just ask: "Overwrite or cancel
 
 Only proceed once the user confirms.
 
+### Version and Configuration Checks
+
+When incremental mode is selected, after reading `.audit-meta.json`, check for staleness:
+
+1. Read the current plugin version from `${CLAUDE_PLUGIN_ROOT}/.claude-plugin/plugin.json`
+2. Compare with `plugin_version` in `.audit-meta.json`
+3. If versions differ (or `plugin_version` is null from an older audit), warn the user:
+   > "The repo-audit plugin has been updated since the last audit
+   > (v[old] → v[new]). Analysis rules may have changed.
+   > **Recommendation:** Run a full audit to apply the latest checks."
+
+4. After Phase 0 completes (detection.json is regenerated), compute the
+   detection hash and compare with `detection_hash` in `.audit-meta.json`:
+   ```bash
+   jq -S '.all_directories | to_entries | map({key: .key, category: .value.category, languages: .value.languages}) | sort_by(.key)' sdlc-audit/data/detection.json | shasum -a 256 | cut -d' ' -f1
+   ```
+5. If hashes differ (or `detection_hash` is null from an older audit), warn the user:
+   > "Project structure has changed since the last audit (new directories,
+   > language changes, or reclassified modules).
+   > **Recommendation:** Run a full audit for accurate results."
+
+These are warnings, not blockers — the user can still proceed with
+incremental mode if they choose.
+
 ### Incremental Mode Logic
 
 If the user selects incremental mode:
@@ -130,26 +154,78 @@ If incremental mode is NOT selected (full audit), delete all contents of
 
 ## Phase Execution
 
-Each phase's detailed instructions are in separate files. Read each phase
-file and execute its instructions before moving to the next phase.
+Each phase runs as its own Task agent (`subagent_type: general-purpose`) with
+a clean context window. This prevents stale instructions from earlier phases
+from consuming context space during later phases.
+
+**Architecture:**
+- The orchestrator spawns one Task agent per phase
+- Each Task agent reads its phase instructions file and executes all steps
+- The Task agent returns a structured JSON summary
+- The orchestrator uses the summary for progress reporting to the user
+- Phases communicate exclusively through files in `sdlc-audit/` — not through
+  the orchestrator's context
+
+**Before spawning any phase**, resolve these values:
+- `PLUGIN_ROOT`: the resolved absolute path of `${CLAUDE_PLUGIN_ROOT}`
+- `PROJECT_ROOT`: the project root directory being audited
+
+The shared audit rules (read-only, output isolation) are included in each
+Task prompt so phase agents operate independently.
 
 ### Phase 0: Discovery
 
-Read the phase instructions from `${CLAUDE_PLUGIN_ROOT}/phases/discovery.md`
-and execute all steps.
+Spawn a Task agent:
+- `subagent_type`: `general-purpose`
+- `description`: `"Run Phase 0: Discovery"`
 
-**After Phase 0 completes**, report progress to the user:
+Task prompt (substitute PLUGIN_ROOT and PROJECT_ROOT with resolved paths):
+
+```
+You are running Phase 0 (Discovery) of a repository audit.
+
+RULES:
+- Do NOT modify any existing repository file
+- ALL output goes inside sdlc-audit/ — nothing else is touched
+- Do NOT create files outside sdlc-audit/
+
+Read and execute ALL instructions in: PLUGIN_ROOT/phases/discovery.md
+Project root: PROJECT_ROOT
+Plugin root: PLUGIN_ROOT
+
+Execute every step (0-pre through 0g). Write detection.json and all
+supporting data to sdlc-audit/data/.
+
+When complete, return a JSON summary (do not write this to disk):
+{
+  "languages": ["primary languages detected"],
+  "frameworks": ["frameworks detected"],
+  "total_directories": N,
+  "total_files": N,
+  "tools_missing": ["missing optional tools"],
+  "jq_available": true
+}
+```
+
+**After the Phase 0 agent returns**, report progress:
 
 > **[1/6] Discovery complete.** Found:
-> - [X] languages: [list them]
-> - [Y] frameworks: [list them]
+> - [X] languages: [list from summary]
+> - [Y] frameworks: [list from summary]
 > - [Z] directories to analyze
 >
 > Starting pre-analysis...
 
+**If incremental mode**, perform the detection hash check now (inline):
+1. Compute the detection hash from `sdlc-audit/data/detection.json`
+2. Compare with `detection_hash` in `.audit-meta.json`
+3. Warn the user if hashes differ (see Version and Configuration Checks above)
+
 ### Audit Estimation
 
-After Phase 0 completes, calculate and present an estimate before proceeding.
+This step runs **inline** (not as a Task agent) because it requires user
+confirmation via `AskUserQuestion`.
+
 Read `sdlc-audit/data/detection.json` and compute:
 
 - **Total files and directories** from `total_source_files` and `total_directories`
@@ -183,10 +259,43 @@ Only proceed after user confirms.
 
 ### Phase 0.5: Pre-Analysis
 
-Read the phase instructions from `${CLAUDE_PLUGIN_ROOT}/phases/pre-analysis.md`
-and execute all steps.
+Spawn a Task agent:
+- `subagent_type`: `general-purpose`
+- `description`: `"Run Phase 0.5: Pre-Analysis"`
 
-**After Phase 0.5 completes**, report progress:
+Task prompt:
+
+```
+You are running Phase 0.5 (Pre-Analysis) of a repository audit.
+
+RULES:
+- Do NOT modify any existing repository file
+- ALL output goes inside sdlc-audit/ — nothing else is touched
+
+Read and execute ALL instructions in: PLUGIN_ROOT/phases/pre-analysis.md
+Project root: PROJECT_ROOT
+Plugin root: PLUGIN_ROOT
+
+The file sdlc-audit/data/tool-availability.json tells you which tools are
+available on this system.
+
+When complete, return a JSON summary (do not write this to disk):
+{
+  "metrics_collected": true/false,
+  "git_history_collected": true/false,
+  "linters_run": ["list"],
+  "linter_issue_counts": {"tool": N},
+  "typecheckers_run": ["list"],
+  "typecheck_error_counts": {"tool": N},
+  "dep_audit_run": ["list"],
+  "vulnerability_counts": {"tool": N},
+  "prescan_matches": N,
+  "prescan_files": N,
+  "skeletons_extracted": ["languages"]
+}
+```
+
+**After the Phase 0.5 agent returns**, report progress:
 
 > **[2/6] Pre-analysis complete:**
 > - Code metrics: [collected / skipped]
@@ -201,14 +310,53 @@ and execute all steps.
 
 ### Phase 1: Deep Analysis
 
-Read the phase instructions from `${CLAUDE_PLUGIN_ROOT}/phases/deep-analysis.md`
-and execute all steps.
+Before spawning the Phase 1 agent, check `sdlc-audit/modules/` for existing
+JSONs with a `sources` field (from a previous sub-command run). Build a list
+of existing sources to include in the prompt. If found, report to the user:
+> "Found existing analysis from [list sources]. These findings will be
+> preserved and enriched by the full audit."
 
-**During Phase 1**, report progress as each sub-agent completes:
+Spawn a Task agent:
+- `subagent_type`: `general-purpose`
+- `description`: `"Run Phase 1: Deep Analysis"`
 
-> **[3/6] Deep analysis** — [completed]/[total] modules ([list recently completed])
+Task prompt:
 
-**After Phase 1 completes**:
+```
+You are running Phase 1 (Deep Analysis) of a repository audit.
+
+RULES:
+- Do NOT modify any existing repository file
+- ALL output goes inside sdlc-audit/ — nothing else is touched
+
+Read and execute ALL instructions in: PLUGIN_ROOT/phases/deep-analysis.md
+Project root: PROJECT_ROOT
+Plugin root: PLUGIN_ROOT
+
+[If existing sources were found, include this paragraph:]
+Existing module analysis found from: [SOURCES_LIST]. Instruct sub-agents to
+review but not duplicate existing findings in modules with a "sources" field.
+
+[If incremental mode, include this paragraph:]
+INCREMENTAL MODE: Only spawn sub-agents for: [MODULES_TO_REANALYZE].
+Preserve existing module JSONs for all other modules.
+
+When complete, return a JSON summary (do not write this to disk):
+{
+  "files_analyzed": N,
+  "directories_analyzed": N,
+  "total_issues": N,
+  "by_severity": {"critical": N, "warning": N, "info": N},
+  "by_confidence": {"definite": N, "high": N, "medium": N, "low": N},
+  "sub_agents_spawned": N,
+  "validation_failures": []
+}
+```
+
+The Phase 1 agent manages its own sub-agents internally. It reads
+detection.json, plans sub-agent assignments, spawns them, and validates output.
+
+**After the Phase 1 agent returns**, report progress:
 
 > **[3/6] Deep analysis complete.** All [N] sub-agents finished.
 > - Analyzed [X] files across [Y] directories
@@ -219,10 +367,32 @@ and execute all steps.
 
 ### Phase 1.5: Variant Analysis
 
-Read the phase instructions from `${CLAUDE_PLUGIN_ROOT}/phases/variant-analysis.md`
-and execute all steps.
+Spawn a Task agent:
+- `subagent_type`: `general-purpose`
+- `description`: `"Run Phase 1.5: Variant Analysis"`
 
-**After Phase 1.5 completes**:
+Task prompt:
+
+```
+You are running Phase 1.5 (Variant Analysis) of a repository audit.
+
+RULES:
+- Do NOT modify any existing repository file
+- ALL output goes inside sdlc-audit/ — nothing else is touched
+
+Read and execute ALL instructions in: PLUGIN_ROOT/phases/variant-analysis.md
+Project root: PROJECT_ROOT
+Plugin root: PLUGIN_ROOT
+
+When complete, return a JSON summary (do not write this to disk):
+{
+  "systemic_patterns_found": N,
+  "new_variant_instances": N,
+  "patterns": ["brief description of each systemic pattern"]
+}
+```
+
+**After the Phase 1.5 agent returns**:
 
 > **[4/6] Variant analysis complete:**
 > - [N] systemic patterns found (same issue across 3+ modules)
@@ -232,10 +402,35 @@ and execute all steps.
 
 ### Phase 2: Cross-Module Analysis
 
-Read the phase instructions from `${CLAUDE_PLUGIN_ROOT}/phases/cross-module.md`
-and execute all steps.
+Spawn a Task agent:
+- `subagent_type`: `general-purpose`
+- `description`: `"Run Phase 2: Cross-Module Analysis"`
 
-**After Phase 2 completes**:
+Task prompt:
+
+```
+You are running Phase 2 (Cross-Module Analysis) of a repository audit.
+
+RULES:
+- Do NOT modify any existing repository file
+- ALL output goes inside sdlc-audit/ — nothing else is touched
+
+Read and execute ALL instructions in: PLUGIN_ROOT/phases/cross-module.md
+Project root: PROJECT_ROOT
+Plugin root: PLUGIN_ROOT
+
+When complete, return a JSON summary (do not write this to disk):
+{
+  "cross_module_issues": N,
+  "dependency_cycles": N,
+  "highest_risk_modules": ["top 3 by risk score"],
+  "dry_violations": N,
+  "inconsistencies": N,
+  "architecture_issues": N
+}
+```
+
+**After the Phase 2 agent returns**:
 
 > **[5/6] Cross-module analysis complete.** Found:
 > - [N] cross-module issues (DRY violations, inconsistencies, architecture)
@@ -246,19 +441,50 @@ and execute all steps.
 
 ### Phase 3: Report Generation
 
-Read the phase instructions from `${CLAUDE_PLUGIN_ROOT}/phases/report-generation.md`
-and execute all steps.
+Spawn a Task agent:
+- `subagent_type`: `general-purpose`
+- `description`: `"Run Phase 3: Report Generation"`
 
-**After Phase 3 completes**:
+Task prompt:
+
+```
+You are running Phase 3 (Report Generation) of a repository audit.
+
+RULES:
+- Do NOT modify any existing repository file (except writing to sdlc-audit/)
+- ALL output goes inside sdlc-audit/ — nothing else is touched
+
+Read and execute ALL instructions in: PLUGIN_ROOT/phases/report-generation.md
+Project root: PROJECT_ROOT
+Plugin root: PLUGIN_ROOT
+Audit type: [full | incremental]
+
+When complete, return a JSON summary (do not write this to disk):
+{
+  "reports_generated": ["list of report filenames"],
+  "findings": {"critical": N, "warning": N, "info": N},
+  "tech_debt_items": N,
+  "modules_mapped": N,
+  "patterns_documented": N,
+  "dependency_modules": N,
+  "dependency_cycles": N,
+  "test_coverage_pct": "N% modules with tests"
+}
+```
+
+**After the Phase 3 agent returns**:
 
 > **[6/6] Reports complete.**
 
 ### Phase 4: Review and Apply
 
+This phase runs **inline** (not as a Task agent) because it requires direct
+user interaction via `AskUserQuestion`.
+
 Read the phase instructions from `${CLAUDE_PLUGIN_ROOT}/phases/review-and-apply.md`
 and present the final summary.
 
-**Final summary dashboard:**
+**Final summary dashboard** (populate from Phase 3's summary + report files):
 
 > **Audit complete!** Results in `sdlc-audit/`.
 >

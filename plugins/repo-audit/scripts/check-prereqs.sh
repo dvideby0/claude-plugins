@@ -192,8 +192,12 @@ has_node=false
 declare -A STATUS
 declare -A TIER
 
-# Tier 1 — Core enhancements
-for t in jq rg tree; do
+# jq is REQUIRED — check it first
+STATUS[jq]=$(check_tool "jq")
+TIER[jq]=0
+
+# Tier 1 — Core enhancements (optional)
+for t in rg tree; do
   STATUS[$t]=$(check_tool "$t")
   TIER[$t]=1
 done
@@ -334,12 +338,33 @@ else
   echo "  All tools available!"
 fi
 
-echo ""
-echo "----------------------------------------------------------------"
-echo "  The audit works without optional tools — they make it faster"
-echo "  and more thorough. Missing tools = some checks skipped."
-echo "================================================================"
-echo ""
+# --- jq hard requirement check ---
+if [ "${STATUS[jq]}" = "missing" ]; then
+  echo ""
+  echo "================================================================"
+  echo "  ERROR: jq is REQUIRED but not installed."
+  echo ""
+  echo "  jq — $(tool_description jq)"
+  echo ""
+  echo "  Install it with:"
+  echo "    $(install_cmd jq)"
+  echo ""
+  echo "  Then re-run the audit."
+  echo "================================================================"
+  echo ""
+  # Still write the JSON output before exiting
+else
+  echo ""
+  echo "----------------------------------------------------------------"
+  if [ ${#MISSING_CMDS[@]} -gt 0 ]; then
+    echo "  jq (required) is available. Optional tools make the audit"
+    echo "  faster and more thorough. Missing tools = some checks skipped."
+  else
+    echo "  jq (required) is available. All optional tools also present."
+  fi
+  echo "================================================================"
+  echo ""
+fi
 
 # --------------------------------------------------------------------------
 # Write machine-readable JSON
@@ -449,3 +474,10 @@ mkdir -p "$OUTPUT_DIR"
 } > "$OUTPUT_FILE"
 
 echo "Wrote: ${OUTPUT_FILE}"
+
+# Exit non-zero if jq is missing (hard requirement)
+if [ "${STATUS[jq]}" = "missing" ]; then
+  exit 1
+fi
+
+exit 0

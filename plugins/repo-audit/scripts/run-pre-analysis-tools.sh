@@ -353,12 +353,52 @@ else
   echo "  [SKIP] python-skeletons — python3 not available"
 fi
 
-# Go doc extraction
+# TypeScript/JavaScript skeleton extraction
+if language_detected "TypeScript" || language_detected "JavaScript"; then
+  run_tool_merged "ts-skeletons" "/dev/null" \
+    "bash '${SCRIPT_DIR}/extract-skeletons-ts.sh' '${PROJECT_ROOT}'"
+elif find "${PROJECT_ROOT}" -name '*.ts' -o -name '*.tsx' -o -name '*.js' -o -name '*.jsx' 2>/dev/null \
+     | grep -v node_modules | grep -v sdlc-audit | grep -q .; then
+  run_tool_merged "ts-skeletons" "/dev/null" \
+    "bash '${SCRIPT_DIR}/extract-skeletons-ts.sh' '${PROJECT_ROOT}'"
+else
+  echo "  [SKIP] ts-skeletons — no TypeScript/JavaScript files detected"
+fi
+
+# Go skeleton extraction
+if language_detected "Go" || has_file go.mod; then
+  run_tool_merged "go-skeletons" "/dev/null" \
+    "bash '${SCRIPT_DIR}/extract-skeletons-go.sh' '${PROJECT_ROOT}'"
+else
+  echo "  [SKIP] go-skeletons — no Go files detected"
+fi
+
+# Go doc extraction (supplements grep-based skeletons with API docs)
 if has_file go.mod && command -v go &>/dev/null; then
   run_tool "go-doc" "${DATA_DIR}/skeletons/go-api.txt" \
     "cd '${PROJECT_ROOT}' && go doc -all ./... 2>/dev/null | head -2000"
 else
   echo "  [SKIP] go-doc — not installed or no go.mod"
+fi
+
+# Rust skeleton extraction
+if language_detected "Rust" || has_file Cargo.toml; then
+  run_tool_merged "rust-skeletons" "/dev/null" \
+    "bash '${SCRIPT_DIR}/extract-skeletons-rust.sh' '${PROJECT_ROOT}'"
+else
+  echo "  [SKIP] rust-skeletons — no Rust files detected"
+fi
+
+# Java skeleton extraction
+if language_detected "Java"; then
+  run_tool_merged "java-skeletons" "/dev/null" \
+    "bash '${SCRIPT_DIR}/extract-skeletons-java.sh' '${PROJECT_ROOT}'"
+elif find "${PROJECT_ROOT}" -name '*.java' 2>/dev/null \
+     | grep -v sdlc-audit | grep -q .; then
+  run_tool_merged "java-skeletons" "/dev/null" \
+    "bash '${SCRIPT_DIR}/extract-skeletons-java.sh' '${PROJECT_ROOT}'"
+else
+  echo "  [SKIP] java-skeletons — no Java files detected"
 fi
 
 # --------------------------------------------------------------------------

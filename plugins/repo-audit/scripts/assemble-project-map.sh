@@ -13,11 +13,6 @@ MODULES_DIR="${PROJECT_ROOT}/sdlc-audit/modules"
 OUTPUT_DIR="${PROJECT_ROOT}/sdlc-audit/reports"
 OUTPUT_FILE="${OUTPUT_DIR}/PROJECT_MAP.md"
 
-if ! command -v jq &>/dev/null; then
-  echo "jq not available — skipping project map assembly."
-  exit 0
-fi
-
 DETECTION="${DATA_DIR}/detection.json"
 if [ ! -f "$DETECTION" ]; then
   echo "detection.json not found — skipping project map assembly."
@@ -171,3 +166,5 @@ mkdir -p "$OUTPUT_DIR"
 } > "$OUTPUT_FILE"
 
 echo "Wrote: ${OUTPUT_FILE}"
+
+exit 0

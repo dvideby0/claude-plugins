@@ -1,0 +1,16 @@
+{
+  "directory": "src_bad_severity",
+  "files": [
+    {
+      "path": "src/bad/index.ts",
+      "issues": [
+        {
+          "severity": "high",
+          "description": "This has an invalid severity value"
+        }
+      ]
+    }
+  ],
+  "test_coverage": "none",
+  "documentation_quality": "missing"
+}

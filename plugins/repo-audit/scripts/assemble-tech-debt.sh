@@ -17,11 +17,6 @@ DATA_DIR="${PROJECT_ROOT}/sdlc-audit/data"
 OUTPUT_DIR="${PROJECT_ROOT}/sdlc-audit/reports"
 OUTPUT_FILE="${OUTPUT_DIR}/TECH_DEBT.md"
 
-if ! command -v jq &>/dev/null; then
-  echo "jq not available — skipping tech debt assembly."
-  exit 0
-fi
-
 shopt -s nullglob
 MODULE_FILES=("${MODULES_DIR}"/*.json)
 shopt -u nullglob
@@ -123,6 +118,9 @@ ALL_ISSUES=$(jq -s '
   echo "*Medium effort, high impact — plan these into sprints.*"
   echo ""
 
+  echo "<!-- DRY_VIOLATIONS_PLACEHOLDER -->"
+  echo ""
+
   echo "$ALL_ISSUES" | jq -r '
     [.[] | select(
       .severity == "warning" and
@@ -140,6 +138,9 @@ ALL_ISSUES=$(jq -s '
   # --- Major Refactors: critical issues + architecture concerns ---
   echo "## Major Refactors"
   echo "*Large effort, high impact — plan carefully.*"
+  echo ""
+
+  echo "<!-- ARCHITECTURE_ISSUES_PLACEHOLDER -->"
   echo ""
 
   echo "$ALL_ISSUES" | jq -r '
@@ -178,3 +179,5 @@ ALL_ISSUES=$(jq -s '
 } > "$OUTPUT_FILE"
 
 echo "Wrote: ${OUTPUT_FILE}"
+
+exit 0
