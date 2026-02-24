@@ -1,67 +1,38 @@
 # Phase 0.5: Pre-Analysis (Programmatic)
 
 These steps use fast, deterministic tools to gather data before sub-agents run.
-Check `sdlc-audit/data/tool-availability.json` before each step — only run tools
-that are available. Skip unavailable tools silently (the sub-agents will still
-work without the pre-analysis data, just slower).
+The sub-agents will still work without the pre-analysis data, just slower.
 
-## Step 0h: Code Metrics
+## Steps 0h–0n (except 0j): Run All Deterministic Tools
 
-**If `cloc` is available** (check tool-availability.json):
+A single script handles all bash-based tools: code metrics (cloc/tokei),
+git history analysis, linters, type checkers, dependency audits, and code
+skeleton extraction. The script reads `tool-availability.json` to decide
+which tools to run, logs all failures to a debug file, and always exits 0
+(failures never cascade to kill sibling tool calls).
+
 ```bash
-cloc . --json --exclude-dir=node_modules,dist,build,.venv,venv,.next,target,obj,vendor,__pycache__,.git,coverage,deps,_build,.dart_tool,Pods,sdlc-audit --by-file 2>/dev/null > sdlc-audit/data/metrics.json
+bash ${CLAUDE_PLUGIN_ROOT}/scripts/run-pre-analysis-tools.sh .
 ```
 
-**Else if `tokei` is available:**
-```bash
-tokei . --output json --exclude node_modules dist build .venv target obj vendor sdlc-audit 2>/dev/null > sdlc-audit/data/metrics.json
-```
+**Output locations:**
+- Code metrics: `sdlc-audit/data/metrics.json`
+- Git data: `sdlc-audit/data/git-hotspots.txt`, `sdlc-audit/data/git-busfactor.txt`
+- Linter results: `sdlc-audit/tool-output/linter-results/*.json`
+- Type checker results: `sdlc-audit/tool-output/typecheck/*.txt`
+- Dependency audit results: `sdlc-audit/tool-output/deps/*.json`
+- Code skeletons: `sdlc-audit/data/skeletons/*`
+- **Failure log: `sdlc-audit/data/pre-analysis-failures.log`** (for debugging)
 
-**Else:** Skip this step. Sub-agents will count lines manually (current behavior).
+The failure log contains timestamped entries for every tool that exited non-zero,
+along with stderr output. An empty log (just the header) means everything succeeded.
 
 If metrics were collected, use the line counts from `metrics.json` for the
 `total_lines` and per-file `lines` fields in sub-agent JSON output. Include
 a summary in the sub-agent prompt so they don't waste time counting.
 
-## Step 0i: Git History Analysis
-
-**Only if `.git` directory exists.** Run the git analysis script:
-
-```bash
-bash ${CLAUDE_PLUGIN_ROOT}/scripts/git-analysis.sh .
-```
-
-This produces `sdlc-audit/data/git-hotspots.txt` and `sdlc-audit/data/git-busfactor.txt`.
-
-**If `.git` does not exist:** Skip entirely. Note in detection.json: `"git_available": false`.
-
 The hotspot data feeds into Phase 2 risk scoring. Files changed frequently
 are higher risk.
-
-## Step 0k: Run Existing Linters
-
-If the repo has linters configured (detected in Step 0e), run them and capture
-the output. This gives sub-agents authoritative findings so they don't waste
-time rediscovering what linters already know.
-
-**Only run tools that are installed and configured in the repo.**
-Check `sdlc-audit/data/tool-availability.json` for availability.
-Each command has a 60-second timeout. Failures are non-blocking — skip and continue.
-
-```bash
-mkdir -p sdlc-audit/tool-output/linter-results
-```
-
-| Detected Config | Condition | Command | Output |
-|----------------|-----------|---------|--------|
-| .eslintrc* or eslint in package.json | `node_modules/.bin/eslint` exists | `npx eslint . --format json 2>/dev/null \| head -5000` | `sdlc-audit/tool-output/linter-results/eslint.json` |
-| ruff.toml or [tool.ruff] in pyproject.toml | `ruff` available | `ruff check . --output-format json 2>/dev/null \| head -5000` | `sdlc-audit/tool-output/linter-results/ruff.json` |
-| biome.json | `node_modules/.bin/biome` exists | `npx biome check . --reporter json 2>/dev/null \| head -5000` | `sdlc-audit/tool-output/linter-results/biome.json` |
-| .golangci.yml | `golangci-lint` available | `golangci-lint run --out-format json 2>/dev/null \| head -5000` | `sdlc-audit/tool-output/linter-results/golangci.json` |
-| .rubocop.yml | `rubocop` available | `rubocop --format json 2>/dev/null \| head -5000` | `sdlc-audit/tool-output/linter-results/rubocop.json` |
-
-Run each applicable command and save output. If a tool isn't installed, skip it
-and note it in the Phase 0.5 progress report.
 
 **Sub-agent instruction update:** When linter results exist for a sub-agent's
 directories, include them in the prompt:
@@ -76,32 +47,6 @@ context. Focus on: architectural concerns, semantic bugs, cross-file patterns,
 DRY violations, and issues that require understanding intent.
 ```
 
-## Step 0l: Type Checking
-
-Run language-native type checkers to get authoritative type error data.
-
-```bash
-mkdir -p sdlc-audit/tool-output/typecheck
-```
-
-**TypeScript** (if tsconfig.json exists and tsc is available):
-```bash
-npx tsc --noEmit --pretty false 2>&1 | head -500 > sdlc-audit/tool-output/typecheck/tsc.txt
-echo "EXIT_CODE=$?" >> sdlc-audit/tool-output/typecheck/tsc.txt
-```
-
-**Go** (if go.mod exists and go is available):
-```bash
-go vet ./... 2>&1 | head -200 > sdlc-audit/tool-output/typecheck/govet.txt
-```
-
-**Rust** (if Cargo.toml exists and cargo is available):
-```bash
-cargo check --message-format short 2>&1 | head -200 > sdlc-audit/tool-output/typecheck/cargo-check.txt
-```
-
-Each command has a 120-second timeout. If a tool isn't available, skip it.
-
 Include type-check results in sub-agent prompts for relevant directories:
 ```
 === TYPE CHECK RESULTS (confidence: definite) ===
@@ -112,30 +57,6 @@ Type errors from the compiler are authoritative. Analyze whether they reveal
 deeper design problems or patterns (e.g., same type mismatch in 20 places
 = missing abstraction).
 ```
-
-## Step 0m: Dependency Vulnerability Audit
-
-Run language-native dependency audit tools to check for known CVEs.
-The LLM cannot detect these — only vulnerability databases can.
-
-```bash
-mkdir -p sdlc-audit/tool-output/deps
-```
-
-| Detected Manifest | Condition | Command | Output |
-|------------------|-----------|---------|--------|
-| package-lock.json | npm available | `npm audit --json 2>/dev/null` | `sdlc-audit/tool-output/deps/npm-audit.json` |
-| yarn.lock | yarn available | `yarn audit --json 2>/dev/null` | `sdlc-audit/tool-output/deps/yarn-audit.json` |
-| pnpm-lock.yaml | pnpm available | `pnpm audit --json 2>/dev/null` | `sdlc-audit/tool-output/deps/pnpm-audit.json` |
-| requirements.txt or pyproject.toml | `pip-audit` available | `pip-audit --format json 2>/dev/null` | `sdlc-audit/tool-output/deps/pip-audit.json` |
-| Cargo.lock | `cargo-audit` available | `cargo audit --json 2>/dev/null` | `sdlc-audit/tool-output/deps/cargo-audit.json` |
-| go.sum | `govulncheck` available | `govulncheck ./... 2>/dev/null` | `sdlc-audit/tool-output/deps/govulncheck.txt` |
-| Gemfile.lock | `bundle-audit` available | `bundle-audit check 2>/dev/null` | `sdlc-audit/tool-output/deps/bundle-audit.txt` |
-| composer.lock | composer available | `composer audit --format json 2>/dev/null` | `sdlc-audit/tool-output/deps/composer-audit.json` |
-
-Each command has a 120-second timeout (these tools query remote databases).
-If a tool isn't installed, skip it and note in the progress report.
-If a lock file is missing, skip that ecosystem.
 
 Vulnerability results feed into Phase 3 AUDIT_REPORT.md (Dependency
 Vulnerabilities section) and TECH_DEBT.md (Quick Wins — version bumps).
@@ -199,22 +120,7 @@ their assigned directories) in a section:
 
 This helps sub-agents focus on UNDERSTANDING issues rather than FINDING them.
 
-## Step 0n: Extract Code Skeletons (Deterministic)
-
-Extract structured metadata (imports, exports, function signatures) from source
-files using deterministic tools. This gives sub-agents accurate structural data
-so they can focus on semantic analysis rather than parsing.
-
-```bash
-mkdir -p sdlc-audit/data/skeletons
-```
-
-**Python** (only if Python files are detected AND `python3` is available on the
-system — this is the one script that uses Python because it needs the built-in
-`ast` module for accurate AST parsing. If `python3` is not available, skip this):
-```bash
-python3 ${CLAUDE_PLUGIN_ROOT}/scripts/extract-skeletons.py .
-```
+## Step 0n-ts: Extract TypeScript/JavaScript Skeletons (Grep-based)
 
 **TypeScript/JavaScript** (if detected — grep-based, zero dependencies):
 
@@ -239,22 +145,11 @@ Compile the grep results into a JSON structure per file:
 
 Write to `sdlc-audit/data/skeletons/typescript.json`.
 
-**Go** (if detected and `go` is available):
-```bash
-go doc -all ./... 2>/dev/null | head -2000 > sdlc-audit/data/skeletons/go-api.txt
-```
-
 **Other languages** — generic grep-based extraction:
 
 Use Claude Code's Grep tool to search for:
 - Pattern `^(pub |public |export |def |func |fn |fun )` in relevant file types
 - Write results to `sdlc-audit/data/skeletons/generic.json`
-
-**Each collector:**
-- Has a 60-second timeout
-- Handles errors gracefully (skip file, continue)
-- Skips files in excluded directories
-- Outputs to `sdlc-audit/data/skeletons/<language>.json`
 
 **If no collectors succeed:** Skip entirely. Sub-agents will extract structure
 manually (current behavior). Skeletons are an optimization, not a requirement.

@@ -45,3 +45,6 @@ mkdir -p "$OUTPUT_DIR"
 
 echo "Wrote: ${OUTPUT_DIR}/git-hotspots.txt"
 echo "Wrote: ${OUTPUT_DIR}/git-busfactor.txt"
+
+# Always exit 0 — this script is optional and failures should not cascade
+exit 0
