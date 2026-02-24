@@ -1,0 +1,9 @@
+{
+  "directory": "src_cycle_a",
+  "total_lines": 100,
+  "test_coverage": "none",
+  "documentation_quality": "missing",
+  "internal_dependencies": ["src_cycle_b"],
+  "external_dependencies": [],
+  "files": []
+}

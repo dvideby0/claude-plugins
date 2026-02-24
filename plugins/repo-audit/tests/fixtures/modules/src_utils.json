@@ -1,0 +1,33 @@
+{
+  "directory": "src_utils",
+  "total_lines": 420,
+  "test_coverage": "full",
+  "documentation_quality": "adequate",
+  "internal_dependencies": [],
+  "external_dependencies": ["lodash"],
+  "files": [
+    {
+      "path": "src/utils/helpers.py",
+      "issues": [
+        {
+          "severity": "warning",
+          "category": "maintainability",
+          "description": "Duplicated validation logic also found in auth and api",
+          "guide_rule": "DRY-001-no-duplicate-logic",
+          "line_range": [50, 75]
+        }
+      ],
+      "functions": [
+        {"name": "sanitize_input", "complexity": "low"},
+        {"name": "format_response", "complexity": "low"}
+      ]
+    },
+    {
+      "path": "src/utils/validators.py",
+      "issues": [],
+      "functions": [
+        {"name": "validate_email", "complexity": "low"}
+      ]
+    }
+  ]
+}

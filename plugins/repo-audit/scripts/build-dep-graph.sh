@@ -73,7 +73,7 @@ $modules | direct_cycles as $cycles |
 ([$modules | keys[] | {key: ., value: (($rev[.] // []) | length)}] | from_entries) as $fan_ins |
 
 # Median fan-in
-([$fan_ins | values | .] | sort | .[length / 2 | floor]) as $median |
+([$fan_ins[]] | sort | .[length / 2 | floor]) as $median |
 
 # Hub modules: fan_in > max(median*2, 2)
 (if $median * 2 > 2 then $median * 2 else 2 end) as $hub_threshold |

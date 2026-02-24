@@ -1,0 +1,63 @@
+{
+  "directory": "src_auth",
+  "total_lines": 850,
+  "test_coverage": "partial",
+  "documentation_quality": "sparse",
+  "internal_dependencies": ["src_utils"],
+  "external_dependencies": ["express", "jsonwebtoken"],
+  "files": [
+    {
+      "path": "src/auth/login.py",
+      "issues": [
+        {
+          "severity": "critical",
+          "category": "security",
+          "description": "Hardcoded JWT secret in source code",
+          "guide_rule": "SEC-001-no-hardcoded-secrets",
+          "line_range": [42, 42]
+        },
+        {
+          "severity": "warning",
+          "category": "security",
+          "description": "Missing rate limiting on login endpoint",
+          "guide_rule": "SEC-005-rate-limit-auth",
+          "line_range": [10, 55]
+        }
+      ],
+      "functions": [
+        {"name": "authenticate", "complexity": "high"},
+        {"name": "validate_token", "complexity": "medium"}
+      ]
+    },
+    {
+      "path": "src/auth/session.py",
+      "issues": [
+        {
+          "severity": "warning",
+          "category": "security",
+          "description": "Session token not rotated after privilege change",
+          "guide_rule": "SEC-003-session-rotation",
+          "line_range": [20, 35]
+        }
+      ],
+      "functions": [
+        {"name": "create_session", "complexity": "medium"}
+      ]
+    },
+    {
+      "path": "src/auth/permissions.py",
+      "issues": [
+        {
+          "severity": "warning",
+          "category": "maintainability",
+          "description": "Duplicated validation logic also found in api and utils",
+          "guide_rule": "DRY-001-no-duplicate-logic",
+          "line_range": [15, 40]
+        }
+      ],
+      "functions": [
+        {"name": "check_permission", "complexity": "high"}
+      ]
+    }
+  ]
+}

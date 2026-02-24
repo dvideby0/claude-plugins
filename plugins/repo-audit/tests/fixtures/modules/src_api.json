@@ -1,0 +1,49 @@
+{
+  "directory": "src_api",
+  "total_lines": 1200,
+  "test_coverage": "none",
+  "documentation_quality": "missing",
+  "internal_dependencies": ["src_utils", "src_auth"],
+  "external_dependencies": ["express", "cors"],
+  "files": [
+    {
+      "path": "src/api/routes.py",
+      "issues": [
+        {
+          "severity": "critical",
+          "category": "security",
+          "description": "Missing input validation on user-controlled parameters",
+          "guide_rule": "SEC-002-input-validation",
+          "line_range": [30, 60]
+        },
+        {
+          "severity": "warning",
+          "category": "maintainability",
+          "description": "Duplicated validation logic also found in auth and utils",
+          "guide_rule": "DRY-001-no-duplicate-logic",
+          "line_range": [80, 110]
+        }
+      ],
+      "functions": [
+        {"name": "handle_request", "complexity": "high"},
+        {"name": "parse_query", "complexity": "high"}
+      ]
+    },
+    {
+      "path": "src/api/middleware.py",
+      "issues": [
+        {
+          "severity": "warning",
+          "category": "security",
+          "description": "Missing rate limiting on API endpoints",
+          "guide_rule": "SEC-005-rate-limit-auth",
+          "line_range": [5, 25]
+        }
+      ],
+      "functions": [
+        {"name": "auth_middleware", "complexity": "medium"},
+        {"name": "logging_middleware", "complexity": "low"}
+      ]
+    }
+  ]
+}

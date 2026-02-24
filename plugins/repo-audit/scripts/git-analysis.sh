@@ -31,9 +31,10 @@ mkdir -p "$OUTPUT_DIR"
 # --- Bus factor: contributors per top-level directory ---
 {
   echo "=== BUS FACTOR ==="
-  for dir in $(find "$PROJECT_ROOT" -maxdepth 1 -type d -not -name '.' -not -name '.git' -not -name 'node_modules' -not -name 'sdlc-audit' | sort); do
-    echo "--- ${dir} ---"
-    git -C "$PROJECT_ROOT" shortlog -sn -- "$dir" 2>/dev/null | head -3
+  for dir in $(find "$PROJECT_ROOT" -mindepth 1 -maxdepth 1 -type d -not -name '.git' -not -name 'node_modules' -not -name 'sdlc-audit' | sort); do
+    reldir="${dir#$PROJECT_ROOT/}"
+    echo "--- ${reldir} ---"
+    git -C "$PROJECT_ROOT" shortlog -sn HEAD -- "$reldir" 2>/dev/null | head -3
   done
 
   # Recent commit count
