@@ -10,6 +10,7 @@
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { Db } from "../db/db.js";
+import { loadRules, renderRuleIndex } from "./rules.js";
 import type { WorkUnit } from "./risk.js";
 
 export interface ContextResult {
@@ -21,29 +22,8 @@ export interface ContextResult {
   knownFindings: number;
 }
 
-const GUIDES: Record<string, string> = {
-  typescript: "typescript.md",
-  javascript: "typescript.md",
-  python: "python.md",
-};
-
 export function estimateTokens(text: string): number {
   return Math.ceil(text.length / 4);
-}
-
-async function readGuides(pluginRoot: string, languages: string[]): Promise<string> {
-  const names = new Set(languages.map((lang) => GUIDES[lang]).filter(Boolean));
-  names.add("general.md");
-
-  const parts: string[] = [];
-  for (const name of names) {
-    try {
-      parts.push(await readFile(join(pluginRoot, "lang", name), "utf-8"));
-    } catch {
-      // A missing guide is not fatal.
-    }
-  }
-  return parts.join("\n\n");
 }
 
 function knownFindingsBlock(db: Db, paths: string[]): { text: string; count: number } {
@@ -156,8 +136,8 @@ finding needs: ruleId (stable slug, e.g. "llm/unchecked-nullable"), category,
 severity, confidence, path, lineStart, title, description, suggestion.
 
 Anything you assert must be visible in the code you were given. If you need
-more context, call audit_query (kinds: symbol, importers, imports, findings,
-hotspots) rather than guessing.
+more context, call audit_query (kinds: rule, symbol, importers, imports,
+findings, hotspots) rather than guessing.
 `.trim();
 
 /** Optional review lens appended to the rules section. */
@@ -193,9 +173,16 @@ export async function buildContext(
   sections.push(header);
   used += estimateTokens(header);
 
-  const guides = await readGuides(options.pluginRoot, unit.languages);
-  if (guides) {
-    const block = `## REVIEW RULES\n\n${guides}`;
+  const rules = await loadRules(options.pluginRoot, unit.languages);
+  if (rules.length > 0) {
+    const block = [
+      "## REVIEW RULES (index)",
+      "",
+      "Pull the full text of a rule when you need it:",
+      '`audit_query` with `kind: "rule"` and `arg: "<rule id>"`.',
+      "",
+      renderRuleIndex(rules),
+    ].join("\n");
     sections.push(block);
     used += estimateTokens(block);
   }

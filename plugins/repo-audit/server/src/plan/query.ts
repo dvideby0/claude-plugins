@@ -4,8 +4,10 @@
  */
 
 import type { Db } from "../db/db.js";
+import { findRule, loadRules } from "./rules.js";
 
 export const QUERY_KINDS = [
+  "rule",
   "symbol",
   "importers",
   "imports",
@@ -17,12 +19,28 @@ export const QUERY_KINDS = [
 
 export type QueryKind = (typeof QUERY_KINDS)[number];
 
-export function runQuery(
-  db: Db,
+export interface QueryContext {
+  db: Db;
+  pluginRoot: string;
+}
+
+export async function runQuery(
+  context: QueryContext,
   kind: QueryKind,
   arg: string | undefined,
   limit = 50,
-): unknown {
+): Promise<unknown> {
+  const { db } = context;
+
+  if (kind === "rule") {
+    if (!arg) {
+      const rules = await loadRules(context.pluginRoot);
+      return rules.map(({ id, heading, summary }) => ({ id, heading, summary }));
+    }
+    const rule = await findRule(context.pluginRoot, arg);
+    return rule ?? { error: `Unknown rule "${arg}". Query with no arg to list rule ids.` };
+  }
+
   switch (kind) {
     case "symbol":
       return db.all(
@@ -83,5 +101,8 @@ export function runQuery(
           WHERE rule_id = 'graph/import-cycle' AND status IN ('open','regressed') LIMIT ?`,
         [limit],
       );
+
+    default:
+      return { error: `Unknown query kind "${kind as string}".` };
   }
 }

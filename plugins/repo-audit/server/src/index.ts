@@ -245,17 +245,21 @@ server.tool(
 
 server.tool(
   "audit_query",
-  "Query the audit store: symbol definitions, importers, imports, findings, hotspots, external packages, cycles.",
+  "Query the audit store: review rules, symbol definitions, importers, imports, findings, hotspots, external packages, cycles.",
   {
     ...projectRootArg,
     kind: z.enum(QUERY_KINDS),
-    arg: z.string().optional().describe("Symbol name, file path, or filter value."),
+    arg: z
+      .string()
+      .optional()
+      .describe("Rule id, symbol name, file path, or filter value. Omit with kind 'rule' to list every rule."),
     limit: z.number().optional(),
   },
   async ({ projectRoot, kind, arg, limit }) =>
     wrap(async () => {
       const db = await getDb(resolveRoot(projectRoot));
-      return { kind, rows: runQuery(db, kind as QueryKind, arg, limit) };
+      const rows = await runQuery({ db, pluginRoot: PLUGIN_ROOT }, kind as QueryKind, arg, limit);
+      return { kind, rows };
     }),
 );
 

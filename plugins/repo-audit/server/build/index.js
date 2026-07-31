@@ -1098,11 +1098,11 @@ var require_util = __commonJS({
       return false;
     }
     exports.schemaHasRules = schemaHasRules;
-    function schemaHasRulesButRef(schema, RULES2) {
+    function schemaHasRulesButRef(schema, RULES3) {
       if (typeof schema == "boolean")
         return !schema;
       for (const key in schema)
-        if (key !== "$ref" && RULES2.all[key])
+        if (key !== "$ref" && RULES3.all[key])
           return true;
       return false;
     }
@@ -2496,17 +2496,17 @@ var require_validate = __commonJS({
     }
     function schemaKeywords(it, types, typeErrors, errsCount) {
       const { gen, schema, data, allErrors, opts, self } = it;
-      const { RULES: RULES2 } = self;
-      if (schema.$ref && (opts.ignoreKeywordsWithRef || !(0, util_1.schemaHasRulesButRef)(schema, RULES2))) {
-        gen.block(() => keywordCode(it, "$ref", RULES2.all.$ref.definition));
+      const { RULES: RULES3 } = self;
+      if (schema.$ref && (opts.ignoreKeywordsWithRef || !(0, util_1.schemaHasRulesButRef)(schema, RULES3))) {
+        gen.block(() => keywordCode(it, "$ref", RULES3.all.$ref.definition));
         return;
       }
       if (!opts.jtd)
         checkStrictTypes(it, types);
       gen.block(() => {
-        for (const group of RULES2.rules)
+        for (const group of RULES3.rules)
           groupKeywords(group);
-        groupKeywords(RULES2.post);
+        groupKeywords(RULES3.post);
       });
       function groupKeywords(group) {
         if (!(0, applicability_1.shouldUseGroup)(schema, group))
@@ -4321,10 +4321,10 @@ var require_core = __commonJS({
       }
       // Remove keyword
       removeKeyword(keyword) {
-        const { RULES: RULES2 } = this;
-        delete RULES2.keywords[keyword];
-        delete RULES2.all[keyword];
-        for (const group of RULES2.rules) {
+        const { RULES: RULES3 } = this;
+        delete RULES3.keywords[keyword];
+        delete RULES3.all[keyword];
+        for (const group of RULES3.rules) {
           const i = group.rules.findIndex((rule) => rule.keyword === keyword);
           if (i >= 0)
             group.rules.splice(i, 1);
@@ -4492,9 +4492,9 @@ var require_core = __commonJS({
     }
     var KEYWORD_NAME = /^[a-z_$][a-z0-9_$:-]*$/i;
     function checkKeyword(keyword, def) {
-      const { RULES: RULES2 } = this;
+      const { RULES: RULES3 } = this;
       (0, util_1.eachItem)(keyword, (kwd) => {
-        if (RULES2.keywords[kwd])
+        if (RULES3.keywords[kwd])
           throw new Error(`Keyword ${kwd} is already defined`);
         if (!KEYWORD_NAME.test(kwd))
           throw new Error(`Keyword ${kwd} has invalid name`);
@@ -4510,13 +4510,13 @@ var require_core = __commonJS({
       const post = definition === null || definition === void 0 ? void 0 : definition.post;
       if (dataType && post)
         throw new Error('keyword with "post" flag cannot have "type"');
-      const { RULES: RULES2 } = this;
-      let ruleGroup = post ? RULES2.post : RULES2.rules.find(({ type: t }) => t === dataType);
+      const { RULES: RULES3 } = this;
+      let ruleGroup = post ? RULES3.post : RULES3.rules.find(({ type: t }) => t === dataType);
       if (!ruleGroup) {
         ruleGroup = { type: dataType, rules: [] };
-        RULES2.rules.push(ruleGroup);
+        RULES3.rules.push(ruleGroup);
       }
-      RULES2.keywords[keyword] = true;
+      RULES3.keywords[keyword] = true;
       if (!definition)
         return;
       const rule = {
@@ -4531,7 +4531,7 @@ var require_core = __commonJS({
         addBeforeRule.call(this, ruleGroup, rule, definition.before);
       else
         ruleGroup.rules.push(rule);
-      RULES2.all[keyword] = rule;
+      RULES3.all[keyword] = rule;
       (_a = definition.implements) === null || _a === void 0 ? void 0 : _a.forEach((kwd) => this.addKeyword(kwd));
     }
     function addBeforeRule(ruleGroup, rule, before) {
@@ -21150,8 +21150,8 @@ var StdioServerTransport = class {
 };
 
 // src/index.ts
-import { readFile as readFile6 } from "node:fs/promises";
-import { join as join10 } from "node:path";
+import { readFile as readFile8 } from "node:fs/promises";
+import { join as join12 } from "node:path";
 
 // src/db/db.ts
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
@@ -22405,9 +22405,276 @@ function scanSecrets(files) {
   return findings;
 }
 
+// src/analyze/supply-chain.ts
+import { readFile as readFile5 } from "node:fs/promises";
+import { join as join7 } from "node:path";
+var DANGEROUS_COMMAND = [
+  { pattern: /\b(?:curl|wget)\b[^|;&]*[|]\s*(?:ba|z|k)?sh\b/i, why: "downloads and pipes a script straight into a shell" },
+  { pattern: /\bbase64\s+(?:-d|--decode|-D)\b/i, why: "decodes base64 before executing it" },
+  { pattern: /\b(?:atob|Buffer\.from)\s*\([^)]*base64/i, why: "decodes base64 before executing it" },
+  { pattern: /\bnc\b\s+-[a-z]*e/i, why: "opens a netcat reverse shell" },
+  { pattern: /\beval\b\s*[("'$]/i, why: "evaluates a dynamically built string" },
+  { pattern: /\bpython3?\s+-c\b/i, why: "executes an inline python program" },
+  { pattern: /\bnode\s+-e\b/i, why: "executes an inline node program" },
+  { pattern: /[|;&]\s*(?:ba|z|k)?sh\s+-c\b/i, why: "chains into a shell" }
+];
+var AGENT_CONFIG_FILES = [
+  ".claude/settings.json",
+  ".claude/settings.local.json",
+  ".claude/hooks.json",
+  ".mcp.json",
+  ".cursor/mcp.json",
+  ".cursor/environment.json",
+  ".vscode/tasks.json",
+  ".opencode/config.json",
+  ".codex/config.json"
+];
+var BROAD_PERMISSION = /^(?:Bash|Shell)\(\s*(?:\*|:\*)?\s*\)$|^Bash\((?:curl|wget|sh|bash|eval)/i;
+var INSTALL_HOOKS = ["preinstall", "install", "postinstall", "prepare", "prepublish"];
+function stringLeaves(value, path = [], out = []) {
+  if (typeof value === "string") {
+    out.push({ path, value });
+  } else if (Array.isArray(value)) {
+    value.forEach((item, index) => stringLeaves(item, [...path, String(index)], out));
+  } else if (value && typeof value === "object") {
+    for (const [key, child] of Object.entries(value)) {
+      stringLeaves(child, [...path, key], out);
+    }
+  }
+  return out;
+}
+function isDenyContext(path) {
+  return path.some((segment) => /^(deny|denied|block|blocked|blocklist|ignore|exclude)$/i.test(segment));
+}
+function dangerousReason(command) {
+  for (const { pattern, why } of DANGEROUS_COMMAND) {
+    if (pattern.test(command)) return why;
+  }
+  return null;
+}
+function lineOf(content, needle) {
+  const index = content.indexOf(needle);
+  if (index === -1) return void 0;
+  return content.slice(0, index).split("\n").length;
+}
+function checkInstallScripts(files) {
+  const findings = [];
+  for (const file of files) {
+    if (!file.path.endsWith("package.json")) continue;
+    let parsed;
+    try {
+      parsed = JSON.parse(file.content);
+    } catch {
+      continue;
+    }
+    for (const hook of INSTALL_HOOKS) {
+      const script = parsed.scripts?.[hook];
+      if (!script) continue;
+      const reason = dangerousReason(script);
+      if (!reason) continue;
+      findings.push({
+        ruleId: "supply-chain/install-script-execution",
+        category: "security",
+        severity: "critical",
+        confidence: "high",
+        source: "deps",
+        title: `${hook} script ${reason}`,
+        description: `${file.path} runs on \`npm install\` before any code is reviewed. Its ${hook} script ${reason}: ${script.slice(0, 200)}`,
+        suggestion: `Move the work out of ${hook} into an explicit, reviewable command.`,
+        path: file.path,
+        lineStart: lineOf(file.content, `"${hook}"`),
+        snippet: script.slice(0, 200),
+        symbol: hook
+      });
+    }
+  }
+  return findings;
+}
+var OBFUSCATED = [
+  {
+    pattern: /\beval\s*\(\s*(?:atob|Buffer\.from|decodeURIComponent)\s*\(/,
+    title: "Decoded string passed straight to eval"
+  },
+  {
+    pattern: /\b(?:exec|execSync|spawn|spawnSync)\s*\(\s*(?:atob|Buffer\.from)\s*\(/,
+    title: "Decoded string executed as a shell command"
+  },
+  {
+    pattern: /\b(?:exec|eval)\s*\(\s*(?:base64\.b64decode|codecs\.decode)\s*\(/,
+    title: "Decoded string executed in python"
+  },
+  {
+    pattern: /["'][A-Za-z0-9+/]{240,}={0,2}["']/,
+    title: "Very long base64 literal embedded in source"
+  }
+];
+function checkObfuscatedPayloads(files) {
+  const findings = [];
+  for (const file of files) {
+    if (file.lang !== "typescript" && file.lang !== "javascript" && file.lang !== "python") {
+      continue;
+    }
+    const lines = file.content.split("\n");
+    for (let i = 0; i < lines.length; i++) {
+      for (const rule of OBFUSCATED) {
+        if (!rule.pattern.test(lines[i])) continue;
+        const weak = rule.title.startsWith("Very long");
+        const severity = file.isTest ? "medium" : weak ? "medium" : "critical";
+        findings.push({
+          ruleId: "supply-chain/obfuscated-payload",
+          category: "security",
+          severity,
+          confidence: weak || file.isTest ? "medium" : "high",
+          source: "deps",
+          title: rule.title,
+          description: `${rule.title} at ${file.path}:${i + 1}. Encoded-then-executed content hides its behaviour from review and from scanners.${file.isTest ? " File looks like a test \u2014 likely a fixture, verify before acting." : ""}`,
+          suggestion: "Replace with plain, reviewable code, or document why the payload must be encoded.",
+          path: file.path,
+          lineStart: i + 1,
+          lineEnd: i + 1,
+          snippet: lines[i].trim().slice(0, 200),
+          symbol: "obfuscated-payload"
+        });
+        break;
+      }
+    }
+  }
+  return findings;
+}
+var UNTRUSTED_INTERPOLATION = /\$\{\{\s*github\.event\.(?:issue|pull_request|comment|review|discussion)\.[a-z_.]*(?:title|body|label|name|ref|head_ref)/i;
+function checkWorkflows(files) {
+  const findings = [];
+  for (const file of files) {
+    if (!/^\.github\/workflows\/.+\.ya?ml$/.test(file.path)) continue;
+    const lines = file.content.split("\n");
+    const hasPrTarget = /^on:|pull_request_target/m.test(file.content) && /pull_request_target/.test(file.content);
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+      if (UNTRUSTED_INTERPOLATION.test(line)) {
+        findings.push({
+          ruleId: "supply-chain/workflow-untrusted-interpolation",
+          category: "security",
+          severity: "critical",
+          confidence: "high",
+          source: "deps",
+          title: "Attacker-controlled value interpolated into a workflow",
+          description: `${file.path}:${i + 1} interpolates a field an outside contributor controls directly into the workflow. A crafted title or body becomes shell input on the runner.`,
+          suggestion: 'Pass the value through an env: block and reference it as "$VAR" instead of interpolating it inline.',
+          path: file.path,
+          lineStart: i + 1,
+          lineEnd: i + 1,
+          snippet: line.trim().slice(0, 200),
+          symbol: "untrusted-interpolation"
+        });
+      }
+      if (hasPrTarget && /pull_request\.head\.(?:sha|ref)/.test(line)) {
+        findings.push({
+          ruleId: "supply-chain/workflow-pr-target-checkout",
+          category: "security",
+          severity: "critical",
+          confidence: "high",
+          source: "deps",
+          title: "pull_request_target workflow checks out untrusted code",
+          description: `${file.path}:${i + 1} runs with repository secrets under pull_request_target while checking out the pull request head. Any fork can then run code with those secrets.`,
+          suggestion: "Check out the base ref, or move the job to the pull_request event which has no secret access.",
+          path: file.path,
+          lineStart: i + 1,
+          lineEnd: i + 1,
+          snippet: line.trim().slice(0, 200),
+          symbol: "pr-target-checkout"
+        });
+      }
+      const reason = dangerousReason(line);
+      if (reason && /^\s*(?:-\s*)?(?:run:|\s{2,})/.test(line) && /curl|wget|base64|nc\s/i.test(line)) {
+        findings.push({
+          ruleId: "supply-chain/workflow-remote-execution",
+          category: "security",
+          severity: "high",
+          confidence: "medium",
+          source: "deps",
+          title: `Workflow step ${reason}`,
+          description: `${file.path}:${i + 1} ${reason}. CI runners usually hold credentials, so remote code here runs with them.`,
+          suggestion: "Pin and verify the artefact, or install it from a package manager with a lockfile.",
+          path: file.path,
+          lineStart: i + 1,
+          lineEnd: i + 1,
+          snippet: line.trim().slice(0, 200),
+          symbol: "workflow-remote-execution"
+        });
+      }
+    }
+  }
+  return findings;
+}
+async function checkAgentConfigs(projectRoot) {
+  const findings = [];
+  for (const relative3 of AGENT_CONFIG_FILES) {
+    let content;
+    try {
+      content = await readFile5(join7(projectRoot, relative3), "utf-8");
+    } catch {
+      continue;
+    }
+    let parsed;
+    try {
+      parsed = JSON.parse(content);
+    } catch {
+      continue;
+    }
+    for (const leaf of stringLeaves(parsed)) {
+      if (isDenyContext(leaf.path)) continue;
+      const key = leaf.path.join(".");
+      if (/permissions\.allow/.test(key) && BROAD_PERMISSION.test(leaf.value)) {
+        findings.push({
+          ruleId: "supply-chain/agent-broad-permission",
+          category: "security",
+          severity: "medium",
+          confidence: "high",
+          source: "deps",
+          title: `Agent config grants ${leaf.value}`,
+          description: `${relative3} pre-approves \`${leaf.value}\` for anyone who opens this repository, removing the prompt that would otherwise gate it.`,
+          suggestion: "Narrow the grant to the specific commands the project actually needs.",
+          path: relative3,
+          lineStart: lineOf(content, leaf.value),
+          snippet: leaf.value.slice(0, 200),
+          symbol: key
+        });
+        continue;
+      }
+      const reason = dangerousReason(leaf.value);
+      if (!reason) continue;
+      const isExecutable = /command|args|hooks?|run|script|task|server/i.test(key);
+      if (!isExecutable) continue;
+      findings.push({
+        ruleId: "supply-chain/agent-config-execution",
+        category: "security",
+        severity: "critical",
+        confidence: "high",
+        source: "deps",
+        title: `Agent config ${reason}`,
+        description: `${relative3} (${key}) ${reason}: ${leaf.value.slice(0, 200)}. Agent configuration runs when the repository is opened, before any review of the code.`,
+        suggestion: "Remove the command, or replace it with a checked-in script that can be reviewed in a diff.",
+        path: relative3,
+        lineStart: lineOf(content, leaf.value),
+        snippet: leaf.value.slice(0, 200),
+        symbol: key
+      });
+    }
+  }
+  return findings;
+}
+async function scanSupplyChain(projectRoot, files) {
+  return [
+    ...checkInstallScripts(files),
+    ...checkObfuscatedPayloads(files),
+    ...checkWorkflows(files),
+    ...await checkAgentConfigs(projectRoot)
+  ];
+}
+
 // src/analyze/tools.ts
 import { access as access3, constants } from "node:fs/promises";
-import { join as join7, relative as relative2, isAbsolute } from "node:path";
+import { join as join8, relative as relative2, isAbsolute } from "node:path";
 var TIMEOUT = 18e4;
 async function canExec(path) {
   try {
@@ -22418,12 +22685,12 @@ async function canExec(path) {
   }
 }
 async function nodeBin(projectRoot, name) {
-  const local = join7(projectRoot, "node_modules", ".bin", name);
+  const local = join8(projectRoot, "node_modules", ".bin", name);
   return await canExec(local) ? local : null;
 }
 async function pythonBin(projectRoot, name) {
   for (const dir of [".venv/bin", "venv/bin"]) {
-    const local = join7(projectRoot, dir, name);
+    const local = join8(projectRoot, dir, name);
     if (await canExec(local)) return local;
   }
   return which(name);
@@ -22447,7 +22714,7 @@ function failed(tool, detail) {
   return { tool, status: "failed", detail, findings: [] };
 }
 async function runEslint(projectRoot) {
-  if (!await exists(join7(projectRoot, "package.json"))) {
+  if (!await exists(join8(projectRoot, "package.json"))) {
     return skipped("eslint", "no package.json");
   }
   const bin = await nodeBin(projectRoot, "eslint");
@@ -22489,7 +22756,7 @@ async function runEslint(projectRoot) {
   return { tool: "eslint", status: "ok", detail: `${findings.length} findings`, findings };
 }
 async function runTsc(projectRoot) {
-  if (!await exists(join7(projectRoot, "tsconfig.json"))) {
+  if (!await exists(join8(projectRoot, "tsconfig.json"))) {
     return skipped("tsc", "no tsconfig.json");
   }
   const bin = await nodeBin(projectRoot, "tsc");
@@ -22529,7 +22796,7 @@ function ruffSeverity(code) {
   return { severity: "medium", category: "maintainability" };
 }
 async function runRuff(projectRoot) {
-  const hasPython = await exists(join7(projectRoot, "pyproject.toml")) || await exists(join7(projectRoot, "requirements.txt")) || await exists(join7(projectRoot, "setup.py"));
+  const hasPython = await exists(join8(projectRoot, "pyproject.toml")) || await exists(join8(projectRoot, "requirements.txt")) || await exists(join8(projectRoot, "setup.py"));
   if (!hasPython) return skipped("ruff", "no python manifest");
   const bin = await pythonBin(projectRoot, "ruff");
   if (!bin) return skipped("ruff", "not installed");
@@ -22568,7 +22835,7 @@ async function runRuff(projectRoot) {
   return { tool: "ruff", status: "ok", detail: `${findings.length} findings`, findings };
 }
 async function runMypy(projectRoot) {
-  if (!await exists(join7(projectRoot, "pyproject.toml")) && !await exists(join7(projectRoot, "mypy.ini"))) {
+  if (!await exists(join8(projectRoot, "pyproject.toml")) && !await exists(join8(projectRoot, "mypy.ini"))) {
     return skipped("mypy", "no mypy config");
   }
   const bin = await pythonBin(projectRoot, "mypy");
@@ -22610,6 +22877,106 @@ async function runProjectTools(projectRoot) {
   ]);
 }
 
+// src/analyze/unicode.ts
+var BIDI_CODEPOINTS = {
+  8234: "LEFT-TO-RIGHT EMBEDDING",
+  8235: "RIGHT-TO-LEFT EMBEDDING",
+  8236: "POP DIRECTIONAL FORMATTING",
+  8237: "LEFT-TO-RIGHT OVERRIDE",
+  8238: "RIGHT-TO-LEFT OVERRIDE",
+  8294: "LEFT-TO-RIGHT ISOLATE",
+  8295: "RIGHT-TO-LEFT ISOLATE",
+  8296: "FIRST STRONG ISOLATE",
+  8297: "POP DIRECTIONAL ISOLATE"
+};
+var INVISIBLE_CODEPOINTS = {
+  8203: "ZERO WIDTH SPACE",
+  8204: "ZERO WIDTH NON-JOINER",
+  8205: "ZERO WIDTH JOINER",
+  8288: "WORD JOINER",
+  6158: "MONGOLIAN VOWEL SEPARATOR",
+  4447: "HANGUL CHOSEONG FILLER",
+  4448: "HANGUL JUNGSEONG FILLER",
+  12644: "HANGUL FILLER",
+  65440: "HALFWIDTH HANGUL FILLER",
+  65279: "ZERO WIDTH NO-BREAK SPACE (BOM)"
+};
+function charClass(codepoints) {
+  const escaped = Object.keys(codepoints).map((code) => `\\u${Number(code).toString(16).padStart(4, "0")}`).join("");
+  return new RegExp(`[${escaped}]`, "u");
+}
+var BIDI = charClass(BIDI_CODEPOINTS);
+var INVISIBLE = charClass(INVISIBLE_CODEPOINTS);
+var RULES2 = [
+  {
+    id: "bidi-control",
+    pattern: BIDI,
+    names: BIDI_CODEPOINTS,
+    title: "Bidirectional control character in source",
+    explanation: "Bidirectional controls can make the rendered source differ from what the compiler sees."
+  },
+  {
+    id: "invisible-character",
+    pattern: INVISIBLE,
+    names: INVISIBLE_CODEPOINTS,
+    title: "Invisible character in source",
+    explanation: "Invisible characters have no legitimate use in source and are used to hide payloads."
+  }
+];
+function describe(line, names) {
+  const found = /* @__PURE__ */ new Set();
+  for (const char of line) {
+    const code = char.codePointAt(0);
+    if (code === void 0) continue;
+    const name = names[code];
+    if (name) {
+      found.add(`U+${code.toString(16).toUpperCase().padStart(4, "0")} ${name}`);
+    }
+  }
+  return [...found].join(", ");
+}
+function stripControls(line) {
+  return line.replace(new RegExp(BIDI.source, "gu"), "").replace(
+    new RegExp(INVISIBLE.source, "gu"),
+    ""
+  );
+}
+function severityFor(rule, file) {
+  if (rule.id === "bidi-control") return "critical";
+  return file.lang === "docs" ? "medium" : "high";
+}
+function scanUnicode(files) {
+  const findings = [];
+  for (const file of files) {
+    const lines = file.content.split("\n");
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+      const candidate = i === 0 ? line.replace(/^\uFEFF/, "") : line;
+      for (const rule of RULES2) {
+        if (!rule.pattern.test(candidate)) continue;
+        findings.push({
+          ruleId: `unicode/${rule.id}`,
+          category: "security",
+          severity: severityFor(rule, file),
+          confidence: "definite",
+          source: "secrets",
+          title: rule.title,
+          description: `${describe(candidate, rule.names)} at ${file.path}:${i + 1}. ${rule.explanation}`,
+          suggestion: "Remove the character, or use an explicit escape if it is genuinely required inside a string literal.",
+          path: file.path,
+          lineStart: i + 1,
+          lineEnd: i + 1,
+          // Strip the offending characters so the fingerprint survives edits
+          // to the surrounding line.
+          snippet: stripControls(candidate).trim().slice(0, 200),
+          symbol: rule.id
+        });
+      }
+    }
+  }
+  return findings;
+}
+
 // src/analyze/run.ts
 var TOOL_PREFIXES = {
   eslint: "eslint/",
@@ -22618,7 +22985,9 @@ var TOOL_PREFIXES = {
   mypy: "mypy/",
   secrets: "secrets/",
   deps: "deps/",
-  graph: "graph/"
+  graph: "graph/",
+  "supply-chain": "supply-chain/",
+  unicode: "unicode/"
 };
 async function runAnalyzers(projectRoot, options = {}) {
   const db = await getDb(projectRoot);
@@ -22633,6 +23002,20 @@ async function runAnalyzers(projectRoot, options = {}) {
     status: "ok",
     detail: `${secretFindings.length} candidates`,
     findings: secretFindings
+  });
+  const supplyChainFindings = await scanSupplyChain(projectRoot, files);
+  outcomes.push({
+    tool: "supply-chain",
+    status: "ok",
+    detail: `${supplyChainFindings.length} findings across install scripts, workflows and agent config`,
+    findings: supplyChainFindings
+  });
+  const unicodeFindings = scanUnicode(files);
+  outcomes.push({
+    tool: "unicode",
+    status: "ok",
+    detail: `${unicodeFindings.length} smuggling candidates`,
+    findings: unicodeFindings
   });
   outcomes.push(
     options.offline ? { tool: "deps", status: "skipped", detail: "offline mode", findings: [] } : await auditDependencies(projectRoot)
@@ -22729,27 +23112,92 @@ function severityRank(severity) {
 }
 
 // src/plan/context.ts
-import { readFile as readFile5 } from "node:fs/promises";
-import { join as join8 } from "node:path";
-var GUIDES = {
-  typescript: "typescript.md",
-  javascript: "typescript.md",
-  python: "python.md"
+import { readFile as readFile7 } from "node:fs/promises";
+import { join as join10 } from "node:path";
+
+// src/plan/rules.ts
+import { readFile as readFile6 } from "node:fs/promises";
+import { join as join9 } from "node:path";
+var GUIDE_FOR_LANGUAGE = {
+  typescript: "typescript",
+  javascript: "typescript",
+  python: "python"
 };
-function estimateTokens(text) {
-  return Math.ceil(text.length / 4);
+var MIN_BODY_CHARS = 40;
+function slug(heading) {
+  return heading.toLowerCase().replace(/\(.*?\)/g, "").replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
 }
-async function readGuides(pluginRoot, languages) {
-  const names = new Set(languages.map((lang) => GUIDES[lang]).filter(Boolean));
-  names.add("general.md");
-  const parts = [];
-  for (const name of names) {
+function summarize(body) {
+  for (const raw of body.split("\n")) {
+    const line = raw.trim().replace(/^[-*]\s+/, "").replace(/\*\*/g, "");
+    if (!line || line.startsWith("#") || line.startsWith("|") || line.startsWith("```")) continue;
+    return line.length > 110 ? `${line.slice(0, 110)}\u2026` : line;
+  }
+  return "";
+}
+function parseGuide(guide, content) {
+  const rules = [];
+  const lines = content.split("\n");
+  let heading = null;
+  let body = [];
+  const flush = () => {
+    if (!heading) return;
+    const text = body.join("\n").trim();
+    if (text.replace(/\s/g, "").length >= MIN_BODY_CHARS) {
+      rules.push({
+        id: `${guide}/${slug(heading)}`,
+        guide,
+        heading,
+        summary: summarize(text),
+        body: text
+      });
+    }
+    heading = null;
+    body = [];
+  };
+  for (const line of lines) {
+    const match = /^(#{2,3})\s+(.+?)\s*$/.exec(line);
+    if (match) {
+      flush();
+      heading = match[2];
+      continue;
+    }
+    if (heading) body.push(line);
+  }
+  flush();
+  return rules;
+}
+function guidesForLanguages(languages) {
+  const guides = /* @__PURE__ */ new Set(["general"]);
+  for (const language of languages) {
+    const guide = GUIDE_FOR_LANGUAGE[language];
+    if (guide) guides.add(guide);
+  }
+  return [...guides];
+}
+async function loadRules(pluginRoot, languages) {
+  const guides = languages ? guidesForLanguages(languages) : ["general", "typescript", "python"];
+  const rules = [];
+  for (const guide of guides) {
     try {
-      parts.push(await readFile5(join8(pluginRoot, "lang", name), "utf-8"));
+      const content = await readFile6(join9(pluginRoot, "lang", `${guide}.md`), "utf-8");
+      rules.push(...parseGuide(guide, content));
     } catch {
     }
   }
-  return parts.join("\n\n");
+  return rules;
+}
+async function findRule(pluginRoot, id) {
+  const rules = await loadRules(pluginRoot);
+  return rules.find((rule) => rule.id === id) ?? rules.find((rule) => rule.id.endsWith(`/${id}`)) ?? null;
+}
+function renderRuleIndex(rules) {
+  return rules.map((rule) => `- \`${rule.id}\` \u2014 ${rule.heading}${rule.summary ? `: ${rule.summary}` : ""}`).join("\n");
+}
+
+// src/plan/context.ts
+function estimateTokens(text) {
+  return Math.ceil(text.length / 4);
 }
 function knownFindingsBlock(db, paths) {
   const placeholders = paths.map(() => "?").join(",");
@@ -22839,12 +23287,12 @@ finding needs: ruleId (stable slug, e.g. "llm/unchecked-nullable"), category,
 severity, confidence, path, lineStart, title, description, suggestion.
 
 Anything you assert must be visible in the code you were given. If you need
-more context, call audit_query (kinds: symbol, importers, imports, findings,
-hotspots) rather than guessing.
+more context, call audit_query (kinds: rule, symbol, importers, imports,
+findings, hotspots) rather than guessing.
 `.trim();
 async function readLens(pluginRoot, lens) {
   try {
-    return await readFile5(join8(pluginRoot, "lenses", `${lens}.md`), "utf-8");
+    return await readFile7(join10(pluginRoot, "lenses", `${lens}.md`), "utf-8");
   } catch {
     return "";
   }
@@ -22862,11 +23310,16 @@ async function buildContext(db, unit, options) {
   ].join("\n");
   sections.push(header);
   used += estimateTokens(header);
-  const guides = await readGuides(options.pluginRoot, unit.languages);
-  if (guides) {
-    const block = `## REVIEW RULES
-
-${guides}`;
+  const rules = await loadRules(options.pluginRoot, unit.languages);
+  if (rules.length > 0) {
+    const block = [
+      "## REVIEW RULES (index)",
+      "",
+      "Pull the full text of a rule when you need it:",
+      '`audit_query` with `kind: "rule"` and `arg: "<rule id>"`.',
+      "",
+      renderRuleIndex(rules)
+    ].join("\n");
     sections.push(block);
     used += estimateTokens(block);
   }
@@ -22900,7 +23353,7 @@ ${graph}`;
   for (const path of unit.paths) {
     let content;
     try {
-      content = await readFile5(join8(options.projectRoot, path), "utf-8");
+      content = await readFile7(join10(options.projectRoot, path), "utf-8");
     } catch {
       omitted.push(path);
       continue;
@@ -22949,6 +23402,7 @@ ${sourceParts.join("\n\n")}`);
 
 // src/plan/query.ts
 var QUERY_KINDS = [
+  "rule",
   "symbol",
   "importers",
   "imports",
@@ -22957,7 +23411,16 @@ var QUERY_KINDS = [
   "externals",
   "cycles"
 ];
-function runQuery(db, kind, arg, limit = 50) {
+async function runQuery(context, kind, arg, limit = 50) {
+  const { db } = context;
+  if (kind === "rule") {
+    if (!arg) {
+      const rules = await loadRules(context.pluginRoot);
+      return rules.map(({ id, heading, summary }) => ({ id, heading, summary }));
+    }
+    const rule = await findRule(context.pluginRoot, arg);
+    return rule ?? { error: `Unknown rule "${arg}". Query with no arg to list rule ids.` };
+  }
   switch (kind) {
     case "symbol":
       return db.all(
@@ -23012,6 +23475,8 @@ function runQuery(db, kind, arg, limit = 50) {
           WHERE rule_id = 'graph/import-cycle' AND status IN ('open','regressed') LIMIT ?`,
         [limit]
       );
+    default:
+      return { error: `Unknown query kind "${kind}".` };
   }
 }
 
@@ -23064,7 +23529,7 @@ function computeRisk(db) {
     };
   }).sort((a, b) => b.risk - a.risk);
 }
-function describe(files) {
+function describe2(files) {
   const top = files[0];
   const parts = [];
   if (top.fanIn > 0) parts.push(`${top.fanIn} importers`);
@@ -23096,7 +23561,7 @@ function planUnits(db, options = {}) {
         languages: [...new Set(batch.map((file) => file.lang))],
         risk: Math.round(batch.reduce((sum, f) => sum + f.risk, 0) / batch.length * 10) / 10,
         estimatedTokens: tokens,
-        reason: describe(batch)
+        reason: describe2(batch)
       });
       batch = [];
       tokens = 0;
@@ -23128,7 +23593,7 @@ function loadPlan(db) {
 
 // src/report/export.ts
 import { mkdir as mkdir2, writeFile as writeFile2 } from "node:fs/promises";
-import { join as join9 } from "node:path";
+import { join as join11 } from "node:path";
 var SEVERITY_ORDER = "CASE severity WHEN 'critical' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 ELSE 3 END";
 function effortFor(fileCount, severity) {
   if (fileCount > 5) return "large";
@@ -23308,8 +23773,8 @@ function mapReport(db) {
   ].join("\n");
 }
 async function exportReports(db, projectRoot) {
-  const auditDir = join9(projectRoot, "sdlc-audit");
-  const reportsDir = join9(auditDir, "reports");
+  const auditDir = join11(projectRoot, "sdlc-audit");
+  const reportsDir = join11(auditDir, "reports");
   await mkdir2(reportsDir, { recursive: true });
   const findings = db.all(
     `SELECT id, rule_id, category, severity, confidence, source, path, line_start,
@@ -23318,10 +23783,10 @@ async function exportReports(db, projectRoot) {
       ORDER BY ${SEVERITY_ORDER}, path`
   );
   const tasks = buildTasks(findings);
-  await writeFile2(join9(reportsDir, "AUDIT.md"), auditReport(db, tasks));
-  await writeFile2(join9(reportsDir, "MAP.md"), mapReport(db));
+  await writeFile2(join11(reportsDir, "AUDIT.md"), auditReport(db, tasks));
+  await writeFile2(join11(reportsDir, "MAP.md"), mapReport(db));
   await writeFile2(
-    join9(auditDir, "TASKS.json"),
+    join11(auditDir, "TASKS.json"),
     JSON.stringify(
       {
         version: "2.0.0",
@@ -23504,7 +23969,7 @@ server.tool(
       let snippet;
       if (finding.path && finding.lineStart) {
         try {
-          const content = await readFile6(join10(root, finding.path), "utf-8");
+          const content = await readFile8(join12(root, finding.path), "utf-8");
           snippet = extractSnippet(content, finding.lineStart, finding.lineEnd);
         } catch {
         }
@@ -23518,16 +23983,17 @@ server.tool(
 );
 server.tool(
   "audit_query",
-  "Query the audit store: symbol definitions, importers, imports, findings, hotspots, external packages, cycles.",
+  "Query the audit store: review rules, symbol definitions, importers, imports, findings, hotspots, external packages, cycles.",
   {
     ...projectRootArg,
     kind: external_exports.enum(QUERY_KINDS),
-    arg: external_exports.string().optional().describe("Symbol name, file path, or filter value."),
+    arg: external_exports.string().optional().describe("Rule id, symbol name, file path, or filter value. Omit with kind 'rule' to list every rule."),
     limit: external_exports.number().optional()
   },
   async ({ projectRoot, kind, arg, limit }) => wrap(async () => {
     const db = await getDb(resolveRoot(projectRoot));
-    return { kind, rows: runQuery(db, kind, arg, limit) };
+    const rows = await runQuery({ db, pluginRoot: PLUGIN_ROOT }, kind, arg, limit);
+    return { kind, rows };
   })
 );
 server.tool(
