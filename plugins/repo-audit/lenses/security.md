@@ -33,6 +33,20 @@ deeper than pattern matching.
 - Unescaped values reaching HTML/templating (`innerHTML`,
   `dangerouslySetInnerHTML`, `| safe`).
 
+## Code the repository runs on someone else's machine
+
+The deterministic pass already flags install hooks that pipe downloads into a
+shell, attacker-controlled interpolation in workflows, `pull_request_target`
+checkouts, and agent config that executes commands. Look for what that misses:
+
+- Build or test scripts that fetch unpinned remote content, or resolve a
+  dependency from a URL, git ref, or local tarball rather than the registry.
+- Workflow steps that run on untrusted input with elevated permissions, or
+  that expose secrets to a step which then calls out to the network.
+- Agent and editor config (`.claude/`, `.mcp.json`, `.vscode/tasks.json`) that
+  grants broad permissions or points at a script whose contents can change.
+- Anything that writes outside the repository, or persists across sessions.
+
 ## Exposure
 
 - Secrets in defaults, fixtures, comments or error messages.

@@ -13,7 +13,9 @@ import { walk } from "../scan/walk.js";
 import { auditDependencies } from "./deps.js";
 import { analyzeGraph } from "./graph.js";
 import { scanSecrets } from "./secrets.js";
+import { scanSupplyChain } from "./supply-chain.js";
 import { runProjectTools, type AnalyzerOutcome } from "./tools.js";
+import { scanUnicode } from "./unicode.js";
 
 export interface RunAnalyzersOptions {
   /** Skip the network call to the OSV advisory database. */
@@ -40,6 +42,8 @@ const TOOL_PREFIXES: Record<string, string> = {
   secrets: "secrets/",
   deps: "deps/",
   graph: "graph/",
+  "supply-chain": "supply-chain/",
+  unicode: "unicode/",
 };
 
 export async function runAnalyzers(
@@ -61,6 +65,22 @@ export async function runAnalyzers(
     status: "ok",
     detail: `${secretFindings.length} candidates`,
     findings: secretFindings,
+  });
+
+  const supplyChainFindings = await scanSupplyChain(projectRoot, files);
+  outcomes.push({
+    tool: "supply-chain",
+    status: "ok",
+    detail: `${supplyChainFindings.length} findings across install scripts, workflows and agent config`,
+    findings: supplyChainFindings,
+  });
+
+  const unicodeFindings = scanUnicode(files);
+  outcomes.push({
+    tool: "unicode",
+    status: "ok",
+    detail: `${unicodeFindings.length} smuggling candidates`,
+    findings: unicodeFindings,
   });
 
   outcomes.push(
