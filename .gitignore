@@ -18,8 +18,7 @@ __pycache__/
 *.py[cod]
 *$py.class
 *.egg-info/
-dist/
-build/
+/dist/
 *.egg
 .venv/
 venv/
@@ -51,6 +50,8 @@ Desktop.ini
 *.o
 *.so
 *.dylib
+
+# Plugin servers ship prebuilt: build/ and vendor/ are committed on purpose.
 
 # Logs
 *.log

@@ -1,13 +1,14 @@
 {
   "name": "repo-audit-server",
-  "version": "3.0.0",
-  "description": "MCP server for repo-audit plugin — deterministic audit orchestration",
+  "version": "4.0.0",
+  "description": "MCP server for repo-audit — deterministic scan, graph, and findings store",
   "type": "module",
   "main": "build/index.js",
   "scripts": {
-    "build": "tsc",
-    "watch": "tsc --watch",
-    "clean": "rm -rf build",
+    "vendor": "node scripts/vendor.mjs",
+    "build": "node scripts/build.mjs",
+    "dist": "npm run vendor && npm run build",
+    "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest"
   },
@@ -17,6 +18,9 @@
   },
   "devDependencies": {
     "@types/node": "^22.15.21",
+    "@vscode/tree-sitter-wasm": "^0.3.1",
+    "esbuild": "^0.28.1",
+    "sql.js": "^1.14.1",
     "typescript": "^5.8.3",
     "vitest": "^3.0.0"
   }
