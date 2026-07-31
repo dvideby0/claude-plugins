@@ -104,7 +104,7 @@ When analyzing each Python file, check for these language-specific issues:
 - YAML `load()` instead of `safe_load()`
 - Disabled SSL verification (`verify=False`)
 
-## Cross-Module Checks (used in Phase 2)
+## Cross-Module Checks
 
 When comparing across modules:
 - Mixed string formatting styles (f-strings, .format(), % formatting)

@@ -71,7 +71,7 @@ When analyzing each TS/JS file, check for these language-specific issues:
 - Snapshot tests on large/volatile components (brittle)
 - Test descriptions that don't describe behavior (`test('works')`)
 
-## Cross-Module Checks (used in Phase 2)
+## Cross-Module Checks
 
 When comparing across modules:
 - Are some modules using `interface` and others `type` for the same patterns?

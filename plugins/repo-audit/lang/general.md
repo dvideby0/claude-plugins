@@ -66,7 +66,7 @@ language-specific audit file. These checks are universal.
 - Architecture decisions not documented anywhere
 - Missing changelog
 
-## Cross-Module Checks (used in Phase 2)
+## Cross-Module Checks
 
 - Different approaches to the same problem across modules
 - Inconsistent file/folder organization patterns

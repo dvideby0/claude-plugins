@@ -23,7 +23,7 @@ install: SQLite and the parsers ship with the plugin as wasm.
 
 | Command | What it does | Time |
 |---|---|---|
-| `/audit-quick` | Index, run your linters/type checkers, secret scan, dependency advisories | <1 min |
+| `/audit-quick` | Index, run your linters/type checkers, secret scan, dependency advisories, supply-chain and unicode checks | <1 min |
 | `/audit` | Everything above, then sub-agent review of the riskiest code | 3–10 min |
 | `/audit-security` | Same pipeline, security lens on the review pass | 2–5 min |
 
@@ -60,6 +60,15 @@ The MCP server exposes `audit_status`, `audit_scan`, `audit_run_tools`,
 `audit_plan`, `audit_context`, `audit_record_findings`, `audit_query`,
 `audit_suppress` and `audit_export`. You can drive them directly — ask Claude
 things like "which files import `db.ts`?" or "show open security findings".
+
+## What the deterministic pass covers
+
+Your own linters and type checkers, plus checks that run without any external
+tool: secrets, dependency advisories (OSV), import cycles, unicode smuggling
+(bidi and zero-width characters), and supply-chain risk — install hooks that
+execute remote code, workflows that interpolate attacker-controlled values or
+check out untrusted refs with secrets, and agent config (`.claude/`,
+`.mcp.json`, `.vscode/tasks.json`) that runs commands when the repo is opened.
 
 See [docs/STRATEGY.md](docs/STRATEGY.md) for how it works.
 

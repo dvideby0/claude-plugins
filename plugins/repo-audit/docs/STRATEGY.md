@@ -22,9 +22,9 @@ scan ──▶ run_tools ──▶ plan ──▶ context ──▶ agents ─�
    extract symbols and imports, resolve each import to a real file (relative
    paths, `tsconfig` aliases, Python relative and absolute modules) or to an
    external package.
-2. **run_tools** — the project's own eslint / tsc / ruff / mypy, plus an
-   in-process secret scan, OSV dependency advisories from your lockfile, and
-   import-cycle detection.
+2. **run_tools** — the project's own eslint / tsc / ruff / mypy, plus in-process
+   checks that need no external tool: secrets, OSV dependency advisories from
+   your lockfile, import cycles, unicode smuggling, and supply-chain risk.
 3. **plan** — rank files by risk, group them into review units.
 4. **context** — build each unit's prompt as a query against the store.
 5. **agents** — sub-agents review and call `audit_record_findings`.
@@ -89,12 +89,35 @@ Size is deliberately the smallest term — a large file is not automatically a
 risky one. Files are grouped into review units within a directory, sized to
 the context budget, and the highest-risk units go first.
 
+## Beyond known vulnerabilities
+
+An advisory database tells you about known flaws in declared dependencies. It
+says nothing about the ways a repository executes code on the machine of
+whoever clones it, so those are checked structurally rather than against a
+denylist of past incidents:
+
+- install hooks (`preinstall` / `postinstall` / `prepare`) that pipe downloads
+  into a shell, decode base64, or run inline interpreters
+- workflows that interpolate attacker-controlled event fields into `run:`
+  steps, or that check out a pull request head under `pull_request_target`
+  where repository secrets are available
+- agent and editor config — `.claude/`, `.mcp.json`, `.vscode/tasks.json` —
+  that runs commands when the repository is opened, or pre-approves blanket
+  permissions
+- encoded payloads handed straight to `eval` or `exec`
+- bidirectional and zero-width characters, which make rendered source differ
+  from compiled source
+
+A value under a `deny` or `block` key is a rule *against* the dangerous thing,
+not a use of it, and is never reported.
+
 ## Context engineering
 
 Context is assembled by query, in priority order, packed to a budget:
 
 1. What this unit is and why it was selected
-2. Review rules for the languages present, plus an optional lens
+2. A **rule index** — one line per rule, with the full text pulled on demand
+   via `audit_query` — plus an optional lens
 3. **Findings already known for these files** — so agents don't re-report what
    the linters found
 4. Graph neighbourhood — who imports these files, and the exported signatures
