@@ -19,7 +19,6 @@ await build({
   target: "node18",
   minify: false,
   sourcemap: false,
-  banner: { js: "#!/usr/bin/env node" },
 });
 
 const { size } = await stat(outfile);
