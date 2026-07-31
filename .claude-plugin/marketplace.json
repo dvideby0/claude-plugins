@@ -8,7 +8,7 @@
   "plugins": [
     {
       "name": "repo-audit",
-      "description": "Comprehensive, language-aware repository audit. Auto-detects languages and frameworks, spawns per-module sub-agents, and generates audit reports, project maps, dependency graphs, and CLAUDE.md updates.",
+      "description": "Incremental code audit for TypeScript/JavaScript and Python. Parses a real import graph, runs your own linters, and keeps findings in a SQLite store so repeat runs update knowledge instead of restarting.",
       "source": "./plugins/repo-audit",
       "category": "development"
     }

@@ -1,151 +1,44 @@
 # SDLC Plugins for Claude Code
 
-A collection of Claude Code plugins distributed as a plugin marketplace.
+A Claude Code plugin marketplace.
 
-## Available Plugins
+## Plugins
 
-| Plugin | Command | Description |
-|--------|---------|-------------|
-| **repo-audit** | `/audit` | Full repository audit — auto-detects languages, runs your existing linters and tools, spawns per-module sub-agents, and generates reports in `sdlc-audit/`. Supports 15 languages, incremental mode, variant analysis, and programmatic dependency/risk scoring. Non-destructive — never modifies your code. |
+| Plugin | Commands | What it does |
+|---|---|---|
+| **repo-audit** | `/audit`, `/audit-quick`, `/audit-security` | Incremental code audit for TypeScript/JavaScript and Python. Builds a real import graph, runs your own linters, and keeps findings in a SQLite store so repeat runs update knowledge instead of starting over. Never modifies your code. |
 
-
-## Installation
-
-### Step 1: Add this marketplace (one-time)
-
-In Claude Code, run:
+## Install
 
 ```
 /plugin marketplace add dvideby0/claude-plugins
 ```
 
-### Step 2: Install individual plugins
-
 ```
 /plugin install repo-audit
 ```
 
-Or browse all available plugins:
+## Adding a plugin
 
-```
-/plugin
-```
-
-Then navigate to **Discover** to see everything in this marketplace.
-
-## Usage
-
-After installing a plugin, its commands are available immediately:
-
-```
-/audit                          # Run repo-audit
-/repo-audit:audit               # Namespaced version (if there's a name conflict)
-```
-
-## Repo Structure
-
-```
-claude-plugins/
-├── .claude-plugin/
-│   └── marketplace.json         ← Indexes all plugins for discovery
-├── plugins/
-│   ├── repo-audit/              ← Each plugin is self-contained
-│   │   ├── .claude-plugin/
-│   │   │   └── plugin.json
-│   │   ├── commands/
-│   │   │   └── audit.md
-│   │   ├── lang/
-│   │   │   ├── typescript.md
-│   │   │   ├── python.md
-│   │   │   ├── go.md
-│   │   │   └── ... (15 language guides)
-│   │   ├── README.md
-│   │   └── LICENSE
-│   ├── example-plugin/          ← Your next plugin goes here
-│   │   ├── .claude-plugin/
-│   │   │   └── plugin.json
-│   │   ├── commands/
-│   │   │   └── hello.md
-│   │   └── ...
-│   └── another-plugin/          ← And the next one here
-│       └── ...
-└── README.md
-```
-
-## Adding a New Plugin
-
-1. Create a new directory under `plugins/`:
+1. Create `plugins/<name>/.claude-plugin/plugin.json` with `name`, `version`
+   and `description`.
+2. Put components at the plugin root: `commands/`, `agents/`, `skills/`,
+   `hooks/`, `.mcp.json`.
+3. Add an entry to `.claude-plugin/marketplace.json`.
+4. Validate before pushing:
 
 ```bash
-mkdir -p plugins/my-new-plugin/{.claude-plugin,commands}
+claude plugin validate --strict plugins/<name>
 ```
 
-2. Add the plugin manifest:
+Plugins that ship an MCP server should commit their build output so install
+requires no `npm install`.
 
-```json
-// plugins/my-new-plugin/.claude-plugin/plugin.json
-{
-  "name": "my-new-plugin",
-  "version": "1.0.0",
-  "description": "What this plugin does"
-}
-```
-
-3. Add your commands, agents, skills, or hooks at the **plugin root level** (not inside `.claude-plugin/`):
-
-```
-plugins/my-new-plugin/
-├── .claude-plugin/
-│   └── plugin.json       ← Only manifest goes here
-├── commands/              ← Slash commands at root level
-├── agents/                ← Sub-agents at root level
-├── skills/                ← Skills at root level
-├── hooks/                 ← Hooks at root level
-└── README.md
-```
-
-4. Register it in the marketplace by adding an entry to `.claude-plugin/marketplace.json`:
-
-```json
-{
-  "name": "my-new-plugin",
-  "description": "What this plugin does",
-  "path": "plugins/my-new-plugin"
-}
-```
-
-5. Push to GitHub. Anyone who has added your marketplace can now install it.
-
-## Uninstalling
-
-### Remove a plugin
+## Uninstall
 
 ```
 /plugin uninstall repo-audit
 ```
-
-This removes the plugin and its commands from your Claude Code environment. Your project files (e.g., `sdlc-audit/` output) are not affected.
-
-### Remove this marketplace
-
-```
-/plugin marketplace remove dvideby0/claude-plugins
-```
-
-This removes the marketplace and all plugins installed from it. You can re-add it at any time with the install command above.
-
-## Plugin Component Types
-
-Each plugin can include any combination of:
-
-| Component    | Location        | Purpose                                      |
-|-------------|-----------------|----------------------------------------------|
-| **Commands** | `commands/`     | Slash commands (`.md` files)                 |
-| **Agents**   | `agents/`       | Specialized sub-agents (`.md` files)         |
-| **Skills**   | `skills/`       | Auto-discovered capabilities (`SKILL.md`)    |
-| **Hooks**    | `hooks/`        | Event handlers (`hooks.json`)                |
-| **MCP**      | `.mcp.json`     | External tool connections                    |
-| **Scripts**   | `scripts/`     | Helper scripts for hooks/commands            |
 
 ## License
 
