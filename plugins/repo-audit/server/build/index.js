@@ -21779,6 +21779,7 @@ function parseTsAliases(tsconfig, baseDirDefault = "") {
 }
 function createResolver(filePaths, aliases = []) {
   const files = new Set(filePaths);
+  const pythonFiles = [...files].filter((path) => path.endsWith(".py")).sort((a, b) => a.length - b.length);
   const tryFile = (candidate) => {
     if (files.has(candidate)) return candidate;
     for (const [emitted, sources] of EMITTED_TO_SOURCE) {
@@ -21801,6 +21802,11 @@ function createResolver(filePaths, aliases = []) {
     if (files.has(`${candidate}/__init__.py`)) return `${candidate}/__init__.py`;
     return null;
   };
+  const tryPythonPackage = (modulePath) => {
+    const file = `/${modulePath}.py`;
+    const pkg = `/${modulePath}/__init__.py`;
+    return pythonFiles.find((path) => path.endsWith(file) || path.endsWith(pkg)) ?? null;
+  };
   return {
     resolve(fromPath, specifier) {
       const isPython = fromPath.endsWith(".py") || fromPath.endsWith(".pyi");
@@ -21814,7 +21820,7 @@ function createResolver(filePaths, aliases = []) {
           return { dstPath: hit2, external: hit2 ? null : null };
         }
         const asPath = specifier.replace(/\./g, "/");
-        const hit = tryPython(asPath) ?? tryPython(`src/${asPath}`);
+        const hit = tryPython(asPath) ?? tryPython(`src/${asPath}`) ?? tryPythonPackage(asPath);
         if (hit) return { dstPath: hit, external: null };
         return { dstPath: null, external: packageName(specifier.split(".")[0]) };
       }

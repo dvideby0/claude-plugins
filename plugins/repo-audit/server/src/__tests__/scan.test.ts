@@ -41,6 +41,16 @@ class User:
     def __init__(self, name):
         self.name = name
 `,
+  "libs/pkg/mylib/client.py": `
+from mylib.models import Thing
+
+def call():
+    return Thing()
+`,
+  "libs/pkg/mylib/models.py": `
+class Thing:
+    pass
+`,
   "src/api/handlers.ts": `
 import { hash } from "../lib/crypto.js";
 export const handle = () => hash("x");
@@ -58,8 +68,8 @@ describe("scan", () => {
     root = await makeProject(PROJECT);
     const result = await scan(root, { kind: "full" });
 
-    expect(result.filesTotal).toBe(8);
-    expect(result.filesParsed).toBe(7);
+    expect(result.filesTotal).toBe(10);
+    expect(result.filesParsed).toBe(9);
     expect(result.symbols).toBeGreaterThan(0);
 
     const db = await getDb(root);
@@ -96,6 +106,10 @@ describe("scan", () => {
     expect(edge("src/api/handlers.ts", "../lib/crypto.js")?.dst_path).toBe("src/lib/crypto.ts");
     expect(edge("src/api/routes.ts", "@/auth/login")?.dst_path).toBe("src/auth/login.ts");
     expect(edge("svc/app.py", ".models")?.dst_path).toBe("svc/models.py");
+    // src-layout / multi-package repo: absolute module lives under libs/pkg/
+    expect(edge("libs/pkg/mylib/client.py", "mylib.models")?.dst_path).toBe(
+      "libs/pkg/mylib/models.py",
+    );
     expect(edge("src/auth/login.ts", "express")?.external).toBe("express");
     expect(edge("svc/app.py", "os")?.external).toBe("os");
   });

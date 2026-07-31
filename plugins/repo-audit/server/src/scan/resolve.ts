@@ -77,6 +77,10 @@ export function createResolver(
   aliases: TsPathAlias[] = [],
 ): Resolver {
   const files = new Set(filePaths);
+  // Shortest-first so an ambiguous module resolves to the one nearest the root.
+  const pythonFiles = [...files]
+    .filter((path) => path.endsWith(".py"))
+    .sort((a, b) => a.length - b.length);
 
   const tryFile = (candidate: string): string | null => {
     if (files.has(candidate)) return candidate;
@@ -104,6 +108,19 @@ export function createResolver(
     return null;
   };
 
+  /**
+   * Absolute imports in a src-layout or multi-package repo don't start at the
+   * repo root — `langchain_google_genai.chat_models` lives at
+   * `libs/genai/langchain_google_genai/chat_models.py`. Match on suffix.
+   */
+  const tryPythonPackage = (modulePath: string): string | null => {
+    const file = `/${modulePath}.py`;
+    const pkg = `/${modulePath}/__init__.py`;
+    return (
+      pythonFiles.find((path) => path.endsWith(file) || path.endsWith(pkg)) ?? null
+    );
+  };
+
   return {
     resolve(fromPath, specifier) {
       const isPython = fromPath.endsWith(".py") || fromPath.endsWith(".pyi");
@@ -120,7 +137,8 @@ export function createResolver(
         }
         // Absolute dotted module — may still live in this repo.
         const asPath = specifier.replace(/\./g, "/");
-        const hit = tryPython(asPath) ?? tryPython(`src/${asPath}`);
+        const hit =
+          tryPython(asPath) ?? tryPython(`src/${asPath}`) ?? tryPythonPackage(asPath);
         if (hit) return { dstPath: hit, external: null };
         return { dstPath: null, external: packageName(specifier.split(".")[0]) };
       }
