@@ -41,6 +41,10 @@ class User:
     def __init__(self, name):
         self.name = name
 `,
+  "src/api/handlers.ts": `
+import { hash } from "../lib/crypto.js";
+export const handle = () => hash("x");
+`,
   "src/auth/login.test.ts": `import { login } from "./login";\n`,
 };
 
@@ -54,8 +58,8 @@ describe("scan", () => {
     root = await makeProject(PROJECT);
     const result = await scan(root, { kind: "full" });
 
-    expect(result.filesTotal).toBe(7);
-    expect(result.filesParsed).toBe(6);
+    expect(result.filesTotal).toBe(8);
+    expect(result.filesParsed).toBe(7);
     expect(result.symbols).toBeGreaterThan(0);
 
     const db = await getDb(root);
@@ -88,6 +92,8 @@ describe("scan", () => {
       );
 
     expect(edge("src/auth/login.ts", "../lib/crypto")?.dst_path).toBe("src/lib/crypto.ts");
+    // TypeScript ESM: the specifier names the emitted .js, the source is .ts
+    expect(edge("src/api/handlers.ts", "../lib/crypto.js")?.dst_path).toBe("src/lib/crypto.ts");
     expect(edge("src/api/routes.ts", "@/auth/login")?.dst_path).toBe("src/auth/login.ts");
     expect(edge("svc/app.py", ".models")?.dst_path).toBe("svc/models.py");
     expect(edge("src/auth/login.ts", "express")?.external).toBe("express");

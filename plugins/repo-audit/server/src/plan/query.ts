@@ -64,8 +64,8 @@ export function runQuery(
                 (SELECT COUNT(*) FROM edges e WHERE e.dst_path = f.path) AS fan_in,
                 (SELECT COUNT(*) FROM findings x
                   WHERE x.path = f.path AND x.status IN ('open','regressed')) AS open_findings
-           FROM files f WHERE f.present = 1 AND f.is_test = 0
-          ORDER BY fan_in DESC, f.churn DESC LIMIT ?`,
+           FROM files f WHERE f.present = 1 AND f.is_test = 0 AND f.parsed = 1
+          ORDER BY fan_in DESC, f.churn DESC, f.loc DESC LIMIT ?`,
         [limit],
       );
 

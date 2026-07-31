@@ -10,6 +10,18 @@ export interface Resolver {
 const TS_EXTENSIONS = [".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs"];
 const TS_INDEX = TS_EXTENSIONS.map((ext) => `/index${ext}`);
 
+/**
+ * TypeScript ESM imports name the emitted file (`./db.js`) while the source on
+ * disk is `./db.ts`. Without this the graph misses nearly every internal edge
+ * in a modern TS project.
+ */
+const EMITTED_TO_SOURCE: Array<[RegExp, string[]]> = [
+  [/\.js$/, [".ts", ".tsx"]],
+  [/\.mjs$/, [".mts"]],
+  [/\.cjs$/, [".cts"]],
+  [/\.jsx$/, [".tsx"]],
+];
+
 function dirOf(path: string): string {
   const idx = path.lastIndexOf("/");
   return idx === -1 ? "" : path.slice(0, idx);
@@ -68,6 +80,15 @@ export function createResolver(
 
   const tryFile = (candidate: string): string | null => {
     if (files.has(candidate)) return candidate;
+
+    for (const [emitted, sources] of EMITTED_TO_SOURCE) {
+      if (!emitted.test(candidate)) continue;
+      for (const source of sources) {
+        const rewritten = candidate.replace(emitted, source);
+        if (files.has(rewritten)) return rewritten;
+      }
+    }
+
     for (const ext of TS_EXTENSIONS) {
       if (files.has(candidate + ext)) return candidate + ext;
     }

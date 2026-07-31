@@ -21387,6 +21387,7 @@ async function getDb(projectRoot) {
 
 // src/findings/fingerprint.ts
 import { createHash } from "node:crypto";
+var SEPARATOR = "\0";
 function normalizeSnippet(snippet) {
   return snippet.replace(/\b\d+\b/g, "0").replace(/\s+/g, "").slice(0, 400);
 }
@@ -21397,7 +21398,7 @@ function fingerprint(input) {
     input.symbol ?? "",
     input.snippet ? normalizeSnippet(input.snippet) : input.title
   ];
-  return createHash("sha256").update(parts.join("\0")).digest("hex").slice(0, 20);
+  return createHash("sha256").update(parts.join(SEPARATOR)).digest("hex").slice(0, 20);
 }
 function anchorSha(snippet) {
   if (!snippet) return null;
@@ -21735,6 +21736,12 @@ async function parseFile(path, lang, source) {
 // src/scan/resolve.ts
 var TS_EXTENSIONS = [".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs"];
 var TS_INDEX = TS_EXTENSIONS.map((ext) => `/index${ext}`);
+var EMITTED_TO_SOURCE = [
+  [/\.js$/, [".ts", ".tsx"]],
+  [/\.mjs$/, [".mts"]],
+  [/\.cjs$/, [".cts"]],
+  [/\.jsx$/, [".tsx"]]
+];
 function dirOf(path) {
   const idx = path.lastIndexOf("/");
   return idx === -1 ? "" : path.slice(0, idx);
@@ -21774,6 +21781,13 @@ function createResolver(filePaths, aliases = []) {
   const files = new Set(filePaths);
   const tryFile = (candidate) => {
     if (files.has(candidate)) return candidate;
+    for (const [emitted, sources] of EMITTED_TO_SOURCE) {
+      if (!emitted.test(candidate)) continue;
+      for (const source of sources) {
+        const rewritten = candidate.replace(emitted, source);
+        if (files.has(rewritten)) return rewritten;
+      }
+    }
     for (const ext of TS_EXTENSIONS) {
       if (files.has(candidate + ext)) return candidate + ext;
     }
@@ -22975,8 +22989,8 @@ function runQuery(db, kind, arg, limit = 50) {
                 (SELECT COUNT(*) FROM edges e WHERE e.dst_path = f.path) AS fan_in,
                 (SELECT COUNT(*) FROM findings x
                   WHERE x.path = f.path AND x.status IN ('open','regressed')) AS open_findings
-           FROM files f WHERE f.present = 1 AND f.is_test = 0
-          ORDER BY fan_in DESC, f.churn DESC LIMIT ?`,
+           FROM files f WHERE f.present = 1 AND f.is_test = 0 AND f.parsed = 1
+          ORDER BY fan_in DESC, f.churn DESC, f.loc DESC LIMIT ?`,
         [limit]
       );
     case "externals":
