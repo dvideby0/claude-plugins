@@ -22822,6 +22822,13 @@ Anything you assert must be visible in the code you were given. If you need
 more context, call audit_query (kinds: symbol, importers, imports, findings,
 hotspots) rather than guessing.
 `.trim();
+async function readLens(pluginRoot, lens) {
+  try {
+    return await readFile5(join8(pluginRoot, "lenses", `${lens}.md`), "utf-8");
+  } catch {
+    return "";
+  }
+}
 async function buildContext(db, unit, options) {
   const budget = options.tokenBudget ?? 6e4;
   const sections = [];
@@ -22842,6 +22849,16 @@ async function buildContext(db, unit, options) {
 ${guides}`;
     sections.push(block);
     used += estimateTokens(block);
+  }
+  if (options.lens) {
+    const lens = await readLens(options.pluginRoot, options.lens);
+    if (lens) {
+      const block = `## FOCUS
+
+${lens}`;
+      sections.push(block);
+      used += estimateTokens(block);
+    }
   }
   const known = knownFindingsBlock(db, unit.paths);
   const knownBlock = `## KNOWN FINDINGS (already reported \u2014 do not repeat)
@@ -23417,9 +23434,10 @@ server.tool(
   {
     ...projectRootArg,
     unitId: external_exports.string().describe("Unit id from audit_plan, e.g. 'unit-01'."),
-    tokenBudget: external_exports.number().optional().describe("Context budget. Default 60000.")
+    tokenBudget: external_exports.number().optional().describe("Context budget. Default 60000."),
+    lens: external_exports.enum(["security", "correctness", "testing", "performance"]).optional().describe("Focus the review on one domain.")
   },
-  async ({ projectRoot, unitId, tokenBudget }) => wrap(async () => {
+  async ({ projectRoot, unitId, tokenBudget, lens }) => wrap(async () => {
     const root = resolveRoot(projectRoot);
     const db = await getDb(root);
     const unit = loadPlan(db).find((candidate) => candidate.id === unitId);
@@ -23429,7 +23447,12 @@ server.tool(
         available.length === 0 ? "No plan found. Call audit_plan first." : `Unknown unit "${unitId}". Available: ${available.join(", ")}`
       );
     }
-    return buildContext(db, unit, { projectRoot: root, pluginRoot: PLUGIN_ROOT, tokenBudget });
+    return buildContext(db, unit, {
+      projectRoot: root,
+      pluginRoot: PLUGIN_ROOT,
+      tokenBudget,
+      lens
+    });
   })
 );
 var findingSchema = external_exports.object({

@@ -1,7 +1,7 @@
 {
   "name": "repo-audit",
-  "version": "3.0.0",
-  "description": "Comprehensive, language-aware repository audit with composable sub-commands. Run /audit for full analysis or /audit-quick, /audit-security, /audit-deps, /audit-arch, /audit-patterns, /audit-coverage for targeted scans.",
+  "version": "4.0.0",
+  "description": "Incremental code audit for TypeScript/JavaScript and Python. Parses a real import graph, runs your own linters, and keeps findings in a SQLite store so repeat runs update knowledge instead of restarting.",
   "author": {
     "name": "dvideby0"
   }

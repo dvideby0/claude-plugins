@@ -163,8 +163,12 @@ server.tool(
     ...projectRootArg,
     unitId: z.string().describe("Unit id from audit_plan, e.g. 'unit-01'."),
     tokenBudget: z.number().optional().describe("Context budget. Default 60000."),
+    lens: z
+      .enum(["security", "correctness", "testing", "performance"])
+      .optional()
+      .describe("Focus the review on one domain."),
   },
-  async ({ projectRoot, unitId, tokenBudget }) =>
+  async ({ projectRoot, unitId, tokenBudget, lens }) =>
     wrap(async () => {
       const root = resolveRoot(projectRoot);
       const db = await getDb(root);
@@ -177,7 +181,12 @@ server.tool(
             : `Unknown unit "${unitId}". Available: ${available.join(", ")}`,
         );
       }
-      return buildContext(db, unit, { projectRoot: root, pluginRoot: PLUGIN_ROOT, tokenBudget });
+      return buildContext(db, unit, {
+        projectRoot: root,
+        pluginRoot: PLUGIN_ROOT,
+        tokenBudget,
+        lens,
+      });
     }),
 );
 

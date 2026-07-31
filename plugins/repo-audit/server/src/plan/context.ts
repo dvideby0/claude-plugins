@@ -160,10 +160,24 @@ more context, call audit_query (kinds: symbol, importers, imports, findings,
 hotspots) rather than guessing.
 `.trim();
 
+/** Optional review lens appended to the rules section. */
+async function readLens(pluginRoot: string, lens: string): Promise<string> {
+  try {
+    return await readFile(join(pluginRoot, "lenses", `${lens}.md`), "utf-8");
+  } catch {
+    return "";
+  }
+}
+
 export async function buildContext(
   db: Db,
   unit: WorkUnit,
-  options: { projectRoot: string; pluginRoot: string; tokenBudget?: number },
+  options: {
+    projectRoot: string;
+    pluginRoot: string;
+    tokenBudget?: number;
+    lens?: string;
+  },
 ): Promise<ContextResult> {
   const budget = options.tokenBudget ?? 60_000;
   const sections: string[] = [];
@@ -184,6 +198,15 @@ export async function buildContext(
     const block = `## REVIEW RULES\n\n${guides}`;
     sections.push(block);
     used += estimateTokens(block);
+  }
+
+  if (options.lens) {
+    const lens = await readLens(options.pluginRoot, options.lens);
+    if (lens) {
+      const block = `## FOCUS\n\n${lens}`;
+      sections.push(block);
+      used += estimateTokens(block);
+    }
   }
 
   const known = knownFindingsBlock(db, unit.paths);
