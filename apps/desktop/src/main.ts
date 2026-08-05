@@ -36,6 +36,13 @@ function enginePath(): string {
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
+/** The HTML shell is the only response that embeds the daemon bearer token. */
+function authenticatedUiUrl(daemon: DaemonInfo): string {
+  const url = new URL(baseUrl(daemon));
+  url.searchParams.set("token", daemon.token);
+  return url.toString();
+}
+
 /**
  * Electron's binary is our node. Telling the daemon so means the bridge it
  * registers with each harness points at something that will still exist
@@ -113,7 +120,7 @@ async function recoverEngine(): Promise<void> {
     recoveryAttempt = 0;
     if (window && !window.isDestroyed()) {
       allowedEngineOrigin = new URL(baseUrl(daemon)).origin;
-      await window.loadURL(baseUrl(daemon));
+      await window.loadURL(authenticatedUiUrl(daemon));
     }
   } catch (error) {
     process.stderr.write(
@@ -184,7 +191,7 @@ async function createWindow(daemon: DaemonInfo): Promise<void> {
     void shell.openExternal(url);
   });
 
-  await window.loadURL(baseUrl(daemon));
+  await window.loadURL(authenticatedUiUrl(daemon));
 }
 
 function showStartupFailure(error: unknown): void {

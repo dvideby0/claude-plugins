@@ -411,6 +411,47 @@ export function createMcpServer(options: McpServerOptions): McpServer {
       }),
   );
 
+  // --- read_file -----------------------------------------------------------
+
+  server.tool(
+    "read_file",
+    "Read a bounded, numbered slice of a text file inside the current workspace. Paths that escape through .. or symlinks are rejected.",
+    {
+      ...projectRootArg,
+      path: z.string().min(1).describe("Repository-relative file path."),
+      startLine: z.number().int().positive().optional().describe("First line, inclusive. Default 1."),
+      endLine: z.number().int().positive().optional().describe("Last line, inclusive. At most 400 lines are returned."),
+    },
+    async ({ projectRoot, path, startLine, endLine }) =>
+      wrap(async () => {
+        const root = resolveRoot(projectRoot);
+        const content = await readWorkspaceText(root, path);
+        const lines = content.split("\n");
+        const from = startLine ?? 1;
+        if (from > lines.length) {
+          throw new Error(`startLine ${from} is past the end of ${path} (${lines.length} lines).`);
+        }
+        const requestedEnd = endLine ?? Math.min(lines.length, from + 399);
+        if (requestedEnd < from) throw new Error("endLine must be greater than or equal to startLine.");
+        const to = Math.min(lines.length, requestedEnd, from + 399);
+        let text = lines
+          .slice(from - 1, to)
+          .map((line, index) => `${String(from + index).padStart(5)}  ${line}`)
+          .join("\n");
+        const characterLimit = 50_000;
+        const characterTruncated = text.length > characterLimit;
+        if (characterTruncated) text = text.slice(0, characterLimit);
+        return {
+          path,
+          startLine: from,
+          endLine: to,
+          totalLines: lines.length,
+          truncated: to < requestedEnd || to < lines.length || characterTruncated,
+          content: text,
+        };
+      }),
+  );
+
   // --- map -----------------------------------------------------------------
 
   server.tool(

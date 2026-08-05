@@ -50,7 +50,7 @@ export function checkOrigin(req: IncomingMessage, port: number): AuthResult {
 }
 
 /**
- * Applies to the API and MCP only.
+ * Applies to authenticated daemon routes.
  *
  * The UI receives this token embedded in its own HTML; every other caller —
  * the bridge above all — presents it as a bearer header.
@@ -60,6 +60,30 @@ export function checkToken(req: IncomingMessage, token: string): AuthResult {
   const presented = header?.startsWith("Bearer ") ? header.slice(7) : null;
   if (!presented || !timingSafeEqual(presented, token)) {
     return { ok: false, status: 401, message: "Unauthorized: bad or missing bearer token." };
+  }
+  return { ok: true };
+}
+
+/**
+ * Authenticate the one UI response that contains the bearer token.
+ *
+ * Electron supplies the token on its initial URL because a page cannot set an
+ * Authorization header for its own navigation. The UI removes that query
+ * parameter from browser history before doing any other work. Bearer auth is
+ * also accepted for non-browser clients and tests.
+ */
+export function checkUiBootstrap(req: IncomingMessage, token: string): AuthResult {
+  const header = req.headers.authorization;
+  const bearer = header?.startsWith("Bearer ") ? header.slice(7) : null;
+  let query: string | null = null;
+  try {
+    query = new URL(req.url ?? "/", "http://127.0.0.1").searchParams.get("token");
+  } catch {
+    return { ok: false, status: 400, message: "Bad request: malformed URL." };
+  }
+  const presented = bearer ?? query;
+  if (!presented || !timingSafeEqual(presented, token)) {
+    return { ok: false, status: 401, message: "Unauthorized: bad or missing UI token." };
   }
   return { ok: true };
 }

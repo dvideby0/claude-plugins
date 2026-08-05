@@ -20,7 +20,7 @@ import { getDb } from "../db/db.js";
 import { loadPlan } from "../plan/risk.js";
 import { scan } from "../scan/scan.js";
 import { createMcpServer, ENGINE_VERSION } from "../mcp/server.js";
-import { checkOrigin, checkToken } from "./auth.js";
+import { checkOrigin, checkToken, checkUiBootstrap } from "./auth.js";
 import { connectHarness, detectHarnesses, disconnectHarness, type BridgeCommand } from "./harnesses.js";
 import { suppress } from "../findings/record.js";
 import { buildReports } from "../report/export.js";
@@ -657,11 +657,18 @@ export function createHttpServer(options: HttpServerOptions): HttpServerHandle {
         return;
       }
 
-      // The token guards the API and MCP. The UI shell is exempt because it
-      // is what delivers the token to the page in the first place.
+      // The API and MCP use bearer auth. The HTML shell needs a one-time
+      // navigation credential before it may receive that same token.
       const needsToken = path === "/mcp" || path.startsWith("/api/");
       if (needsToken) {
         const auth = checkToken(req, token);
+        if (!auth.ok) {
+          sendJson(res, auth.status, { error: auth.message });
+          return;
+        }
+      }
+      if (path === "/" || path === "/index.html") {
+        const auth = checkUiBootstrap(req, token);
         if (!auth.ok) {
           sendJson(res, auth.status, { error: auth.message });
           return;

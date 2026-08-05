@@ -11,6 +11,10 @@
  */
 
 const { token } = window.__SDLC__;
+// The desktop uses a one-time query credential to fetch the token-bearing
+// shell. Remove it before any navigation, copy, or history operation can
+// retain it; subsequent API requests use the Authorization header below.
+if (location.search) history.replaceState(null, "", `${location.pathname}${location.hash}`);
 const shell = window.sdlcShell ?? null;
 
 if (shell?.platform === "darwin") document.body.classList.add("mac");

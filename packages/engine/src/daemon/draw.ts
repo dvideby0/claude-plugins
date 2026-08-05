@@ -41,6 +41,7 @@ export const MAP_MCP_TOOLS = [
   "flow",
   "trace",
   "audit_query",
+  "read_file",
   "context",
   "relations",
   "remember",
@@ -50,8 +51,8 @@ export const MAP_MCP_TOOLS = [
  * How each CLI is asked to run one prompt to completion and exit.
  *
  * The tool allow-lists are deliberately narrow. This runs unattended, so the
- * agent is given exactly what the drawing pass needs — the engine's own tools,
- * read-only file access, and subagents — and nothing that edits the repository.
+ * agent is given exactly what the drawing pass needs. Repository reads go
+ * through the engine so realpath checks enforce the workspace boundary.
  */
 const INVOCATIONS: Record<string, HarnessInvocation> = {
   "claude-code": {
@@ -62,11 +63,10 @@ const INVOCATIONS: Record<string, HarnessInvocation> = {
       "--output-format",
       "stream-json",
       "--verbose",
-      // `--allowedTools` controls approval, not availability. The explicit
-      // list removes Bash/Edit/Write even when user settings pre-allow them;
-      // strict MCP config prevents unrelated user servers from loading.
+      // `--allowedTools` controls approval, not availability. Disable every
+      // built-in tool, then expose only the workspace-confined SDLC server.
       "--tools",
-      "Read,Grep,Glob",
+      "",
       "--setting-sources",
       "user",
       "--strict-mcp-config",
@@ -82,9 +82,6 @@ const INVOCATIONS: Record<string, HarnessInvocation> = {
       }),
       "--allowedTools",
       ...MAP_MCP_TOOLS.map((tool) => `mcp__sdlc__${tool}`),
-      "Read",
-      "Grep",
-      "Glob",
     ],
   },
   codex: {

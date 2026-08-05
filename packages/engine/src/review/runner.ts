@@ -49,7 +49,7 @@ export interface ReviewSummary {
   failures: Array<{ unitId: string; error: string }>;
 }
 
-interface ProposedFinding {
+export interface ProposedFinding {
   ruleId?: string;
   category?: string;
   severity?: string;
@@ -63,6 +63,9 @@ interface ProposedFinding {
   symbol?: string;
   evidence?: string;
 }
+
+/** Hard ceiling on model-controlled verification work for one review unit. */
+export const MAX_PROPOSALS_PER_UNIT = 20;
 
 const REVIEW_INSTRUCTION = `
 Return ONLY a JSON array of findings. No prose before or after it.
@@ -90,30 +93,43 @@ Rules:
 - If nothing is wrong, return [].
 `;
 
-function verificationPrompt(finding: ProposedFinding, source: string): string {
-  return `You are checking whether a code review finding is real. Default to rejecting it.
+interface SourceSlice {
+  text: string;
+  firstLine: number;
+  lastLine: number;
+}
 
-CLAIM
-  rule: ${finding.ruleId}
-  severity: ${finding.severity}
-  file: ${finding.path}:${finding.lineStart}
-  title: ${finding.title}
-  description: ${finding.description ?? ""}
-  evidence offered: ${finding.evidence ?? "(none)"}
+interface VerificationItem {
+  index: number;
+  finding: ProposedFinding;
+  source: SourceSlice;
+}
 
-SOURCE
-\`\`\`
-${source}
-\`\`\`
+interface VerificationVerdict {
+  index?: number;
+  substantiated?: boolean;
+  correctedLine?: number | null;
+}
 
-Decide whether the claim is substantiated by this source. Reject it if:
-- the cited lines do not show what the claim says they show,
-- the concern is already handled elsewhere in the source,
-- it is a style preference rather than a defect,
-- it depends on code you cannot see here.
+function verificationPrompt(items: VerificationItem[]): string {
+  const claims = items.map(({ index, finding, source }) => ({
+    index,
+    claim: finding,
+    source: source.text,
+  }));
+  return `You are checking whether code review findings are real. Default to rejecting them.
 
-Return ONLY:
-{"substantiated": true|false, "reason": "<one sentence>", "correctedLine": <number or null>}`;
+For each indexed claim below, decide whether it is substantiated by its source. Reject it if
+the cited lines do not show the claim, the concern is already handled, it is only a style
+preference, or it depends on code outside the supplied source.
+
+CLAIMS
+${JSON.stringify(claims, null, 2)}
+
+Return ONLY a JSON array with exactly one object per claim:
+[{"index": 0, "substantiated": true|false, "reason": "<one sentence>", "correctedLine": <number or null>}]
+
+A correctedLine must be one of the numbered source lines supplied for that claim.`;
 }
 
 /** Read the numbered slice of a file the finding points at, plus surrounding context. */
@@ -122,15 +138,25 @@ async function sourceFor(
   path: string,
   lineStart?: number,
   lineEnd?: number,
-): Promise<string> {
+): Promise<SourceSlice> {
   const content = await readWorkspaceText(projectRoot, path);
   const lines = content.split("\n");
-  const from = Math.max(0, (lineStart ?? 1) - 15);
-  const to = Math.min(lines.length, (lineEnd ?? lineStart ?? 1) + 15);
-  return lines
-    .slice(from, to)
-    .map((line, index) => `${String(from + index + 1).padStart(5)}  ${line}`)
-    .join("\n");
+  if (!lineStart || lineStart > lines.length) {
+    throw new Error(`Cited line ${lineStart ?? "missing"} is outside ${path}.`);
+  }
+  if (lineEnd && lineEnd > lines.length) {
+    throw new Error(`Cited end line ${lineEnd} is outside ${path}.`);
+  }
+  const from = Math.max(0, lineStart - 15);
+  const to = Math.min(lines.length, (lineEnd ?? lineStart) + 15);
+  return {
+    firstLine: from + 1,
+    lastLine: to,
+    text: lines
+      .slice(from, to)
+      .map((line, index) => `${String(from + index + 1).padStart(5)}  ${line}`)
+      .join("\n"),
+  };
 }
 
 function valid(finding: ProposedFinding): boolean {
@@ -138,10 +164,41 @@ function valid(finding: ProposedFinding): boolean {
     finding.title &&
       finding.path &&
       finding.ruleId &&
+      Number.isFinite(finding.lineStart) &&
+      Number.isInteger(finding.lineStart) &&
+      (finding.lineStart as number) > 0 &&
+      (finding.lineEnd === undefined ||
+        (Number.isFinite(finding.lineEnd) &&
+          Number.isInteger(finding.lineEnd) &&
+          (finding.lineEnd as number) >= (finding.lineStart as number))) &&
       CATEGORIES.includes(finding.category as (typeof CATEGORIES)[number]) &&
       SEVERITIES.includes(finding.severity as (typeof SEVERITIES)[number]) &&
       CONFIDENCES.includes(finding.confidence as (typeof CONFIDENCES)[number]),
   );
+}
+
+/** Validate, deduplicate, and cap untrusted first-pass model output. */
+export function selectReviewProposals(parsed: unknown): ProposedFinding[] {
+  if (!Array.isArray(parsed)) return [];
+  const selected: ProposedFinding[] = [];
+  const seen = new Set<string>();
+  for (const candidate of parsed) {
+    if (!candidate || typeof candidate !== "object") continue;
+    const finding = candidate as ProposedFinding;
+    if (!valid(finding)) continue;
+    const key = JSON.stringify([
+      finding.ruleId,
+      finding.path,
+      finding.lineStart,
+      finding.lineEnd ?? null,
+      finding.title,
+    ]);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    selected.push(finding);
+    if (selected.length === MAX_PROPOSALS_PER_UNIT) break;
+  }
+  return selected;
 }
 
 export async function runReview(
@@ -210,51 +267,77 @@ export async function runReview(
     }
 
     const parsed = extractJson<ProposedFinding[]>(result.text);
-    const proposals = (Array.isArray(parsed) ? parsed : []).filter(valid);
+    const proposals = selectReviewProposals(parsed);
     summary.proposed += proposals.length;
     note(`  proposed ${proposals.length}`);
 
     // --- verification --------------------------------------------------
-    const confirmed: FindingInput[] = [];
-    for (const proposal of proposals) {
-      let snippet: string | undefined;
-      let source: string;
+    const candidates: VerificationItem[] = [];
+    for (const [index, proposal] of proposals.entries()) {
       try {
-        source = await sourceFor(
-          projectRoot,
-          proposal.path as string,
-          proposal.lineStart,
-          proposal.lineEnd,
-        );
+        candidates.push({
+          index,
+          finding: proposal,
+          source: await sourceFor(
+            projectRoot,
+            proposal.path as string,
+            proposal.lineStart,
+            proposal.lineEnd,
+          ),
+        });
       } catch {
         // A finding pointing at a file we cannot read is not a finding.
         summary.rejected++;
-        continue;
       }
+    }
 
+    let verdicts = new Map<number, VerificationVerdict>();
+    if (verify && candidates.length > 0) {
+      const check = await runClaude(verificationPrompt(candidates), {
+        cwd: projectRoot,
+        timeoutMs: 120_000,
+        ...(options.model ? { model: options.model } : {}),
+      });
+      unitCost += check.costUsd ?? 0;
+      summary.costUsd += check.costUsd ?? 0;
+
+      const parsedVerdicts = check.ok ? extractJson<VerificationVerdict[]>(check.text) : null;
+      if (Array.isArray(parsedVerdicts)) {
+        verdicts = new Map(
+          parsedVerdicts
+            .filter((verdict) => Number.isInteger(verdict.index))
+            .map((verdict) => [verdict.index as number, verdict]),
+        );
+      }
+    }
+
+    const confirmed: FindingInput[] = [];
+    for (const candidate of candidates) {
+      const proposal = candidate.finding;
       if (verify) {
-        const check = await runClaude(verificationPrompt(proposal, source), {
-          cwd: projectRoot,
-          timeoutMs: 120_000,
-          ...(options.model ? { model: options.model } : {}),
-        });
-        unitCost += check.costUsd ?? 0;
-        summary.costUsd += check.costUsd ?? 0;
-
-        const verdict = check.ok
-          ? extractJson<{ substantiated?: boolean; correctedLine?: number | null }>(check.text)
-          : null;
-
-        // Unverifiable is treated as unsubstantiated, on purpose.
+        const verdict = verdicts.get(candidate.index);
+        // Missing, malformed, or failed verification is unsubstantiated.
         if (!verdict?.substantiated) {
           summary.rejected++;
           continue;
         }
-        if (typeof verdict.correctedLine === "number") {
+        if (verdict.correctedLine !== null && verdict.correctedLine !== undefined) {
+          if (
+            !Number.isInteger(verdict.correctedLine) ||
+            verdict.correctedLine < candidate.source.firstLine ||
+            verdict.correctedLine > candidate.source.lastLine
+          ) {
+            summary.rejected++;
+            continue;
+          }
           proposal.lineStart = verdict.correctedLine;
+          if (proposal.lineEnd && proposal.lineEnd < verdict.correctedLine) {
+            delete proposal.lineEnd;
+          }
         }
       }
 
+      let snippet: string | undefined;
       try {
         const content = await readWorkspaceText(projectRoot, proposal.path as string);
         snippet = extractSnippet(content, proposal.lineStart ?? 1, proposal.lineEnd);

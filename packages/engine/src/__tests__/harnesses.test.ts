@@ -108,7 +108,13 @@ describe("draw harness ids", () => {
     }
     expect(claude).not.toContain("mcp__sdlc");
     expect(claude).not.toContain("mcp__sdlc__audit_run_tools");
-    expect(claude).toContain("Read,Grep,Glob");
+    expect(claude.slice(claude.indexOf("--tools"), claude.indexOf("--tools") + 2)).toEqual([
+      "--tools",
+      "",
+    ]);
+    expect(claude).not.toContain("Read");
+    expect(claude).not.toContain("Grep");
+    expect(claude).not.toContain("Glob");
     expect(claude).toContain("--strict-mcp-config");
     expect(claude).toContain("user");
     const config = JSON.parse(claude[claude.indexOf("--mcp-config") + 1]!) as {
