@@ -41,6 +41,7 @@ pub struct Symbol {
     pub start_line: u32,
     pub end_line: u32,
     pub exported: bool,
+    pub default_export: bool,
     pub signature: String,
 }
 
@@ -214,6 +215,64 @@ fn is_exported_ts(node: Node) -> bool {
         current = ancestor.parent();
     }
     false
+}
+
+fn first_declared_name(node: Node, bytes: &[u8]) -> Option<String> {
+    if node.kind() == "identifier" {
+        return node.utf8_text(bytes).ok().map(str::to_string);
+    }
+    if let Some(name) = node.child_by_field_name("name") {
+        if let Ok(text) = name.utf8_text(bytes) {
+            if !text.is_empty() {
+                return Some(text.to_string());
+            }
+        }
+    }
+    let mut cursor = node.walk();
+    let found = node
+        .named_children(&mut cursor)
+        .find_map(|child| first_declared_name(child, bytes));
+    found
+}
+
+/** Local declaration names exported through the module's `default` slot. */
+fn default_export_names(root: Node, bytes: &[u8]) -> std::collections::HashSet<String> {
+    fn visit(node: Node, bytes: &[u8], names: &mut std::collections::HashSet<String>) {
+        if node.kind() == "export_statement" {
+            let is_default = node
+                .utf8_text(bytes)
+                .is_ok_and(|text| text.trim_start().starts_with("export default"));
+            if is_default {
+                let target = node
+                    .child_by_field_name("declaration")
+                    .or_else(|| node.child_by_field_name("value"));
+                if let Some(name) = target.and_then(|target| first_declared_name(target, bytes)) {
+                    names.insert(name);
+                }
+            }
+        }
+
+        if node.kind() == "export_specifier" {
+            let local = node
+                .child_by_field_name("name")
+                .and_then(|value| value.utf8_text(bytes).ok());
+            let alias = node
+                .child_by_field_name("alias")
+                .and_then(|value| value.utf8_text(bytes).ok());
+            if let (Some(local), Some("default")) = (local, alias) {
+                names.insert(local.to_string());
+            }
+        }
+
+        let mut cursor = node.walk();
+        for child in node.named_children(&mut cursor) {
+            visit(child, bytes, names);
+        }
+    }
+
+    let mut names = std::collections::HashSet::new();
+    visit(root, bytes, &mut names);
+    names
 }
 
 /// Names bound by one `import` statement.
@@ -462,7 +521,10 @@ fn pattern_binds(node: Node, name: &str, bytes: &[u8]) -> bool {
         return node.utf8_text(bytes).is_ok_and(|value| value == name);
     }
     // Assigning `object.name` or `items[name]` does not create a lexical name.
-    if matches!(node.kind(), "attribute" | "subscript") {
+    if matches!(
+        node.kind(),
+        "attribute" | "subscript" | "member_expression" | "subscript_expression"
+    ) {
         return false;
     }
     let mut cursor = node.walk();
@@ -635,7 +697,136 @@ fn python_shadowed(node: Node, binding: &Binding, bytes: &[u8]) -> bool {
     false
 }
 
-fn collect_refs(root: Node, bytes: &[u8], bindings: &[Binding]) -> Vec<Reference> {
+fn typescript_binding_occurrence(node: Node) -> bool {
+    let mut current = node;
+    while let Some(parent) = current.parent() {
+        let in_field = |field: &str| {
+            parent
+                .child_by_field_name(field)
+                .is_some_and(|target| within(node, target))
+        };
+        match parent.kind() {
+            "variable_declarator" => return in_field("name"),
+            "required_parameter" | "optional_parameter" => {
+                return in_field("pattern") || in_field("name")
+            }
+            "function_declaration"
+            | "generator_function_declaration"
+            | "class_declaration" => return in_field("name"),
+            "formal_parameters" => return true,
+            "call_expression"
+            | "return_statement"
+            | "expression_statement"
+            | "statement_block"
+            | "program" => return false,
+            _ => current = parent,
+        }
+    }
+    false
+}
+
+fn typescript_parameters_bind(parameters: Node, name: &str, bytes: &[u8]) -> bool {
+    let mut cursor = parameters.walk();
+    let found = parameters.named_children(&mut cursor).any(|parameter| {
+        if parameter.kind() == "identifier" {
+            return pattern_binds(parameter, name, bytes);
+        }
+        ["pattern", "name", "parameter"]
+            .iter()
+            .any(|field| field_binds(parameter, field, name, bytes))
+    });
+    found
+}
+
+fn typescript_scope_binds(scope: Node, name: &str, bytes: &[u8]) -> bool {
+    if scope
+        .child_by_field_name("parameters")
+        .is_some_and(|parameters| typescript_parameters_bind(parameters, name, bytes))
+    {
+        return true;
+    }
+    if scope.kind() == "catch_clause"
+        && ["parameter", "name"]
+            .iter()
+            .any(|field| field_binds(scope, field, name, bytes))
+    {
+        return true;
+    }
+
+    fn visit(node: Node, scope_id: usize, name: &str, bytes: &[u8]) -> bool {
+        if node.id() != scope_id
+            && matches!(
+                node.kind(),
+                "function_declaration"
+                    | "generator_function_declaration"
+                    | "function_expression"
+                    | "generator_function"
+                    | "arrow_function"
+                    | "method_definition"
+                    | "class_declaration"
+                    | "class"
+                    | "statement_block"
+                    | "catch_clause"
+            )
+        {
+            // A declaration name belongs to the surrounding block; its body
+            // and parameters belong to the nested scope.
+            return matches!(
+                node.kind(),
+                "function_declaration" | "generator_function_declaration" | "class_declaration"
+            ) && field_binds(node, "name", name, bytes);
+        }
+
+        if node.kind() == "variable_declarator" && field_binds(node, "name", name, bytes) {
+            return true;
+        }
+
+        let mut cursor = node.walk();
+        let found = node
+            .named_children(&mut cursor)
+            .any(|child| visit(child, scope_id, name, bytes));
+        found
+    }
+
+    visit(scope, scope.id(), name, bytes)
+}
+
+/** Whether a TypeScript/JavaScript scope nested inside the import shadows it. */
+fn typescript_shadowed(node: Node, binding: &Binding, bytes: &[u8]) -> bool {
+    let mut current = node.parent();
+    while let Some(scope) = current {
+        if matches!(
+            scope.kind(),
+            "function_declaration"
+                | "generator_function_declaration"
+                | "function_expression"
+                | "generator_function"
+                | "arrow_function"
+                | "method_definition"
+                | "class_declaration"
+                | "class"
+                | "statement_block"
+                | "catch_clause"
+                | "program"
+        ) {
+            if scope.start_byte() == binding.scope_start && scope.end_byte() == binding.scope_end {
+                return false;
+            }
+            if typescript_scope_binds(scope, &binding.local, bytes) {
+                return true;
+            }
+        }
+        current = scope.parent();
+    }
+    false
+}
+
+fn collect_refs(
+    root: Node,
+    bytes: &[u8],
+    bindings: &[Binding],
+    grammar: Grammar,
+) -> Vec<Reference> {
     if bindings.is_empty() {
         return Vec::new();
     }
@@ -656,10 +847,11 @@ fn collect_refs(root: Node, bytes: &[u8], bindings: &[Binding]) -> Vec<Reference
             // in `object.query`, `query` must not resolve to an unrelated
             // named import. The object can be a namespace import, though, in
             // which case its member is the exported symbol we need to record.
-            if node.kind() == "identifier"
-                && !is_member_property(node)
-                && !python_binding_occurrence(node)
-            {
+            let binding_occurrence = match grammar {
+                Grammar::Python => python_binding_occurrence(node),
+                Grammar::Typescript | Grammar::Tsx => typescript_binding_occurrence(node),
+            };
+            if node.kind() == "identifier" && !is_member_property(node) && !binding_occurrence {
                 if let Ok(text) = node.utf8_text(bytes) {
                     let binding = bindings
                         .iter()
@@ -670,7 +862,13 @@ fn collect_refs(root: Node, bytes: &[u8], bindings: &[Binding]) -> Vec<Reference
                         })
                         .min_by_key(|binding| binding.scope_end - binding.scope_start);
                     if let Some(binding) = binding {
-                        if !python_shadowed(node, binding, bytes) {
+                        let shadowed = match grammar {
+                            Grammar::Python => python_shadowed(node, binding, bytes),
+                            Grammar::Typescript | Grammar::Tsx => {
+                                typescript_shadowed(node, binding, bytes)
+                            }
+                        };
+                        if !shadowed {
                             let line = node.start_position().row as u32 + 1;
                             let name = if binding.exported == "*" {
                                 namespace_member(node, binding, bytes)
@@ -839,6 +1037,11 @@ pub fn parse(engines: &mut Engines, path: &str, lang: &str, source: &str) -> Par
     };
 
     let bytes = source.as_bytes();
+    let default_exports = if grammar == Grammar::Python {
+        std::collections::HashSet::new()
+    } else {
+        default_export_names(tree.root_node(), bytes)
+    };
     let names = query.capture_names();
     let mut symbols = Vec::new();
     let mut imports: Vec<String> = Vec::new();
@@ -928,7 +1131,8 @@ pub fn parse(engines: &mut Engines, path: &str, lang: &str, source: &str) -> Par
                 value_kind.as_str(),
                 "arrow_function" | "function_expression" | "function" | "class"
             );
-            let exported = is_exported_ts(node);
+            let default_export = default_exports.contains(name);
+            let exported = is_exported_ts(node) || default_export;
 
             if callable {
                 symbols.push(Symbol {
@@ -942,6 +1146,7 @@ pub fn parse(engines: &mut Engines, path: &str, lang: &str, source: &str) -> Par
                     start_line,
                     end_line,
                     exported,
+                    default_export,
                     signature: first_line(text),
                 });
             } else if exported {
@@ -955,6 +1160,7 @@ pub fn parse(engines: &mut Engines, path: &str, lang: &str, source: &str) -> Par
                     start_line,
                     end_line,
                     exported: true,
+                    default_export,
                     signature: flattened(text),
                 });
             }
@@ -967,10 +1173,11 @@ pub fn parse(engines: &mut Engines, path: &str, lang: &str, source: &str) -> Par
             label.to_string()
         };
 
+        let default_export = grammar != Grammar::Python && default_exports.contains(name);
         let exported = if grammar == Grammar::Python {
             !name.starts_with('_')
         } else {
-            is_exported_ts(node)
+            is_exported_ts(node) || default_export
         };
 
         symbols.push(Symbol {
@@ -979,14 +1186,55 @@ pub fn parse(engines: &mut Engines, path: &str, lang: &str, source: &str) -> Par
             start_line,
             end_line,
             exported,
+            default_export,
             signature: first_line(text),
         });
     }
 
-    let refs = collect_refs(tree.root_node(), bytes, &bindings);
+    let refs = collect_refs(tree.root_node(), bytes, &bindings, grammar);
     Parsed {
         symbols,
         imports,
         refs,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn marks_named_default_exports_and_records_default_import_uses() {
+        let mut engines = Engines::new();
+        let definition = parse(
+            &mut engines,
+            "default.ts",
+            "typescript",
+            "export default function initialize() { return true; }",
+        );
+        assert!(definition
+            .symbols
+            .iter()
+            .any(|symbol| symbol.name == "initialize" && symbol.default_export));
+
+        let usage = parse(
+            &mut engines,
+            "user.ts",
+            "typescript",
+            "import start from './default';\nstart();",
+        );
+        assert!(usage.refs.iter().any(|reference| reference.name == "default"));
+    }
+
+    #[test]
+    fn excludes_shadowed_typescript_imports() {
+        let mut engines = Engines::new();
+        let parsed = parse(
+            &mut engines,
+            "shadow.ts",
+            "typescript",
+            "import { query } from './db';\nfunction run(query: () => void) { query(); }",
+        );
+        assert!(parsed.refs.is_empty());
     }
 }

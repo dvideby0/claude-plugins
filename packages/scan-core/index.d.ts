@@ -9,6 +9,7 @@ export interface NativeSymbol {
   startLine: number
   endLine: number
   exported: boolean
+  defaultExport: boolean
   signature: string
 }
 export interface NativeRef {

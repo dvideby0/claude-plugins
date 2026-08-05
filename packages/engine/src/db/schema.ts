@@ -1,4 +1,4 @@
-export const SCHEMA_VERSION = 9;
+export const SCHEMA_VERSION = 10;
 
 /**
  * The audit store. Files, symbols and edges are the deterministic picture of
@@ -48,6 +48,7 @@ CREATE TABLE IF NOT EXISTS symbols (
   start_line INTEGER NOT NULL,
   end_line   INTEGER NOT NULL,
   exported   INTEGER NOT NULL DEFAULT 0,
+  default_export INTEGER NOT NULL DEFAULT 0,
   signature  TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_symbols_path ON symbols(path);

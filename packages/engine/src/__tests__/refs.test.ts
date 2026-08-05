@@ -2,6 +2,7 @@ import { describe, expect, it, afterEach } from "vitest";
 import { getDb } from "../db/db.js";
 import { impactOf, referencesTo } from "../graph/refs.js";
 import { buildBrief } from "../graph/brief.js";
+import { parseFile } from "../scan/parse.js";
 import { scan } from "../scan/scan.js";
 import { loadNative } from "../scan/source.js";
 import { cleanup, makeProject } from "./helpers.js";
@@ -26,6 +27,17 @@ export function getOrders(id: string) { return run("c") + getUser(id); }
   "src/namespace.ts": `
 import * as db from "./db";
 export function byNamespace() { return db.query("namespace"); }
+`,
+  "src/shadow.ts": `
+import { query } from "./db";
+export function useCallback(query: (sql: string) => string) { return query("local"); }
+`,
+  "src/default.ts": `
+export default function initialize() { return "ready"; }
+`,
+  "src/default-user.ts": `
+import start from "./default";
+export function boot() { return start(); }
 `,
   "src/db.test.ts": `
 import { connect } from "./db";
@@ -131,6 +143,26 @@ withNative("symbol references", () => {
 
     const shout = referencesTo(db, "shout");
     expect(shout.callSites.some((site) => site.path === "src/shadow.py")).toBe(false);
+
+    const query = referencesTo(db, "query");
+    expect(query.callSites.some((site) => site.path === "src/shadow.ts")).toBe(false);
+  });
+
+  it("maps default imports to the declaration's real identity", async () => {
+    root = await makeProject(PROJECT);
+    await scan(root, { kind: "full" });
+    const db = await getDb(root);
+
+    expect(
+      db.get<{ default_export: number }>(
+        "SELECT default_export FROM symbols WHERE path = 'src/default.ts' AND name = 'initialize'",
+      )?.default_export,
+    ).toBe(1);
+    expect(referencesTo(db, "initialize").files).toContain("src/default-user.ts");
+    expect(
+      db.get<{ name: string }>("SELECT name FROM refs WHERE src_path = 'src/default-user.ts'")
+        ?.name,
+    ).toBe("initialize");
   });
 
   it("resolves the symbol used through an unaliased dotted Python import", async () => {
@@ -151,7 +183,7 @@ withNative("symbol references", () => {
 
     const impact = impactOf(db, "db.ts");
     expect(impact.resolved).toBe("src/db.ts");
-    expect(impact.directImporters).toBe(4);
+    expect(impact.directImporters).toBe(5);
 
     const byName = Object.fromEntries(impact.symbols.map((s) => [s.name, s.references]));
     expect(byName.query).toBe(4);
@@ -178,6 +210,18 @@ withNative("symbol references", () => {
 });
 
 describe("reference coverage", () => {
+  it("preserves default export identity in the TypeScript parser fallback", async () => {
+    const parsed = await parseFile(
+      "src/default.ts",
+      "typescript",
+      "export default function initialize() { return true; }",
+    );
+    expect(parsed.symbols.find((symbol) => symbol.name === "initialize")).toMatchObject({
+      exported: true,
+      defaultExport: true,
+    });
+  });
+
   it("reports unavailable reference analysis as unknown rather than empty", async () => {
     root = await makeProject(PROJECT);
     await scan(root, { kind: "full" });

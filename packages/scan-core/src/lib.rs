@@ -32,6 +32,7 @@ pub struct NativeSymbol {
     pub start_line: u32,
     pub end_line: u32,
     pub exported: bool,
+    pub default_export: bool,
     pub signature: String,
 }
 
@@ -115,6 +116,7 @@ fn scan_sync(root: &str) -> NativeScan {
                         start_line: symbol.start_line,
                         end_line: symbol.end_line,
                         exported: symbol.exported,
+                        default_export: symbol.default_export,
                         signature: symbol.signature,
                     })
                     .collect(),

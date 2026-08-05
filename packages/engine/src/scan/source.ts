@@ -49,6 +49,7 @@ interface NativeFile {
     startLine: number;
     endLine: number;
     exported: boolean;
+    defaultExport: boolean;
     signature: string;
   }>;
   imports: string[];

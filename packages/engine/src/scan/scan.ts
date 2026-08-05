@@ -28,7 +28,7 @@ import { canonicalWorkspaceRoot, workspaceIdentityKey } from "../lib/workspace-p
  *
  * When the stored version is behind, the next scan is promoted to a full one.
  */
-export const EXTRACTION_VERSION = 4;
+export const EXTRACTION_VERSION = 5;
 
 export interface ScanOptions {
   /** Re-parse every file, ignoring content hashes. */
@@ -179,8 +179,8 @@ async function doScan(projectRoot: string, options: ScanOptions = {}): Promise<S
 
       for (const symbol of result.symbols) {
         db.run(
-          `INSERT OR REPLACE INTO symbols(id, path, kind, name, start_line, end_line, exported, signature)
-           VALUES(?, ?, ?, ?, ?, ?, ?, ?)`,
+          `INSERT OR REPLACE INTO symbols(id, path, kind, name, start_line, end_line, exported, default_export, signature)
+           VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           [
             `${file.path}#${symbol.kind}:${symbol.name}@${symbol.startLine}`,
             file.path,
@@ -189,6 +189,7 @@ async function doScan(projectRoot: string, options: ScanOptions = {}): Promise<S
             symbol.startLine,
             symbol.endLine,
             symbol.exported ? 1 : 0,
+            symbol.defaultExport ? 1 : 0,
             symbol.signature,
           ],
         );
@@ -257,6 +258,20 @@ async function doScan(projectRoot: string, options: ScanOptions = {}): Promise<S
         reference.specifier,
       ]);
     }
+
+    // A default import is locally named by the importer, but its declaration
+    // can have a different real name (`export default function start`). Keep
+    // refs keyed to declaration identity, not the export-slot spelling.
+    db.run(
+      `UPDATE refs SET name = (
+         SELECT s.name FROM symbols s
+         WHERE s.path = refs.dst_path AND s.default_export = 1
+         ORDER BY s.start_line ASC LIMIT 1
+       )
+       WHERE refs.name = 'default' AND refs.dst_path IS NOT NULL
+         AND 1 = (SELECT COUNT(*) FROM symbols s
+                  WHERE s.path = refs.dst_path AND s.default_export = 1)`,
+    );
 
     // Attribute each reference to the symbol whose line range encloses it. The
     // innermost wins, so a call inside a method is credited to the method rather

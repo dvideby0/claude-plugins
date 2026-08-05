@@ -49,6 +49,7 @@ export class Db {
   /** Columns every table must have, added to existing stores if absent. */
   private static readonly ADDED_COLUMNS: Array<{ table: string; column: string; type: string }> = [
     { table: "refs", column: "src_symbol", type: "TEXT" },
+    { table: "symbols", column: "default_export", type: "INTEGER NOT NULL DEFAULT 0" },
     { table: "files", column: "ref_coverage", type: "TEXT NOT NULL DEFAULT 'none'" },
     { table: "components", column: "member_digest", type: "TEXT" },
     { table: "flow_steps", column: "content_sha", type: "TEXT" },

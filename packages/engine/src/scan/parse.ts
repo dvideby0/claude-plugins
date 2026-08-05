@@ -15,6 +15,8 @@ export interface ParsedSymbol {
   startLine: number;
   endLine: number;
   exported: boolean;
+  /** This declaration is the module's default export, whatever its local name. */
+  defaultExport: boolean;
   signature: string;
 }
 
@@ -89,6 +91,43 @@ function isExportedTs(node: TsNode): boolean {
   return false;
 }
 
+/** Local declaration names exported through the module's `default` slot. */
+function defaultExportNames(exports: TsNode[]): Set<string> {
+  const names = new Set<string>();
+
+  const firstDeclaredName = (node: TsNode): string | null => {
+    if (node.type === "identifier" && node.text) return node.text;
+    const own = node.childForFieldName("name");
+    if (own?.text) return own.text;
+    for (const child of node.namedChildren) {
+      const found = firstDeclaredName(child);
+      if (found) return found;
+    }
+    return null;
+  };
+
+  const visitSpecifiers = (node: TsNode): void => {
+    if (node.type === "export_specifier") {
+      const local = node.childForFieldName("name")?.text;
+      const alias = node.childForFieldName("alias")?.text;
+      if (local && alias === "default") names.add(local);
+      return;
+    }
+    for (const child of node.namedChildren) visitSpecifiers(child);
+  };
+
+  for (const node of exports) {
+    if (node.text.trimStart().startsWith("export default")) {
+      const declaration = node.childForFieldName("declaration");
+      const value = node.childForFieldName("value");
+      const name = declaration ? firstDeclaredName(declaration) : firstDeclaredName(value ?? node);
+      if (name) names.add(name);
+    }
+    visitSpecifiers(node);
+  }
+  return names;
+}
+
 function pythonKind(node: TsNode): "function" | "method" {
   // A decorated method nests one level deeper: function_definition →
   // decorated_definition → block → class_definition.
@@ -123,9 +162,17 @@ export async function parseFile(
   const symbols: ParsedSymbol[] = [];
   const imports = new Set<string>();
 
-  for (const capture of (query as { captures(n: TsNode): Array<{ name: string; node: TsNode }> }).captures(
+  const captures = (query as { captures(n: TsNode): Array<{ name: string; node: TsNode }> }).captures(
     tree.rootNode,
-  )) {
+  );
+  const defaults =
+    grammar === "python"
+      ? new Set<string>()
+      : defaultExportNames(
+          captures.filter((capture) => capture.name === "export").map(({ node }) => node),
+        );
+
+  for (const capture of captures) {
     const { name: label, node } = capture;
 
     if (label === "import" || label === "export") {
@@ -161,7 +208,8 @@ export async function parseFile(
       const value = node.childForFieldName("value");
       const valueType = value?.type ?? "";
       const callable = /^(arrow_function|function_expression|function|class)$/.test(valueType);
-      const exported = isExportedTs(node);
+      const defaultExport = defaults.has(name);
+      const exported = isExportedTs(node) || defaultExport;
 
       // Exported constants are the codebase's vocabulary — the closed sets of
       // allowed values — so they are recorded even though they are data.
@@ -173,6 +221,7 @@ export async function parseFile(
         startLine: node.startPosition.row + 1,
         endLine: node.endPosition.row + 1,
         exported,
+        defaultExport,
         signature: callable ? firstLine(node) : flattened(node),
       });
       continue;
@@ -183,12 +232,14 @@ export async function parseFile(
         ? pythonKind(node)
         : (label as ParsedSymbol["kind"]);
 
+    const defaultExport = grammar !== "python" && defaults.has(name);
     symbols.push({
       kind,
       name,
       startLine: node.startPosition.row + 1,
       endLine: node.endPosition.row + 1,
-      exported: grammar === "python" ? !name.startsWith("_") : isExportedTs(node),
+      exported: grammar === "python" ? !name.startsWith("_") : isExportedTs(node) || defaultExport,
+      defaultExport,
       signature: firstLine(node),
     });
   }
