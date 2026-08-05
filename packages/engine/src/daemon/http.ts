@@ -68,6 +68,27 @@ interface IndexJob {
 }
 
 const MAX_EVENTS = 40;
+const STOP_GRACE_MS = 5_000;
+
+type StoppableIndexJob = Pick<IndexJob, "running" | "phase" | "error" | "child" | "stopped">;
+
+/** Stop a draw without making it look exited until the child really closes. */
+export function requestIndexStop(job: StoppableIndexJob, graceMs = STOP_GRACE_MS): void {
+  const child = job.child;
+  const force = job.stopped;
+  job.stopped = true;
+  job.phase = "failed";
+  job.error = "Stopped.";
+
+  if (!child) return;
+  child.kill(force ? "SIGKILL" : "SIGTERM");
+  if (force) return;
+
+  const escalation = setTimeout(() => {
+    if (job.child === child) child.kill("SIGKILL");
+  }, graceMs);
+  escalation.unref();
+}
 
 const MIME: Record<string, string> = {
   ".html": "text/html; charset=utf-8",
@@ -291,8 +312,8 @@ export function createHttpServer(options: HttpServerOptions): HttpServerHandle {
         const result = await handle.finished;
         job.child = null;
         note(result.summary);
-        job.phase = result.ok ? "done" : "failed";
-        job.error = result.ok ? null : result.summary;
+        job.phase = !job.stopped && result.ok ? "done" : "failed";
+        job.error = job.stopped ? "Stopped." : result.ok ? null : result.summary;
         job.running = false;
         log(`draw ${root}: ${result.summary}`);
       } catch (error) {
@@ -459,23 +480,14 @@ export function createHttpServer(options: HttpServerOptions): HttpServerHandle {
       // that ignores SIGTERM with no way left to reach it.
       if (sub === "stop" && method === "POST") {
         const job = jobs.get(id);
-        if (job) {
-          job.child?.kill(job.stopped ? "SIGKILL" : "SIGTERM");
-          job.stopped = true;
-          job.running = false;
-          job.phase = "failed";
-          job.error = "Stopped.";
-        }
+        if (job) requestIndexStop(job);
         sendJson(res, 200, { stopped: true });
         return true;
       }
 
       if (!sub && method === "DELETE") {
         const job = jobs.get(id);
-        if (job) {
-          job.stopped = true;
-          job.child?.kill("SIGTERM");
-        }
+        if (job) requestIndexStop(job);
         await registry.remove(id);
         jobs.delete(id);
         await syncWatchers();

@@ -185,7 +185,9 @@ fn strip_quotes(text: &str) -> &str {
 fn is_exported_ts(node: Node) -> bool {
     let mut current = node.parent();
     for _ in 0..3 {
-        let Some(ancestor) = current else { return false };
+        let Some(ancestor) = current else {
+            return false;
+        };
         if ancestor.kind() == "export_statement" {
             return true;
         }
@@ -223,13 +225,20 @@ fn bindings_from_import(node: Node, bytes: &[u8], grammar: Grammar, out: &mut Ve
                         }
                     }
                     "aliased_import" => {
-                        let module = child.child_by_field_name("name").map(text).unwrap_or_default();
+                        let module = child
+                            .child_by_field_name("name")
+                            .map(text)
+                            .unwrap_or_default();
                         let local = child
                             .child_by_field_name("alias")
                             .map(text)
                             .unwrap_or_else(|| module.clone());
                         if !module.is_empty() {
-                            out.push(Binding { local, exported: "*".to_string(), module });
+                            out.push(Binding {
+                                local,
+                                exported: "*".to_string(),
+                                module,
+                            });
                         }
                     }
                     _ => {}
@@ -261,10 +270,20 @@ fn bindings_from_import(node: Node, bytes: &[u8], grammar: Grammar, out: &mut Ve
                 }
                 // `from m import a as b`
                 "aliased_import" => {
-                    let exported = child.child_by_field_name("name").map(text).unwrap_or_default();
-                    let local = child.child_by_field_name("alias").map(text).unwrap_or_else(|| exported.clone());
+                    let exported = child
+                        .child_by_field_name("name")
+                        .map(text)
+                        .unwrap_or_default();
+                    let local = child
+                        .child_by_field_name("alias")
+                        .map(text)
+                        .unwrap_or_else(|| exported.clone());
                     if !exported.is_empty() {
-                        out.push(Binding { local, exported, module: module.clone() });
+                        out.push(Binding {
+                            local,
+                            exported,
+                            module: module.clone(),
+                        });
                     }
                 }
                 _ => {}
@@ -276,7 +295,11 @@ fn bindings_from_import(node: Node, bytes: &[u8], grammar: Grammar, out: &mut Ve
     let Some(source) = node.child_by_field_name("source") else {
         return;
     };
-    let module = source.utf8_text(bytes).map(strip_quotes).unwrap_or("").to_string();
+    let module = source
+        .utf8_text(bytes)
+        .map(strip_quotes)
+        .unwrap_or("")
+        .to_string();
     if module.is_empty() {
         return;
     }
@@ -312,13 +335,20 @@ fn bindings_from_import(node: Node, bytes: &[u8], grammar: Grammar, out: &mut Ve
                         if spec.kind() != "import_specifier" {
                             continue;
                         }
-                        let exported = spec.child_by_field_name("name").map(text).unwrap_or_default();
+                        let exported = spec
+                            .child_by_field_name("name")
+                            .map(text)
+                            .unwrap_or_default();
                         let local = spec
                             .child_by_field_name("alias")
                             .map(text)
                             .unwrap_or_else(|| exported.clone());
                         if !exported.is_empty() {
-                            out.push(Binding { local, exported, module: module.clone() });
+                            out.push(Binding {
+                                local,
+                                exported,
+                                module: module.clone(),
+                            });
                         }
                     }
                 }
@@ -332,6 +362,33 @@ fn bindings_from_import(node: Node, bytes: &[u8], grammar: Grammar, out: &mut Ve
 ///
 /// The whole tree is walked, but only names that were actually imported are
 /// kept, which is what stops this from emitting every token in the file.
+fn member_parts<'a>(node: Node<'a>) -> Option<(Node<'a>, Node<'a>)> {
+    let parent = node.parent()?;
+    match parent.kind() {
+        "member_expression" => Some((
+            parent.child_by_field_name("object")?,
+            parent.child_by_field_name("property")?,
+        )),
+        "attribute" => Some((
+            parent.child_by_field_name("object")?,
+            parent.child_by_field_name("attribute")?,
+        )),
+        _ => None,
+    }
+}
+
+fn is_member_property(node: Node) -> bool {
+    member_parts(node).is_some_and(|(_, property)| property.id() == node.id())
+}
+
+fn namespace_member(node: Node, bytes: &[u8]) -> Option<String> {
+    let (object, property) = member_parts(node)?;
+    if object.id() != node.id() {
+        return None;
+    }
+    property.utf8_text(bytes).ok().map(str::to_string)
+}
+
 fn collect_refs(root: Node, bytes: &[u8], bindings: &[Binding]) -> Vec<Reference> {
     if bindings.is_empty() {
         return Vec::new();
@@ -346,19 +403,26 @@ fn collect_refs(root: Node, bytes: &[u8], bindings: &[Binding]) -> Vec<Reference
 
         // The import statement itself is not a use of what it imports, so its
         // whole subtree is skipped rather than just its identifiers.
-        let is_import = matches!(
-            node.kind(),
-            "import_statement" | "import_from_statement"
-        );
+        let is_import = matches!(node.kind(), "import_statement" | "import_from_statement");
 
         if !is_import {
-            if node.kind() == "identifier" {
+            // A non-computed member property is not a lexical variable use:
+            // in `object.query`, `query` must not resolve to an unrelated
+            // named import. The object can be a namespace import, though, in
+            // which case its member is the exported symbol we need to record.
+            if node.kind() == "identifier" && !is_member_property(node) {
                 if let Ok(text) = node.utf8_text(bytes) {
                     if let Some(binding) = bindings.iter().find(|b| b.local == text) {
                         let line = node.start_position().row as u32 + 1;
-                        if seen.insert((binding.exported.clone(), binding.module.clone(), line)) {
+                        let name = if binding.exported == "*" {
+                            namespace_member(node, bytes)
+                                .unwrap_or_else(|| binding.exported.clone())
+                        } else {
+                            binding.exported.clone()
+                        };
+                        if seen.insert((name.clone(), binding.module.clone(), line)) {
                             refs.push(Reference {
-                                name: binding.exported.clone(),
+                                name,
                                 module: binding.module.clone(),
                                 line,
                             });
@@ -600,7 +664,12 @@ pub fn parse(engines: &mut Engines, path: &str, lang: &str, source: &str) -> Par
 
             if callable {
                 symbols.push(Symbol {
-                    kind: if value_kind == "class" { "class" } else { "function" }.to_string(),
+                    kind: if value_kind == "class" {
+                        "class"
+                    } else {
+                        "function"
+                    }
+                    .to_string(),
                     name: name.to_string(),
                     start_line,
                     end_line,

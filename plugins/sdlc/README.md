@@ -30,7 +30,9 @@ so rather than installing a second copy of the engine inside the plugin.
 
 ## Persistent knowledge
 
-The engine keeps a per-workspace store under `~/.sdlc/stores`. Repeated scans
+The prototype currently keeps each workspace store in
+`sdlc-audit/audit.db` inside that workspace. Moving those stores under the
+app-owned `~/.sdlc/stores` directory is tracked roadmap work. Repeated scans
 reuse unchanged results, finding fingerprints survive line movement, accepted
 risks and false positives remain sticky, and memories can be attached to code
 with deterministic signatures so stale knowledge is visible after changes.

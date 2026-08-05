@@ -6,7 +6,8 @@
 
 import { describe, expect, it } from "vitest";
 import { spliceCodexBlock } from "../daemon/harnesses.js";
-import { supportedHarnesses } from "../daemon/draw.js";
+import { drawInvocationArgs, MAP_MCP_TOOLS, supportedHarnesses } from "../daemon/draw.js";
+import { windowsLauncherCommand } from "../daemon/launcher.js";
 
 const OURS = `[mcp_servers.sdlc]\ncommand = "node"\nargs = ["/path/bridge.js"]\n`;
 
@@ -81,5 +82,28 @@ describe("draw harness ids", () => {
   it("uses the same Claude id returned by harness detection", () => {
     expect(supportedHarnesses()).toContain("claude-code");
     expect(supportedHarnesses()).not.toContain("claude");
+  });
+
+  it("limits unattended Claude and Codex runs to map tools", () => {
+    const claude = drawInvocationArgs("claude-code", "draw");
+    const codex = drawInvocationArgs("codex", "draw");
+
+    for (const tool of MAP_MCP_TOOLS) {
+      expect(claude).toContain(`mcp__sdlc__${tool}`);
+    }
+    expect(claude).not.toContain("mcp__sdlc");
+    expect(claude).not.toContain("mcp__sdlc__audit_run_tools");
+    expect(codex.join(" ")).toContain("mcp_servers.sdlc.enabled_tools=");
+    expect(codex.join(" ")).not.toContain("audit_run_tools");
+  });
+});
+
+describe("Windows bridge launcher", () => {
+  it("runs the generated batch file through cmd.exe", () => {
+    expect(windowsLauncherCommand("C:\\SDLC Data\\sdlc-bridge.cmd", "C:\\Windows\\cmd.exe"))
+      .toEqual({
+        command: "C:\\Windows\\cmd.exe",
+        args: ["/d", "/s", "/c", "C:\\SDLC Data\\sdlc-bridge.cmd"],
+      });
   });
 });

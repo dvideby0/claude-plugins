@@ -324,7 +324,16 @@ export interface OverviewView {
 }
 
 export function overviewView(db: Db): OverviewView {
-  const lastRunId = db.get<{ id: number }>("SELECT id FROM runs ORDER BY id DESC LIMIT 1")?.id;
+  const lastAnalysis = db.get<{
+    id: number;
+    kind: string;
+    started_at: string;
+    git_sha: string | null;
+  }>(
+    `SELECT r.id, r.kind, r.started_at, r.git_sha
+     FROM runs r
+     WHERE r.id = (SELECT MAX(run_id) FROM tool_runs)`,
+  );
 
   return {
     languages: Object.fromEntries(
@@ -351,18 +360,19 @@ export function overviewView(db: Db): OverviewView {
        FROM files f WHERE f.present = 1 AND f.lang IN ${SOURCE_LANGS}
        ORDER BY importers DESC, f.loc DESC LIMIT 10`,
     ),
-    lastRun: (() => {
-      const run = db.get<{ kind: string; started_at: string; git_sha: string | null }>(
-        "SELECT kind, started_at, git_sha FROM runs ORDER BY id DESC LIMIT 1",
-      );
-      return run ? { kind: run.kind, startedAt: run.started_at, gitSha: run.git_sha } : null;
-    })(),
+    lastRun: lastAnalysis
+      ? {
+          kind: lastAnalysis.kind,
+          startedAt: lastAnalysis.started_at,
+          gitSha: lastAnalysis.git_sha,
+        }
+      : null,
     tools:
-      lastRunId === undefined
+      lastAnalysis == null
         ? []
         : db.all<{ tool: string; status: string; findings: number; detail: string | null }>(
             "SELECT tool, status, findings, detail FROM tool_runs WHERE run_id = ? ORDER BY tool",
-            [lastRunId],
+            [lastAnalysis.id],
           ),
   };
 }

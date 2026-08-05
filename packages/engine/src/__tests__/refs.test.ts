@@ -22,6 +22,10 @@ import { query as run } from "./db";
 import { getUser } from "./users";
 export function getOrders(id: string) { return run("c") + getUser(id); }
 `,
+  "src/namespace.ts": `
+import * as db from "./db";
+export function byNamespace() { return db.query("namespace"); }
+`,
   "src/db.test.ts": `
 import { connect } from "./db";
 connect("x");
@@ -35,6 +39,12 @@ def loud(text):
   "src/helpers.py": `
 def shout(text):
     return text.upper()
+`,
+  "src/module_user.py": `
+import helpers
+
+def module_loud(text):
+    return helpers.shout(text)
 `,
 };
 
@@ -57,9 +67,9 @@ withNative("symbol references", () => {
     const query = referencesTo(db, "query");
     expect(query.definedIn).toBe("src/db.ts");
     expect(query.exported).toBe(true);
-    // Two uses in users.ts, one in orders.ts — the last through an alias.
-    expect(query.total).toBe(3);
-    expect(query.files.sort()).toEqual(["src/orders.ts", "src/users.ts"]);
+    // Two named uses in users.ts, one alias, and one namespace member.
+    expect(query.total).toBe(4);
+    expect(query.files.sort()).toEqual(["src/namespace.ts", "src/orders.ts", "src/users.ts"]);
 
     // The alias is recorded under the name the defining module exports.
     const aliased = query.callSites.filter((site) => site.path === "src/orders.ts");
@@ -93,8 +103,8 @@ withNative("symbol references", () => {
 
     const shout = referencesTo(db, "shout");
     expect(shout.definedIn).toBe("src/helpers.py");
-    expect(shout.total).toBe(1);
-    expect(shout.callSites[0]?.path).toBe("src/util.py");
+    expect(shout.total).toBe(2);
+    expect(shout.files.sort()).toEqual(["src/module_user.py", "src/util.py"]);
   });
 
   it("separates blast radius from import count", async () => {
@@ -104,10 +114,10 @@ withNative("symbol references", () => {
 
     const impact = impactOf(db, "db.ts");
     expect(impact.resolved).toBe("src/db.ts");
-    expect(impact.directImporters).toBe(3);
+    expect(impact.directImporters).toBe(4);
 
     const byName = Object.fromEntries(impact.symbols.map((s) => [s.name, s.references]));
-    expect(byName.query).toBe(3);
+    expect(byName.query).toBe(4);
     expect(byName.connect).toBe(1);
     expect(byName.unused).toBe(0);
 

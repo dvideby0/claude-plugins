@@ -29,6 +29,22 @@ export interface HarnessInvocation {
   args: (prompt: string) => string[];
 }
 
+/** Exact engine surface needed by the unattended map prompt. */
+export const MAP_MCP_TOOLS = [
+  "map",
+  "map_drift",
+  "describe_component",
+  "describe_flow",
+  "tag",
+  "gaps",
+  "flow",
+  "trace",
+  "audit_query",
+  "context",
+  "relations",
+  "remember",
+] as const;
+
 /**
  * How each CLI is asked to run one prompt to completion and exit.
  *
@@ -46,7 +62,7 @@ const INVOCATIONS: Record<string, HarnessInvocation> = {
       "stream-json",
       "--verbose",
       "--allowedTools",
-      "mcp__sdlc",
+      ...MAP_MCP_TOOLS.map((tool) => `mcp__sdlc__${tool}`),
       "Read",
       "Grep",
       "Glob",
@@ -55,9 +71,23 @@ const INVOCATIONS: Record<string, HarnessInvocation> = {
   },
   codex: {
     bin: "codex",
-    args: (prompt) => ["exec", "--sandbox", "read-only", prompt],
+    args: (prompt) => [
+      "exec",
+      "--sandbox",
+      "read-only",
+      "-c",
+      `mcp_servers.sdlc.enabled_tools=${JSON.stringify(MAP_MCP_TOOLS)}`,
+      prompt,
+    ],
   },
 };
+
+/** Exposed so the capability ceiling is regression-tested without spawning a CLI. */
+export function drawInvocationArgs(harness: string, prompt: string): string[] {
+  const invocation = INVOCATIONS[harness];
+  if (!invocation) throw new Error(`Unsupported draw harness: ${harness}`);
+  return invocation.args(prompt);
+}
 
 export function supportedHarnesses(): string[] {
   return Object.keys(INVOCATIONS);
@@ -138,7 +168,7 @@ export async function drawMap(options: DrawOptions): Promise<DrawHandle> {
   }
 
   const prompt = await readContent("prompts/map.md");
-  const child = spawn(invocation.bin, invocation.args(prompt), {
+  const child = spawn(invocation.bin, drawInvocationArgs(options.harness, prompt), {
     cwd: options.root,
     stdio: ["ignore", "pipe", "pipe"],
     env: spawnEnv(),

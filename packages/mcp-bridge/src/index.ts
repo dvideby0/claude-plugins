@@ -140,7 +140,11 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   // The engine serves many repositories, so it needs to be told which one.
   // The harness spawns us inside the project, so our cwd is the answer.
   const args = (request.params.arguments ?? {}) as Record<string, unknown>;
-  const withRoot = "projectRoot" in args ? args : { ...args, projectRoot: PROJECT_ROOT };
+  // This process is the workspace capability boundary. Tool arguments are
+  // model-controlled, so accepting their projectRoot would let repository
+  // text redirect the app-owned daemon at any user-readable directory (and,
+  // for analyzer tools, execute that directory's toolchain).
+  const withRoot = { ...args, projectRoot: PROJECT_ROOT };
 
   try {
     return (await upstream.callTool({

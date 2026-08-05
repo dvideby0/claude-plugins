@@ -52,6 +52,14 @@ function cmdScript(target: LauncherTarget): string {
   ].join("\r\n");
 }
 
+/** Batch files are scripts, not Windows executables; stdio clients need cmd. */
+export function windowsLauncherCommand(
+  path: string,
+  comspec = process.env.ComSpec ?? process.env.COMSPEC ?? "cmd.exe",
+): { command: string; args: string[] } {
+  return { command: comspec, args: ["/d", "/s", "/c", path] };
+}
+
 /**
  * Write the launcher and return the command a harness should run.
  *
@@ -76,7 +84,9 @@ export async function writeLauncher(
       await chmod(tmp, 0o755);
     }
     await rename(tmp, path);
-    return { command: path, args: [] };
+    return process.platform === "win32"
+      ? windowsLauncherCommand(path)
+      : { command: path, args: [] };
   } catch {
     return target.electron
       ? { command: target.node, args: [target.script], env: { ELECTRON_RUN_AS_NODE: "1" } }

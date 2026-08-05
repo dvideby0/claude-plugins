@@ -2,6 +2,7 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { runAnalyzers } from "../analyze/run.js";
+import { localToolCommand } from "../analyze/tools.js";
 import { getDb } from "../db/db.js";
 import { recordFindings } from "../findings/record.js";
 import { buildContext } from "../plan/context.js";
@@ -9,6 +10,7 @@ import { runQuery } from "../plan/query.js";
 import { loadPlan, planUnits, savePlan } from "../plan/risk.js";
 import { buildReports } from "../report/export.js";
 import { scan } from "../scan/scan.js";
+import { overviewView } from "../daemon/views.js";
 import { cleanup, makeProject } from "./helpers.js";
 
 const PROJECT = {
@@ -41,6 +43,16 @@ afterEach(async () => {
 });
 
 describe("pipeline", () => {
+  it("runs Windows npm shims through cmd while keeping Python executables direct", () => {
+    expect(localToolCommand("C:\\repo\\node_modules\\.bin\\eslint.cmd", true, "win32", "cmd.exe"))
+      .toEqual({
+        command: "cmd.exe",
+        argsPrefix: ["/d", "/s", "/c", "C:\\repo\\node_modules\\.bin\\eslint.cmd"],
+      });
+    expect(localToolCommand("C:\\repo\\.venv\\Scripts\\ruff.exe", false, "win32"))
+      .toEqual({ command: "C:\\repo\\.venv\\Scripts\\ruff.exe", argsPrefix: [] });
+  });
+
   it("scans, analyses, plans, contextualises, records and exports", async () => {
     root = await makeProject(PROJECT);
 
@@ -207,5 +219,20 @@ describe("pipeline", () => {
     expect(
       db.count("SELECT COUNT(*) AS n FROM findings WHERE rule_id LIKE 'secrets/%' AND status = 'fixed'"),
     ).toBeGreaterThan(0);
+  });
+
+  it("keeps the latest analyzer status visible after a watcher scan", async () => {
+    root = await makeProject(PROJECT);
+    await scan(root, { kind: "full" });
+    await runAnalyzers(root, { offline: true });
+    const db = await getDb(root);
+    const before = overviewView(db);
+
+    await scan(root, { kind: "watch" });
+    const after = overviewView(db);
+
+    expect(before.tools.length).toBeGreaterThan(0);
+    expect(after.tools).toEqual(before.tools);
+    expect(after.lastRun?.kind).toBe("tools");
   });
 });

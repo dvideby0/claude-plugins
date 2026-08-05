@@ -18,31 +18,57 @@ export interface AnalyzerOutcome {
   findings: FindingInput[];
 }
 
+export interface LocalToolCommand {
+  command: string;
+  argsPrefix: string[];
+}
+
 const TIMEOUT = 180_000;
 
-async function canExec(path: string): Promise<boolean> {
+async function canExec(path: string, platform: NodeJS.Platform = process.platform): Promise<boolean> {
   try {
-    await access(path, constants.X_OK);
+    await access(path, platform === "win32" ? constants.F_OK : constants.X_OK);
     return true;
   } catch {
     return false;
   }
 }
 
-async function nodeBin(projectRoot: string, name: string): Promise<string | null> {
-  const local = join(projectRoot, "node_modules", ".bin", name);
-  return (await canExec(local)) ? local : null;
+/** Turn an npm batch shim into an execFile-safe command on Windows. */
+export function localToolCommand(
+  path: string,
+  batch: boolean,
+  platform: NodeJS.Platform = process.platform,
+  comspec = process.env.ComSpec ?? process.env.COMSPEC ?? "cmd.exe",
+): LocalToolCommand {
+  return platform === "win32" && batch
+    ? { command: comspec, argsPrefix: ["/d", "/s", "/c", path] }
+    : { command: path, argsPrefix: [] };
 }
 
-async function pythonBin(projectRoot: string, name: string): Promise<string | null> {
+async function nodeBin(projectRoot: string, name: string): Promise<LocalToolCommand | null> {
+  const batch = process.platform === "win32";
+  const local = join(projectRoot, "node_modules", ".bin", `${name}${batch ? ".cmd" : ""}`);
+  return (await canExec(local)) ? localToolCommand(local, batch) : null;
+}
+
+async function pythonBin(projectRoot: string, name: string): Promise<LocalToolCommand | null> {
   // Project toolchain only, per the contract at the top of this file: a
   // global ruff or mypy of a different version produces findings the
   // project's own pin would not, and closes ones it would have kept.
   for (const dir of [".venv/bin", "venv/bin", ".venv/Scripts", "venv/Scripts"]) {
-    const local = join(projectRoot, dir, name);
-    if (await canExec(local)) return local;
+    const local = join(projectRoot, dir, `${name}${process.platform === "win32" ? ".exe" : ""}`);
+    if (await canExec(local)) return localToolCommand(local, false);
   }
   return null;
+}
+
+function runLocal(
+  tool: LocalToolCommand,
+  args: string[],
+  options: { cwd: string; timeout: number },
+) {
+  return exec(tool.command, [...tool.argsPrefix, ...args], options);
 }
 
 async function exists(path: string): Promise<boolean> {
@@ -87,7 +113,7 @@ async function runEslint(projectRoot: string): Promise<AnalyzerOutcome> {
   const bin = await nodeBin(projectRoot, "eslint");
   if (!bin) return skipped("eslint", "not installed in node_modules/.bin");
 
-  const result = await exec(bin, [".", "--format", "json", "--no-error-on-unmatched-pattern"], {
+  const result = await runLocal(bin, [".", "--format", "json", "--no-error-on-unmatched-pattern"], {
     cwd: projectRoot,
     timeout: TIMEOUT,
   });
@@ -195,7 +221,7 @@ async function runTsc(projectRoot: string): Promise<AnalyzerOutcome> {
   const failures: string[] = [];
 
   for (const root of roots) {
-    const result = await exec(bin, ["--noEmit", "--pretty", "false"], {
+    const result = await runLocal(bin, ["--noEmit", "--pretty", "false"], {
       cwd: root,
       timeout: TIMEOUT,
     });
@@ -287,7 +313,7 @@ async function runRuff(projectRoot: string): Promise<AnalyzerOutcome> {
   const bin = await pythonBin(projectRoot, "ruff");
   if (!bin) return skipped("ruff", "not installed");
 
-  const result = await exec(bin, ["check", ".", "--output-format", "json"], {
+  const result = await runLocal(bin, ["check", ".", "--output-format", "json"], {
     cwd: projectRoot,
     timeout: TIMEOUT,
   });
@@ -339,7 +365,7 @@ async function runMypy(projectRoot: string): Promise<AnalyzerOutcome> {
   const bin = await pythonBin(projectRoot, "mypy");
   if (!bin) return skipped("mypy", "not installed");
 
-  const result = await exec(bin, [".", "--no-error-summary", "--no-color-output"], {
+  const result = await runLocal(bin, [".", "--no-error-summary", "--no-color-output"], {
     cwd: projectRoot,
     timeout: TIMEOUT,
   });
