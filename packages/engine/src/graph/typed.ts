@@ -29,6 +29,11 @@ import type { Db } from "../db/db.js";
  */
 export const TYPED_SPECIFIER = "typed";
 
+/** Destination participates in the existing refs primary key via specifier. */
+export function typedSpecifier(destination: string): string {
+  return `${TYPED_SPECIFIER}:${destination}`;
+}
+
 export interface TypedResult {
   ran: boolean;
   reason?: string;
@@ -393,9 +398,10 @@ export function applyTypedAnalysis(db: Db, analysis: TypedAnalysis): TypedResult
         seen.add(key);
         db.run(
           "INSERT OR REPLACE INTO refs(src_path, src_line, name, specifier, dst_path) VALUES(?, ?, ?, ?, ?)",
-          [reference.src, reference.line, reference.name, TYPED_SPECIFIER, reference.dst],
+          [reference.src, reference.line, reference.name, typedSpecifier(reference.dst), reference.dst],
         );
       }
+      db.run("UPDATE files SET ref_coverage = 'typed' WHERE path = ?", [src]);
     }
     // Same attribution as the fast pass — the typed pass replaced these rows.
     db.run(

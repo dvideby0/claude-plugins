@@ -8,7 +8,7 @@
 
 import { access, constants, readdir } from "node:fs/promises";
 import { join, relative, isAbsolute } from "node:path";
-import { exec } from "../lib/exec.js";
+import { exec, platformCommand } from "../lib/exec.js";
 import type { Category, FindingInput, Severity } from "../findings/types.js";
 
 export interface AnalyzerOutcome {
@@ -20,7 +20,8 @@ export interface AnalyzerOutcome {
 
 export interface LocalToolCommand {
   command: string;
-  argsPrefix: string[];
+  platform: NodeJS.Platform;
+  comspec: string;
 }
 
 const TIMEOUT = 180_000;
@@ -41,9 +42,9 @@ export function localToolCommand(
   platform: NodeJS.Platform = process.platform,
   comspec = process.env.ComSpec ?? process.env.COMSPEC ?? "cmd.exe",
 ): LocalToolCommand {
-  return platform === "win32" && batch
-    ? { command: comspec, argsPrefix: ["/d", "/s", "/c", path] }
-    : { command: path, argsPrefix: [] };
+  // Keep the executable separate until the complete argv is known; otherwise
+  // arguments appended after `/c` bypass cmd.exe escaping.
+  return { command: path, platform: platform === "win32" && batch ? "win32" : platform, comspec };
 }
 
 async function nodeBin(projectRoot: string, name: string): Promise<LocalToolCommand | null> {
@@ -68,7 +69,11 @@ function runLocal(
   args: string[],
   options: { cwd: string; timeout: number },
 ) {
-  return exec(tool.command, [...tool.argsPrefix, ...args], options);
+  const command = platformCommand(tool.command, args, tool.platform, tool.comspec);
+  return exec(command.command, command.args, {
+    ...options,
+    windowsVerbatimArguments: command.windowsVerbatimArguments,
+  });
 }
 
 async function exists(path: string): Promise<boolean> {

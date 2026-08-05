@@ -1,5 +1,7 @@
-const { access, readdir, rm } = require("node:fs/promises");
+const { access, mkdir, mkdtemp, readdir, rm, writeFile } = require("node:fs/promises");
+const { tmpdir } = require("node:os");
 const { join } = require("node:path");
+const { pathToFileURL } = require("node:url");
 
 const ARCH_NAMES = new Map([
   [0, "ia32"],
@@ -43,6 +45,50 @@ async function requirePath(path) {
   }
 }
 
+async function verifyTypedAnalysis(app) {
+  const fixture = await mkdtemp(join(tmpdir(), "sdlc-packaged-types-"));
+  try {
+    const source = join(fixture, "src");
+    await mkdir(source);
+    await Promise.all([
+      writeFile(join(fixture, "package.json"), JSON.stringify({ type: "module" })),
+      writeFile(
+        join(fixture, "tsconfig.json"),
+        JSON.stringify({
+          compilerOptions: {
+            target: "ES2022",
+            module: "ESNext",
+            moduleResolution: "Bundler",
+            strict: true,
+          },
+          include: ["src/**/*"],
+        }),
+      ),
+      writeFile(join(source, "store.ts"), "export class Store { run() { return 1; } }\n"),
+      writeFile(
+        join(source, "app.ts"),
+        'import { Store } from "./store.js";\nconst values: Store[] = [];\nvalues.map(value => value.run());\n',
+      ),
+    ]);
+
+    const typedModule = pathToFileURL(
+      join(app, "node_modules", "@sdlc", "engine", "dist", "graph", "typed.js"),
+    ).href;
+    const { analyseTypes } = await import(typedModule);
+    const analysis = analyseTypes(fixture);
+    const resolvedRun = analysis.references.some(
+      (reference) => reference.name === "run" && reference.dst === "src/store.ts",
+    );
+    if (!analysis.ran || !resolvedRun) {
+      throw new Error(
+        "Packaged TypeScript analysis could not resolve a method through Array.map; runtime declarations are incomplete.",
+      );
+    }
+  } finally {
+    await removeIfPresent(fixture);
+  }
+}
+
 module.exports = async function afterPack(context) {
   const app = packagedAppDir(context);
   const packages = join(app, "node_modules", "@sdlc");
@@ -75,6 +121,9 @@ module.exports = async function afterPack(context) {
     join(packages, "protocol", "dist", "index.js"),
     join(packages, "mcp-bridge", "dist", "index.js"),
     join(packages, "scan-core", "index.js"),
+    // Typed resolution runs from the packaged compiler. Removing declarations
+    // makes ordinary built-ins such as Array.map opaque only after packaging.
+    join(app, "node_modules", "typescript", "lib", "lib.d.ts"),
   ];
   await Promise.all(required.map(requirePath));
 
@@ -100,4 +149,6 @@ module.exports = async function afterPack(context) {
       .filter((name) => name !== expectedNative)
       .map((name) => removeIfPresent(join(nativeDir, name))),
   );
+
+  await verifyTypedAnalysis(app);
 };

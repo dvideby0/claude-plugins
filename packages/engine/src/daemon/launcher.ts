@@ -30,6 +30,11 @@ export function launcherPath(): string {
     : join(stateDir(), "bin", "sdlc-bridge");
 }
 
+/** A literal safe for POSIX sh, including quotes, dollars, and backticks. */
+export function posixShellQuote(value: string): string {
+  return `'${value.replaceAll("'", `'"'"'`)}'`;
+}
+
 function shellScript(target: LauncherTarget): string {
   return [
     "#!/bin/sh",
@@ -37,7 +42,7 @@ function shellScript(target: LauncherTarget): string {
     // `exec VAR=value cmd` is not valid shell — exec takes a command, not an
     // assignment prefix. The variable has to be exported first.
     ...(target.electron ? ["ELECTRON_RUN_AS_NODE=1", "export ELECTRON_RUN_AS_NODE"] : []),
-    `exec ${JSON.stringify(target.node)} ${JSON.stringify(target.script)} "$@"`,
+    `exec ${posixShellQuote(target.node)} ${posixShellQuote(target.script)} "$@"`,
     "",
   ].join("\n");
 }

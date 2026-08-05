@@ -11,6 +11,11 @@ export function risky(): void {
   try { go(); } catch (e) { console.error(e); }
   throw new Error("boom");
 }
+export async function later(): Promise<void> { await Promise.resolve(); }
+export function now(): void {}
+export const loose: any = 1;
+export const strict: string = "ok";
+// TODO: make this less contrived
 function go(): void {}
 `,
   "src/b.py": `
@@ -18,6 +23,10 @@ def risky():
     try:
         go()
     except:
+        pass
+    try:
+        go()
+    except Exception:
         pass
     assert 1 == 1
 `,
@@ -44,18 +53,23 @@ withNative("structural search", () => {
     expect(except.matches[0]?.path).toBe("src/b.py");
   });
 
-  it("finds both catch blocks, so content can separate them", async () => {
+  it("makes named patterns as precise as their labels", async () => {
     root = await makeProject(PROJECT);
 
-    const all = await structuralSearch(root, { pattern: "swallowed-errors" });
-    expect(all.total).toBe(2);
+    expect((await structuralSearch(root, { pattern: "swallowed-errors" })).total).toBe(1);
+    expect((await structuralSearch(root, { pattern: "async-functions" })).total).toBe(1);
+    expect((await structuralSearch(root, { pattern: "any-annotations" })).total).toBe(1);
+    expect((await structuralSearch(root, { pattern: "python-bare-except" })).total).toBe(1);
+    expect((await structuralSearch(root, { pattern: "todo-comments" })).total).toBe(1);
+  });
 
-    // Shape alone cannot say "empty"; combining it with a text filter can.
+  it("filters full structural matches before the native result cap", async () => {
+    root = await makeProject(PROJECT);
+
     const handled = await structuralSearch(root, {
-      pattern: "swallowed-errors",
+      query: "(catch_clause body: (statement_block) @body)",
       text: "console.error",
-      // Filtering must happen against full matches before the native page is
-      // truncated; the matching catch is second in source order.
+      // The matching catch is second in source order, beyond the unfiltered cap.
       limit: 1,
     });
     expect(handled.total).toBe(1);

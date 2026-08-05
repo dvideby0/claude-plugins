@@ -3,9 +3,10 @@
  */
 
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
-import { dirname, join, resolve } from "node:path";
+import { dirname, join } from "node:path";
 import { loadSqlJs, type SqlDatabase } from "../runtime/assets.js";
 import { SCHEMA_SQL, SCHEMA_VERSION } from "./schema.js";
+import { canonicalWorkspaceRoot, workspaceIdentityKey } from "../lib/workspace-path.js";
 
 export type Params = Array<string | number | null>;
 
@@ -48,6 +49,7 @@ export class Db {
   /** Columns every table must have, added to existing stores if absent. */
   private static readonly ADDED_COLUMNS: Array<{ table: string; column: string; type: string }> = [
     { table: "refs", column: "src_symbol", type: "TEXT" },
+    { table: "files", column: "ref_coverage", type: "TEXT NOT NULL DEFAULT 'none'" },
     { table: "components", column: "member_digest", type: "TEXT" },
     { table: "flow_steps", column: "content_sha", type: "TEXT" },
   ];
@@ -167,11 +169,12 @@ export class Db {
 const open = new Map<string, Promise<Db>>();
 
 /** Open (or reuse) the store for a project. */
-export function getDb(projectRoot: string): Promise<Db> {
-  const key = resolve(projectRoot);
+export async function getDb(projectRoot: string): Promise<Db> {
+  const canonical = await canonicalWorkspaceRoot(projectRoot);
+  const key = workspaceIdentityKey(canonical);
   const existing = open.get(key);
   if (existing) return existing;
-  const opening = Db.open(key);
+  const opening = Db.open(canonical);
   open.set(key, opening);
   // A failed open must not poison the cache for every later call.
   opening.catch(() => open.delete(key));

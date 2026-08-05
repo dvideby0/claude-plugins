@@ -11,7 +11,7 @@ allowed-tools: Task, Read, Grep, Glob, mcp__sdlc__audit_status, mcp__sdlc__audit
 3. Call `audit_plan` with `maxUnits: 10`.
 4. For each unit, call `audit_context` with `lens: "security"`, then spawn a
    Task agent (`subagent_type: general-purpose`) with the returned
-   `taskPrompt`. Run up to 5 concurrently.
+   `prompt`. Run up to 5 concurrently.
 5. Call `audit_report`.
 
 Present findings in `category: security` first, then dependency advisories.

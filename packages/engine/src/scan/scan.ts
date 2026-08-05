@@ -6,7 +6,7 @@
  */
 
 import { readFile } from "node:fs/promises";
-import { join, resolve } from "node:path";
+import { join } from "node:path";
 import type { Db } from "../db/db.js";
 import { getDb } from "../db/db.js";
 import { parseFile } from "./parse.js";
@@ -15,6 +15,7 @@ import { collectGit } from "./git.js";
 import { TYPED_SPECIFIER } from "../graph/typed.js";
 import { collectFiles } from "./source.js";
 import { isNoise } from "./walk.js";
+import { canonicalWorkspaceRoot, workspaceIdentityKey } from "../lib/workspace-path.js";
 
 /**
  * Bumped whenever the parsers start producing something they did not before.
@@ -27,7 +28,7 @@ import { isNoise } from "./walk.js";
  *
  * When the stored version is behind, the next scan is promoted to a full one.
  */
-export const EXTRACTION_VERSION = 3;
+export const EXTRACTION_VERSION = 4;
 
 export interface ScanOptions {
   /** Re-parse every file, ignoring content hashes. */
@@ -76,15 +77,16 @@ export async function startRun(db: Db, kind: string, gitSha: string | null): Pro
 // interleaving on one sql.js handle means nested transactions and torn state.
 const scans = new Map<string, Promise<unknown>>();
 
-export function scan(projectRoot: string, options: ScanOptions = {}): Promise<ScanResult> {
-  const key = resolve(projectRoot);
+export async function scan(projectRoot: string, options: ScanOptions = {}): Promise<ScanResult> {
+  const canonical = await canonicalWorkspaceRoot(projectRoot);
+  const key = workspaceIdentityKey(canonical);
   const prior = scans.get(key) ?? Promise.resolve();
   const run = prior.then(
-    () => doScan(key, options),
-    () => doScan(key, options),
+    () => doScan(canonical, options),
+    () => doScan(canonical, options),
   );
   scans.set(key, run);
-  return run;
+  return run as Promise<ScanResult>;
 }
 
 async function doScan(projectRoot: string, options: ScanOptions = {}): Promise<ScanResult> {
@@ -136,15 +138,20 @@ async function doScan(projectRoot: string, options: ScanOptions = {}): Promise<S
     for (const file of files) {
       seen.add(file.path);
       languages[file.lang] = (languages[file.lang] ?? 0) + 1;
+      const refreshed = parsed.has(file.path);
+      const referenceCoverage =
+        refreshed && engine === "native" && parseable(file.path, file.lang) ? "import" : "none";
 
       db.run(
-        `INSERT INTO files(path, lang, loc, bytes, content_sha, churn, is_test, parsed, present,
+        `INSERT INTO files(path, lang, loc, bytes, content_sha, churn, is_test, parsed, ref_coverage, present,
                            first_seen_run, last_seen_run)
-         VALUES(?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
+         VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
          ON CONFLICT(path) DO UPDATE SET
            lang = excluded.lang, loc = excluded.loc, bytes = excluded.bytes,
            content_sha = excluded.content_sha, churn = excluded.churn,
-           is_test = excluded.is_test, present = 1, last_seen_run = excluded.last_seen_run`,
+           is_test = excluded.is_test,
+           ref_coverage = CASE WHEN ? = 1 THEN excluded.ref_coverage ELSE files.ref_coverage END,
+           present = 1, last_seen_run = excluded.last_seen_run`,
         [
           file.path,
           file.lang,
@@ -154,8 +161,10 @@ async function doScan(projectRoot: string, options: ScanOptions = {}): Promise<S
           git.churn.get(file.path) ?? 0,
           file.isTest ? 1 : 0,
           parseable(file.path, file.lang) ? 1 : 0,
+          referenceCoverage,
           runId,
           runId,
+          refreshed ? 1 : 0,
         ],
       );
 
@@ -237,8 +246,8 @@ async function doScan(projectRoot: string, options: ScanOptions = {}): Promise<S
     // through the import resolver nulls them out, silently undoing the typed
     // pass on the next scan.
     const references = db.all<{ src_path: string; specifier: string }>(
-      "SELECT DISTINCT src_path, specifier FROM refs WHERE specifier != ?",
-      [TYPED_SPECIFIER],
+      "SELECT DISTINCT src_path, specifier FROM refs WHERE specifier != ? AND specifier NOT LIKE ?",
+      [TYPED_SPECIFIER, `${TYPED_SPECIFIER}:%`],
     );
     for (const reference of references) {
       const { dstPath } = resolver.resolve(reference.src_path, reference.specifier);

@@ -26,7 +26,11 @@ const codexConfig = (): string => join(homedir(), ".codex", "config.toml");
 async function version(bin: string): Promise<string | null> {
   try {
     const command = platformCommand(bin, ["--version"]);
-    const { stdout } = await run(command.command, command.args, { timeout: 5000, env: spawnEnv() });
+    const { stdout } = await run(command.command, command.args, {
+      timeout: 5000,
+      env: spawnEnv(),
+      windowsVerbatimArguments: command.windowsVerbatimArguments,
+    });
     return stdout.trim().split("\n")[0] ?? null;
   } catch {
     return null;
@@ -127,13 +131,19 @@ async function connectClaude(bridge: BridgeCommand): Promise<void> {
     bridge.command,
     ...bridge.args,
   ]);
-  await run(command.command, command.args, { env: spawnEnv() });
+  await run(command.command, command.args, {
+    env: spawnEnv(),
+    windowsVerbatimArguments: command.windowsVerbatimArguments,
+  });
 }
 
 async function disconnectClaude(): Promise<void> {
   const bin = (await which("claude", spawnEnv())) ?? "claude";
   const command = platformCommand(bin, ["mcp", "remove", SERVER_NAME, "--scope", "user"]);
-  await run(command.command, command.args, { env: spawnEnv() });
+  await run(command.command, command.args, {
+    env: spawnEnv(),
+    windowsVerbatimArguments: command.windowsVerbatimArguments,
+  });
 }
 
 function tomlString(value: string): string {

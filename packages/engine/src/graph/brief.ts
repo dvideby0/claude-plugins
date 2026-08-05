@@ -44,14 +44,24 @@ const HEADING = (title: string): string => `## ${title}`;
  */
 const UNTRACKED_KINDS = new Set(["method", "type", "interface", "enum"]);
 
-function usage(symbol: { kind: string; references: number }): string {
+function usage(
+  symbol: { kind: string; references: number },
+  referenceCoverage: "none" | "import" | "typed",
+): string {
   if (symbol.references > 0) {
     return `${symbol.references} use${symbol.references === 1 ? "" : "s"}`;
   }
+  if (referenceCoverage === "none") return "uses unknown — reference analysis unavailable";
   return UNTRACKED_KINDS.has(symbol.kind) ? "uses not tracked" : "unused elsewhere";
 }
 
-function UNRESOLVED_NOTE(symbols: Array<{ kind: string }>): string {
+function UNRESOLVED_NOTE(
+  symbols: Array<{ kind: string }>,
+  referenceCoverage: "none" | "import" | "typed",
+): string {
+  if (referenceCoverage === "none") {
+    return "\n_Reference analysis was unavailable for this file. Treat every zero as unknown; do not infer that code is unused or untested._";
+  }
   return symbols.some((symbol) => UNTRACKED_KINDS.has(symbol.kind))
     ? "\n_Method calls and type positions are not resolved; treat “uses not tracked” as unknown, not zero._"
     : "";
@@ -146,7 +156,10 @@ export function buildBrief(db: Db, target: string, options: BriefOptions = {}): 
       text: [
         HEADING("What it exposes"),
         ...exported.slice(0, 20).map((symbol) => {
-          const line = `- \`${symbol.name}\` (${symbol.kind}, line ${symbol.startLine}) — ${usage(symbol)}`;
+          const line = `- \`${symbol.name}\` (${symbol.kind}, line ${symbol.startLine}) — ${usage(
+            symbol,
+            file?.referenceCoverage ?? "none",
+          )}`;
           const withNotes = symbol.notes > 0 ? `${line} · ${symbol.notes} note(s) recorded` : line;
           // The declaration of an exported constant carries the allowed values.
           // Showing them is what stops a caller inventing one that is not in
@@ -155,7 +168,7 @@ export function buildBrief(db: Db, target: string, options: BriefOptions = {}): 
             ? `${withNotes}\n    \`${symbol.signature}\``
             : withNotes;
         }),
-        UNRESOLVED_NOTE(exported),
+        UNRESOLVED_NOTE(exported, file?.referenceCoverage ?? "none"),
       ]
         .filter(Boolean)
         .join("\n"),
@@ -168,18 +181,24 @@ export function buildBrief(db: Db, target: string, options: BriefOptions = {}): 
     essential: true,
     text: [
       HEADING("If you change it"),
-      `${impact.directImporters} file(s) import this; ${impact.totalReferences} reference(s) from elsewhere resolve to it` +
-        (impact.internalReferences > 0
-          ? ` (plus ${impact.internalReferences} within the file itself, which nobody else depends on).`
-          : "."),
-      impact.affectedFiles.length
-        ? `Affected: ${impact.affectedFiles.slice(0, 12).join(", ")}${
-            impact.affectedFiles.length > 12 ? `, +${impact.affectedFiles.length - 12} more` : ""
-          }`
-        : "Nothing references it yet.",
-      impact.coveringTests.length
-        ? `Covered by: ${impact.coveringTests.join(", ")}`
-        : "**No test covers it.** Add one before changing behaviour.",
+      impact.referenceCoverage === "none"
+        ? `${impact.directImporters} file(s) import this; precise references are unknown because reference analysis was unavailable.`
+        : `${impact.directImporters} file(s) import this; ${impact.totalReferences} reference(s) from elsewhere resolve to it` +
+          (impact.internalReferences > 0
+            ? ` (plus ${impact.internalReferences} within the file itself, which nobody else depends on).`
+            : "."),
+      impact.referenceCoverage === "none"
+        ? "Affected call sites are unknown. Use the importers as the conservative blast radius."
+        : impact.affectedFiles.length
+          ? `Affected: ${impact.affectedFiles.slice(0, 12).join(", ")}${
+              impact.affectedFiles.length > 12 ? `, +${impact.affectedFiles.length - 12} more` : ""
+            }`
+          : "No tracked references found.",
+      impact.referenceCoverage === "none"
+        ? "Test coverage is unknown because reference analysis was unavailable."
+        : impact.coveringTests.length
+          ? `Covered by: ${impact.coveringTests.join(", ")}`
+          : "**No tracked test reference covers it.** Add or verify one before changing behaviour.",
     ].join("\n"),
   });
 

@@ -39,4 +39,26 @@ describe("daemon ownership lock", () => {
     const lock = await acquireDaemonLock(path);
     await lock.release();
   });
+
+  it("reclaims an old live PID when daemon discovery disproves its identity", async () => {
+    root = await makeProject({});
+    const path = join(root, "daemon.lock");
+    await mkdir(path);
+    await writeFile(
+      join(path, "owner.json"),
+      JSON.stringify({
+        pid: process.pid,
+        token: "owner-from-crashed-engine",
+        createdAt: new Date(Date.now() - 60_000).toISOString(),
+        bootTimeMs: 1234,
+      }),
+    );
+
+    const lock = await acquireDaemonLock(path, {
+      startupGraceMs: 0,
+      bootTimeMs: () => 1234,
+      ownerResponding: async () => false,
+    });
+    await lock.release();
+  });
 });

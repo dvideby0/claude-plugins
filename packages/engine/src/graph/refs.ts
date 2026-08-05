@@ -38,6 +38,8 @@ export interface SymbolReferences {
   files: string[];
   /** What previous sessions recorded about this symbol. */
   notes: Memory[];
+  /** Zero is only a negative result when this is not `none`. */
+  referenceCoverage: "none" | "import" | "typed";
   candidates?: Array<{ name: string; path: string }>;
 }
 
@@ -47,8 +49,11 @@ export function referencesTo(db: Db, name: string, limit = 100): SymbolReference
     kind: string;
     start_line: number;
     exported: number;
+    ref_coverage: "none" | "import" | "typed";
   }>(
-    "SELECT path, kind, start_line, exported FROM symbols WHERE name = ? ORDER BY exported DESC LIMIT 1",
+    `SELECT s.path, s.kind, s.start_line, s.exported, f.ref_coverage
+       FROM symbols s JOIN files f ON f.path = s.path
+      WHERE s.name = ? ORDER BY s.exported DESC LIMIT 1`,
     [name],
   );
 
@@ -114,6 +119,7 @@ export function referencesTo(db: Db, name: string, limit = 100): SymbolReference
       ),
     ],
     notes: memoriesForSymbolName(db, name),
+    referenceCoverage: definition?.ref_coverage ?? "none",
     ...(others.length > 1 ? { candidates: others } : {}),
   };
 }
@@ -138,6 +144,8 @@ export interface Impact {
   totalReferences: number;
   /** Uses within the file itself. Excluded from the numbers above. */
   internalReferences: number;
+  /** `none` means all reference-derived zeroes are unknown rather than empty. */
+  referenceCoverage: "none" | "import" | "typed";
 }
 
 /**
@@ -151,8 +159,8 @@ export function impactOf(db: Db, target: string, limit = 200): Impact {
   // Escaped: an unescaped suffix match can resolve the impact question
   // against the wrong file entirely.
   const escaped = likeEscape(target);
-  const file = db.get<{ path: string }>(
-    "SELECT path FROM files WHERE (path = ? OR path LIKE ? ESCAPE '\\') AND present = 1 ORDER BY LENGTH(path) LIMIT 1",
+  const file = db.get<{ path: string; ref_coverage: "none" | "import" | "typed" }>(
+    "SELECT path, ref_coverage FROM files WHERE (path = ? OR path LIKE ? ESCAPE '\\') AND present = 1 ORDER BY LENGTH(path) LIMIT 1",
     [target, `%/${escaped}`],
   );
 
@@ -166,6 +174,7 @@ export function impactOf(db: Db, target: string, limit = 200): Impact {
       directImporters: 0,
       totalReferences: 0,
       internalReferences: 0,
+      referenceCoverage: "none",
     };
   }
 
@@ -219,5 +228,6 @@ export function impactOf(db: Db, target: string, limit = 200): Impact {
       "SELECT COUNT(*) AS n FROM refs WHERE dst_path = ? AND src_path = ?",
       [file.path, file.path],
     ),
+    referenceCoverage: file.ref_coverage,
   };
 }

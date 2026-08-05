@@ -178,4 +178,27 @@ export function packageEntry() { return makeStore().add("ok"); }
       { path: "packages/core/src/app.ts", line: 3 },
     ]);
   });
+
+  it("keeps same-line same-name references when they resolve to different destinations", async () => {
+    root = await makeProject({
+      "package.json": JSON.stringify({ name: "same-line-members", type: "module" }),
+      "tsconfig.json": JSON.stringify({
+        compilerOptions: { target: "ES2022", module: "ESNext", moduleResolution: "Bundler" },
+        include: ["src/**/*"],
+      }),
+      "src/a.ts": "export class A { run(): string { return 'a'; } }\n",
+      "src/b.ts": "export class B { run(): string { return 'b'; } }\n",
+      "src/app.ts": `import { A } from "./a.js"; import { B } from "./b.js";\nexport function both() { const a = new A(); const b = new B(); return a.run() + b.run(); }\n`,
+    });
+    await scan(root, { kind: "full" });
+    const db = await getDb(root);
+
+    resolveTypes(db, root);
+    const destinations = db
+      .all<{ dst_path: string }>(
+        "SELECT dst_path FROM refs WHERE src_path = 'src/app.ts' AND name = 'run' ORDER BY dst_path",
+      )
+      .map((row) => row.dst_path);
+    expect(destinations).toEqual(["src/a.ts", "src/b.ts"]);
+  });
 });

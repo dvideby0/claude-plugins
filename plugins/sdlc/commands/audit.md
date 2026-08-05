@@ -34,7 +34,7 @@ units with their `reason` and ask to confirm the scope.
 For each unit, call `audit_context` with its `unitId`, then spawn a Task agent:
 
 - `subagent_type`: `general-purpose`
-- `prompt`: the returned `taskPrompt`
+- `prompt`: the returned `prompt`
 
 Run up to 5 concurrently. Each agent records its own findings via
 `audit_record_findings` and may pull more context with `audit_query`. Do not

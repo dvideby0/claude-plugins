@@ -46,11 +46,16 @@ describe("pipeline", () => {
   it("runs Windows npm shims through cmd while keeping Python executables direct", () => {
     expect(localToolCommand("C:\\repo\\node_modules\\.bin\\eslint.cmd", true, "win32", "cmd.exe"))
       .toEqual({
-        command: "cmd.exe",
-        argsPrefix: ["/d", "/s", "/c", "C:\\repo\\node_modules\\.bin\\eslint.cmd"],
+        command: "C:\\repo\\node_modules\\.bin\\eslint.cmd",
+        platform: "win32",
+        comspec: "cmd.exe",
       });
     expect(localToolCommand("C:\\repo\\.venv\\Scripts\\ruff.exe", false, "win32"))
-      .toEqual({ command: "C:\\repo\\.venv\\Scripts\\ruff.exe", argsPrefix: [] });
+      .toEqual({
+        command: "C:\\repo\\.venv\\Scripts\\ruff.exe",
+        platform: "win32",
+        comspec: "cmd.exe",
+      });
   });
 
   it("scans, analyses, plans, contextualises, records and exports", async () => {

@@ -15,6 +15,15 @@ export interface DaemonLock {
   release(): Promise<void>;
 }
 
+export interface DaemonLockOptions {
+  /** Prove an older live PID is still the engine, not an unrelated reused PID. */
+  ownerResponding?: (pid: number) => Promise<boolean>;
+  /** Protect the gap between mkdir(owner) and publishing daemon.json. */
+  startupGraceMs?: number;
+  /** Deterministic boot identity for tests; production uses system uptime. */
+  bootTimeMs?: () => number;
+}
+
 export class DaemonAlreadyRunningError extends Error {
   constructor(readonly ownerPid?: number) {
     super(
@@ -70,13 +79,15 @@ async function readOwner(path: string): Promise<LockOwner | null> {
  */
 export async function acquireDaemonLock(
   path = daemonLockDir(),
+  options: DaemonLockOptions = {},
 ): Promise<DaemonLock> {
+  const bootTimeMs = options.bootTimeMs ?? currentBootTimeMs;
   const token = randomBytes(16).toString("hex");
   const owner: LockOwner = {
     pid: process.pid,
     token,
     createdAt: new Date().toISOString(),
-    bootTimeMs: currentBootTimeMs(),
+    bootTimeMs: bootTimeMs(),
   };
 
   for (let attempt = 0; attempt < 40; attempt++) {
@@ -87,9 +98,27 @@ export async function acquireDaemonLock(
 
       const existing = await readOwner(path);
       const sameBoot =
-        existing && Math.abs(existing.bootTimeMs - currentBootTimeMs()) < 60_000;
+        existing && Math.abs(existing.bootTimeMs - bootTimeMs()) < 60_000;
       if (existing && sameBoot && pidAlive(existing.pid)) {
-        throw new DaemonAlreadyRunningError(existing.pid);
+        const created = Date.parse(existing.createdAt);
+        const age = Number.isFinite(created) ? Date.now() - created : Number.POSITIVE_INFINITY;
+        const withinStartupGrace = age < (options.startupGraceMs ?? 15_000);
+
+        // A newly-created lock may not have published daemon.json yet. Once
+        // that window has passed, a live PID alone is insufficient: operating
+        // systems reuse PIDs, and an unrelated process must not strand the
+        // engine forever after an unclean exit.
+        if (withinStartupGrace || !options.ownerResponding) {
+          throw new DaemonAlreadyRunningError(existing.pid);
+        }
+        let responding = true;
+        try {
+          responding = await options.ownerResponding(existing.pid);
+        } catch {
+          // A failed identity check is not permission to start a second writer.
+          responding = true;
+        }
+        if (responding) throw new DaemonAlreadyRunningError(existing.pid);
       }
 
       // mkdir may have completed just before its owner file was written. Give

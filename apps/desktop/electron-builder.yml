@@ -29,6 +29,11 @@ asar: false
 # before it is signed.
 afterPack: build/after-pack.cjs
 
+# electron-builder treats declarations as development-only even when a package
+# is explicitly included. The embedded TypeScript compiler needs them at
+# runtime, so opt declaration files back in before the normal file filters run.
+onNodeModuleFile: build/include-runtime-declarations.cjs
+
 files:
   - dist/**/*
   - preload.cjs
@@ -39,7 +44,14 @@ files:
   # walker. Build intermediates and sources stay out.
   - "!node_modules/@sdlc/scan-core/target/**"
   - "!node_modules/@sdlc/engine/src/**"
-  - "!node_modules/**/*.{ts,map}"
+  # Keep declaration files while excluding implementation sources. The
+  # onNodeModuleFile hook overrides electron-builder's unconditional default
+  # `.d.ts` exclusion; these patterns still keep ordinary TypeScript source out.
+  - "!node_modules/**/!(*.d).ts"
+  - "!node_modules/**/!(*.d).mts"
+  - "!node_modules/**/!(*.d).cts"
+  - "!node_modules/**/*.tsx"
+  - "!node_modules/**/*.map"
   - "!node_modules/.bin/**"
 
 mac:

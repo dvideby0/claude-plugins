@@ -25,6 +25,8 @@ export interface ExecOptions {
   timeout?: number;
   maxBuffer?: number;
   env?: NodeJS.ProcessEnv;
+  /** Set only when arguments were pre-escaped for cmd.exe. */
+  windowsVerbatimArguments?: boolean;
 }
 
 const DEFAULT_TIMEOUT = 120_000;
@@ -33,11 +35,31 @@ const DEFAULT_MAX_BUFFER = 16 * 1024 * 1024;
 export interface PlatformCommand {
   command: string;
   args: string[];
+  windowsVerbatimArguments?: boolean;
 }
 
 export interface ProcessTreeCommand {
   command: string;
   args: string[];
+}
+
+// Same escaping model used by mature cross-platform spawn wrappers. cmd.exe
+// parses metacharacters before the target program sees argv, so array-shaped
+// Node arguments are not a security boundary once `/c` is involved.
+const CMD_META = /([()\][%!^"`<>&|;, *?])/g;
+
+function escapeCmdCommand(value: string): string {
+  return value.replace(CMD_META, "^$1");
+}
+
+/** Quote one value through cmd.exe and then the Windows CRT argv parser. */
+export function escapeCmdArgument(value: string, doubleMeta = false): string {
+  let escaped = String(value);
+  escaped = escaped.replace(/(?=(\\+?)?)\1"/g, '$1$1\\"');
+  escaped = escaped.replace(/(?=(\\+?)?)\1$/, "$1$1");
+  escaped = `"${escaped}"`.replace(CMD_META, "^$1");
+  if (doubleMeta) escaped = escaped.replace(CMD_META, "^$1");
+  return escaped;
 }
 
 /** The native Windows operation that terminates a shell and every descendant. */
@@ -103,9 +125,21 @@ export function platformCommand(
   const extension = extname(command).toLowerCase();
   const needsCmd =
     platform === "win32" && (extension === "" || extension === ".cmd" || extension === ".bat");
-  return needsCmd
-    ? { command: comspec, args: ["/d", "/s", "/c", command, ...args] }
-    : { command, args };
+  if (!needsCmd) return { command, args };
+
+  // npm .cmd shims proxy argv through another command parser, so their
+  // metacharacters need the second layer cross-spawn applies as well. Bare
+  // commands on this path normally resolve to those shims.
+  const doubleMeta = extension === "" || extension === ".cmd" || extension === ".bat";
+  const shellCommand = [
+    escapeCmdCommand(command),
+    ...args.map((arg) => escapeCmdArgument(arg, doubleMeta)),
+  ].join(" ");
+  return {
+    command: comspec,
+    args: ["/d", "/s", "/v:off", "/c", `"${shellCommand}"`],
+    windowsVerbatimArguments: true,
+  };
 }
 
 export function exec(
@@ -123,6 +157,7 @@ export function exec(
         maxBuffer: options.maxBuffer ?? DEFAULT_MAX_BUFFER,
         encoding: "utf-8",
         env: options.env,
+        windowsVerbatimArguments: options.windowsVerbatimArguments,
       },
       (error, stdout, stderr) => {
         if (!error) {

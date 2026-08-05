@@ -72,6 +72,7 @@ export function runClaude(prompt: string, options: AgentOptions): Promise<AgentR
       // Augmented PATH: from a Dock-launched app, launchd's PATH has no
       // Homebrew, and "could not run claude" would blame a working install.
       env: spawnEnv(),
+      windowsVerbatimArguments: command.windowsVerbatimArguments,
     });
 
     let stdout = "";

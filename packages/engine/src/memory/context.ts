@@ -20,6 +20,8 @@ export interface Neighbourhood {
     loc: number;
     churn: number;
     isTest: boolean;
+    /** none means zero reference counts are unknown, not evidence of no uses. */
+    referenceCoverage: "none" | "import" | "typed";
   } | null;
   symbols: Array<{
     kind: string;
@@ -130,7 +132,8 @@ export function neighbourhood(db: Db, target: string, limit = 40): Neighbourhood
     loc: number;
     churn: number;
     is_test: number;
-  }>("SELECT path, lang, loc, churn, is_test FROM files WHERE path = ?", [path]);
+    ref_coverage: "none" | "import" | "typed";
+  }>("SELECT path, lang, loc, churn, is_test, ref_coverage FROM files WHERE path = ?", [path]);
 
   const importers = column<string>(
     db,
@@ -183,6 +186,7 @@ export function neighbourhood(db: Db, target: string, limit = 40): Neighbourhood
           loc: file.loc,
           churn: file.churn,
           isTest: file.is_test === 1,
+          referenceCoverage: file.ref_coverage,
         }
       : null,
     symbols: db

@@ -89,16 +89,49 @@ const INVOCATIONS: Record<string, HarnessInvocation> = {
   },
   codex: {
     bin: "codex",
-    args: (prompt) => [
+    args: (prompt, bridge) => [
       "exec",
+      // Authentication still comes from CODEX_HOME, but no user config means
+      // no unrelated MCP servers, hooks, or repository-specific settings are
+      // inherited by this unattended run.
+      "--ignore-user-config",
+      "--ignore-rules",
+      "--ephemeral",
       "--sandbox",
       "read-only",
       "-c",
-      `mcp_servers.sdlc.enabled_tools=${JSON.stringify(MAP_MCP_TOOLS)}`,
+      codexMcpOverride(bridge),
       prompt,
     ],
   },
 };
+
+/**
+ * Replace the entire MCP table for an unattended Codex run.
+ *
+ * Limiting only `mcp_servers.sdlc.enabled_tools` leaves every other server in
+ * the user's normal config loaded. Repository text is untrusted, and Codex's
+ * filesystem sandbox cannot contain side effects performed by a remote MCP.
+ * `--ignore-user-config` starts from an empty table while preserving auth;
+ * this override then makes SDLC the only server visible to the child.
+ */
+export function codexMcpOverride(bridge: BridgeCommand): string {
+  const string = (value: string): string => JSON.stringify(value);
+  const args = bridge.args.map(string).join(", ");
+  const tools = MAP_MCP_TOOLS.map(string).join(", ");
+  const fields = [
+    `command = ${string(bridge.command)}`,
+    `args = [${args}]`,
+    `enabled_tools = [${tools}]`,
+  ];
+  const environment = Object.entries(bridge.env ?? {});
+  if (environment.length > 0) {
+    fields.push(
+      `env = { ${environment.map(([key, value]) => `${string(key)} = ${string(value)}`).join(", ")} }`,
+    );
+  }
+  return `mcp_servers = { sdlc = { ${fields.join(", ")} } }`;
+}
 
 /** Exposed so the capability ceiling is regression-tested without spawning a CLI. */
 export function drawInvocationArgs(
@@ -197,6 +230,7 @@ export async function drawMap(options: DrawOptions): Promise<DrawHandle> {
     cwd: options.root,
     stdio: ["ignore", "pipe", "pipe"],
     env: spawnEnv(),
+    windowsVerbatimArguments: command.windowsVerbatimArguments,
   });
 
   let tail = "";

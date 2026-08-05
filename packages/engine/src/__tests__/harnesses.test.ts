@@ -6,8 +6,13 @@
 
 import { describe, expect, it } from "vitest";
 import { spliceCodexBlock } from "../daemon/harnesses.js";
-import { drawInvocationArgs, MAP_MCP_TOOLS, supportedHarnesses } from "../daemon/draw.js";
-import { windowsLauncherCommand } from "../daemon/launcher.js";
+import {
+  codexMcpOverride,
+  drawInvocationArgs,
+  MAP_MCP_TOOLS,
+  supportedHarnesses,
+} from "../daemon/draw.js";
+import { posixShellQuote, windowsLauncherCommand } from "../daemon/launcher.js";
 import { platformCommand, processTreeTerminationCommand } from "../lib/exec.js";
 import { reviewInvocationArgs } from "../review/agent.js";
 
@@ -92,7 +97,11 @@ describe("draw harness ids", () => {
       args: ["--stdio"],
       env: { SDLC_PROJECT_ROOT: "/repo" },
     });
-    const codex = drawInvocationArgs("codex", "draw");
+    const codex = drawInvocationArgs("codex", "draw", {
+      command: "/app/sdlc-bridge",
+      args: ["--stdio"],
+      env: { SDLC_PROJECT_ROOT: "/repo" },
+    });
 
     for (const tool of MAP_MCP_TOOLS) {
       expect(claude).toContain(`mcp__sdlc__${tool}`);
@@ -106,7 +115,20 @@ describe("draw harness ids", () => {
       mcpServers: { sdlc: { command: string } };
     };
     expect(config.mcpServers.sdlc.command).toBe("/app/sdlc-bridge");
-    expect(codex.join(" ")).toContain("mcp_servers.sdlc.enabled_tools=");
+    const override = codex[codex.indexOf("-c") + 1]!;
+    expect(override).toBe(
+      codexMcpOverride({
+        command: "/app/sdlc-bridge",
+        args: ["--stdio"],
+        env: { SDLC_PROJECT_ROOT: "/repo" },
+      }),
+    );
+    expect(override).toContain("mcp_servers = { sdlc = {");
+    expect(override).toContain('command = "/app/sdlc-bridge"');
+    expect(override).not.toContain("mcp_servers.sdlc");
+    expect(codex).toContain("--ignore-user-config");
+    expect(codex).toContain("--ignore-rules");
+    expect(codex).toContain("--ephemeral");
     expect(codex.join(" ")).not.toContain("audit_run_tools");
   });
 
@@ -132,14 +154,29 @@ describe("Windows bridge launcher", () => {
   });
 
   it("routes npm CLI shims and bare commands through cmd.exe", () => {
-    expect(platformCommand("C:\\Tools\\claude.cmd", ["--version"], "win32", "cmd.exe"))
-      .toEqual({
-        command: "cmd.exe",
-        args: ["/d", "/s", "/c", "C:\\Tools\\claude.cmd", "--version"],
-      });
+    const shim = platformCommand("C:\\Tools\\claude.cmd", ["--version"], "win32", "cmd.exe");
+    expect(shim.command).toBe("cmd.exe");
+    expect(shim.args.slice(0, 4)).toEqual(["/d", "/s", "/v:off", "/c"]);
+    expect(shim.args[4]).toContain("claude.cmd");
+    expect(shim.windowsVerbatimArguments).toBe(true);
     expect(platformCommand("claude", ["-p"], "win32", "cmd.exe").command).toBe("cmd.exe");
     expect(platformCommand("C:\\Tools\\codex.exe", ["exec"], "win32", "cmd.exe").command)
       .toBe("C:\\Tools\\codex.exe");
+  });
+
+  it("escapes shell metacharacters before cmd.exe sees model-controlled arguments", () => {
+    const command = platformCommand(
+      "claude",
+      ["--model", "trusted & calc.exe | more"],
+      "win32",
+      "cmd.exe",
+    );
+    const line = command.args.at(-1)!;
+    expect(line).toMatch(/\^+&/);
+    expect(line).toMatch(/\^+\|/);
+    expect(line).not.toMatch(/(^|[^\^])&/);
+    expect(line).not.toMatch(/(^|[^\^])\|/);
+    expect(command.windowsVerbatimArguments).toBe(true);
   });
 
   it("terminates the wrapper and its full descendant tree", () => {
@@ -154,5 +191,14 @@ describe("Windows bridge launcher", () => {
       "/f",
     ]);
     expect(processTreeTerminationCommand(412, true, "darwin")).toBeNull();
+  });
+});
+
+describe("launcher quoting", () => {
+  it("keeps POSIX expansion syntax literal in installation paths", () => {
+    expect(posixShellQuote("/Applications/$HOME/`other`/SDLC")).toBe(
+      "'/Applications/$HOME/`other`/SDLC'",
+    );
+    expect(posixShellQuote("/Applications/owner's SDLC")).toContain("'\"'\"'");
   });
 });

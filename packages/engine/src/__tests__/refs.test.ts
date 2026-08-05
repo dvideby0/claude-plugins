@@ -1,6 +1,7 @@
 import { describe, expect, it, afterEach } from "vitest";
 import { getDb } from "../db/db.js";
 import { impactOf, referencesTo } from "../graph/refs.js";
+import { buildBrief } from "../graph/brief.js";
 import { scan } from "../scan/scan.js";
 import { loadNative } from "../scan/source.js";
 import { cleanup, makeProject } from "./helpers.js";
@@ -173,5 +174,26 @@ withNative("symbol references", () => {
     await scan(root, { kind: "incremental" });
 
     expect(referencesTo(db, "getUser").total).toBe(0);
+  });
+});
+
+describe("reference coverage", () => {
+  it("reports unavailable reference analysis as unknown rather than empty", async () => {
+    root = await makeProject(PROJECT);
+    await scan(root, { kind: "full" });
+    const db = await getDb(root);
+
+    // Model the supported fallback path explicitly even on a machine that has
+    // the native module, so this assertion runs in both CI variants.
+    db.run("DELETE FROM refs");
+    db.run("UPDATE files SET ref_coverage = 'none'");
+
+    const impact = impactOf(db, "src/db.ts");
+    expect(impact.referenceCoverage).toBe("none");
+    const brief = buildBrief(db, "src/db.ts").text;
+    expect(brief).toContain("precise references are unknown");
+    expect(brief).toContain("Test coverage is unknown");
+    expect(brief).not.toContain("Nothing references it");
+    expect(brief).not.toContain("No test covers it");
   });
 });
