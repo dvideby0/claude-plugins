@@ -1,0 +1,28 @@
+{
+  "name": "@sdlc/desktop",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Desktop shell for the SDLC engine: installs it, supervises it, and connects your coding CLIs.",
+  "type": "module",
+  "main": "./dist/main.js",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "start": "npm run build && electron .",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "package": "npm run build && electron-builder --config electron-builder.yml",
+    "package:dir": "npm run build && electron-builder --config electron-builder.yml --dir"
+  },
+  "dependencies": {
+    "@sdlc/engine": "*",
+    "@sdlc/protocol": "*"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.21",
+    "electron": "33.4.11",
+    "electron-builder": "^25.1.8",
+    "typescript": "^5.8.3"
+  },
+  "author": {
+    "name": "dvideby0"
+  }
+}

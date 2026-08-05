@@ -7,9 +7,9 @@
   },
   "plugins": [
     {
-      "name": "repo-audit",
-      "description": "Incremental code audit for TypeScript/JavaScript and Python. Parses a real import graph, runs your own linters, and keeps findings in a SQLite store so repeat runs update knowledge instead of restarting.",
-      "source": "./plugins/repo-audit",
+      "name": "sdlc",
+      "description": "Skills grounded in a persistent index of your codebase — understand, plan, audit. Requires the SDLC desktop app, which runs the engine these skills query.",
+      "source": "./plugins/sdlc",
       "category": "development"
     }
   ]

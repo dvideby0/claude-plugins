@@ -1,0 +1,15 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "outDir": "./dist",
+    "rootDir": "./src",
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    // The analysis code predates this repo and was written without it. Turning
+    // it on here would mean touching every parser and report path at the same
+    // time as moving them, so it stays off until that can be its own change.
+    "noUncheckedIndexedAccess": false
+  },
+  "include": ["src/**/*"],
+  "exclude": ["src/__tests__/**"]
+}

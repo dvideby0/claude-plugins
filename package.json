@@ -1,0 +1,25 @@
+{
+  "name": "sdlc-workspace",
+  "private": true,
+  "version": "0.1.0",
+  "description": "SDLC — a local code-intelligence engine, a desktop app that installs it, and thin companion plugins for coding harnesses.",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
+  "scripts": {
+    "build": "npm run build --workspaces --if-present",
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "test": "npm run test --workspaces --if-present",
+    "daemon": "npm run start -w @sdlc/engine",
+    "desktop": "npm run start -w @sdlc/desktop"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.21",
+    "typescript": "^5.8.3"
+  }
+}

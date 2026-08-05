@@ -1,0 +1,8 @@
+{
+  "name": "sdlc",
+  "version": "6.0.0",
+  "description": "Skills grounded in a persistent index of your codebase: understand how something works, plan a change against its real structure, and audit it. Requires the SDLC desktop app, which runs the engine these skills query.",
+  "author": {
+    "name": "dvideby0"
+  }
+}

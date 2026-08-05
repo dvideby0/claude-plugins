@@ -1,0 +1,6 @@
+# Build intermediates live outside the package directory. The desktop app
+# bundles this package verbatim from node_modules, and a target/ inside it
+# would ship half a gigabyte of build cache — and break codesigning, which
+# refuses the unsigned intermediate binaries cargo leaves there.
+[build]
+target-dir = "../../target/scan-core"

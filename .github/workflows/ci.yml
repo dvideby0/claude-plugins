@@ -1,0 +1,68 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  # The scan core is native, so it is built per platform and published as a
+  # prebuilt artifact. Nobody installing the app should need a Rust toolchain.
+  native:
+    name: scan-core (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: macos-14, target: aarch64-apple-darwin }
+          - { os: macos-13, target: x86_64-apple-darwin }
+          - { os: ubuntu-latest, target: x86_64-unknown-linux-gnu }
+          - { os: ubuntu-24.04-arm, target: aarch64-unknown-linux-gnu }
+          - { os: windows-latest, target: x86_64-pc-windows-msvc }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - run: npm ci
+      - run: npm run build -w @sdlc/scan-core -- --target ${{ matrix.target }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: scan-core-${{ matrix.target }}
+          path: packages/scan-core/*.node
+          if-no-files-found: error
+
+  test:
+    name: build and test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+      - run: npm ci
+      - run: npm run build
+      - run: npm run build -w @sdlc/scan-core
+
+      # The engine must pass with and without the native core, because the
+      # native module is an optional dependency.
+      - name: test (native)
+        run: npm test -w @sdlc/engine
+      - name: test (typescript fallback)
+        run: SDLC_NATIVE=0 npm test -w @sdlc/engine
+
+      - name: end to end
+        run: |
+          node packages/engine/dist/daemon/main.js &
+          sleep 3
+          node scripts/smoke.mjs
+
+      - name: validate plugin
+        run: npx --yes @anthropic-ai/claude-code plugin validate --strict plugins/sdlc

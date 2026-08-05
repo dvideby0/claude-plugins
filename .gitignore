@@ -18,7 +18,6 @@ __pycache__/
 *.py[cod]
 *$py.class
 *.egg-info/
-/dist/
 *.egg
 .venv/
 venv/
@@ -51,7 +50,10 @@ Desktop.ini
 *.so
 *.dylib
 
-# Plugin servers ship prebuilt: build/ and vendor/ are committed on purpose.
+# Build output — the app installs dependencies, so nothing is committed prebuilt.
+dist/
+out/
+release/
 
 # Logs
 *.log
@@ -64,3 +66,7 @@ sdlc-audit/
 *.tmp
 *.bak
 *.orig
+
+# Rust build output — the native module is built per platform, never committed.
+target/
+*.node

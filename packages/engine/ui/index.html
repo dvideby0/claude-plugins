@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>SDLC Engine</title>
+    <link rel="stylesheet" href="/styles.css" />
+    <script>
+      window.__SDLC__ = __SDLC_BOOTSTRAP__;
+    </script>
+  </head>
+  <body>
+    <header class="titlebar">
+      <div class="titlebar-left">
+        <span class="dot" id="health-dot"></span>
+        <span class="wordmark">SDLC</span>
+      </div>
+      <div class="titlebar-right">
+        <span class="meta" id="engine-meta">connecting…</span>
+      </div>
+    </header>
+
+    <div class="body">
+      <nav class="nav" id="nav">
+        <div class="nav-group">
+          <a class="nav-item" href="#/projects" data-section="projects">
+            <span class="glyph" aria-hidden="true">◧</span> Projects
+          </a>
+        </div>
+
+        <div class="nav-group grow">
+          <div class="nav-label">Recent</div>
+          <div id="nav-projects" class="nav-sub"></div>
+        </div>
+
+        <div class="nav-group">
+          <a class="nav-item" href="#/settings" data-section="settings">
+            <span class="glyph" aria-hidden="true">⚙</span> Settings
+          </a>
+          <div id="nav-agents" class="nav-hint"></div>
+        </div>
+      </nav>
+
+      <main class="view" id="view"></main>
+    </div>
+
+    <div id="toast" class="toast" hidden></div>
+    <script src="/graph.js"></script>
+    <script src="/flow.js"></script>
+    <script src="/app.js"></script>
+  </body>
+</html>

@@ -1,0 +1,38 @@
+{
+  "name": "@sdlc/engine",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Long-lived local code-intelligence engine: indexes repositories and serves them over MCP.",
+  "type": "module",
+  "main": "./dist/daemon/main.js",
+  "bin": {
+    "sdlcd": "./dist/daemon/main.js"
+  },
+  "files": [
+    "dist",
+    "content",
+    "ui"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/daemon/main.js",
+    "stdio": "node dist/stdio.js",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.30.0",
+    "@sdlc/protocol": "*",
+    "@vscode/tree-sitter-wasm": "^0.3.1",
+    "sql.js": "^1.14.1",
+    "zod": "^3.25.7",
+    "typescript": "^5.8.3"
+  },
+  "optionalDependencies": {
+    "@sdlc/scan-core": "*"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.21",
+    "vitest": "^3.0.0"
+  }
+}

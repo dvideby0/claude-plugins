@@ -1,0 +1,64 @@
+# Packaging for the desktop app.
+#
+# The app ships the engine, its content and the bridge, because the engine is
+# what makes the plugins work — a user who installs only the app must end up
+# with a working setup, not a working shell.
+
+appId: dev.sdlc.app
+productName: SDLC
+copyright: MIT
+
+directories:
+  output: ../../release
+  buildResources: build
+
+# In a hoisted npm workspace, electron-builder's "install production deps"
+# pass prunes the shared root node_modules — deleting its own binaries and
+# the other workspaces' dev deps mid-build. The dependency tree is already
+# installed; there is nothing for the reinstall pass to add.
+npmRebuild: false
+
+# The engine runs as a child Node process (ELECTRON_RUN_AS_NODE), which has
+# no asar support — its files, content and wasm runtimes must exist on disk
+# as real files, not archive entries. The whole app stays unpacked.
+asar: false
+
+files:
+  - dist/**/*
+  - preload.cjs
+  - package.json
+  # The engine and protocol travel as real packages; their runtime
+  # dependencies (MCP SDK, sql.js, tree-sitter wasm, zod, typescript) are
+  # collected from the workspace's hoisted node_modules by the dependency
+  # walker. Build intermediates and sources stay out.
+  - "!node_modules/@sdlc/scan-core/target/**"
+  - "!node_modules/@sdlc/engine/src/**"
+  - "!node_modules/**/*.{ts,map}"
+  - "!node_modules/.bin/**"
+
+mac:
+  category: public.app-category.developer-tools
+  target:
+    - target: dmg
+      arch: [arm64, x64]
+  hardenedRuntime: true
+  gatekeeperAssess: false
+  entitlements: build/entitlements.mac.plist
+  entitlementsInherit: build/entitlements.mac.plist
+  # The engine spawns coding CLIs, which Gatekeeper treats as running
+  # unsigned code unless the app says so.
+  extendInfo:
+    NSAppleEventsUsageDescription: SDLC needs this to launch your coding CLI.
+
+win:
+  target:
+    - target: nsis
+      arch: [x64]
+
+linux:
+  category: Development
+  target:
+    - target: AppImage
+      arch: [x64, arm64]
+
+publish: null

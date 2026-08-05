@@ -1,0 +1,172 @@
+# Conventions
+
+Rules this codebase has actually been burned by. Each one exists because
+something broke, and most are also recorded as memories so they surface through
+`context` and `brief` without anyone having to read this file.
+
+That duplication is deliberate: a file has to be found and trusted, and it goes
+stale silently. The store is the primary; this is the readable summary.
+
+## Never assume the root
+
+A monorepo has no config at its root — each package carries its own, and any
+root file is a base others extend. This assumption was made independently three
+times and was wrong every time:
+
+- `ts.findConfigFile` searches **upward**, so from a repository root it finds
+  nothing at all.
+- `runTsc` checked only `<root>/tsconfig.json` and reported
+  `skipped: no tsconfig.json` on a TypeScript monorepo — the single
+  highest-signal checker silently never ran.
+
+Search the root first, then one level of `packages/`, `apps/`, `libs/`,
+`services/`.
+
+## A tool that could not run is a gap, not a pass
+
+`skipped` and `failed` are distinct from `ok`, and neither may be presented as
+a clean result. A finding source only closes findings under its own rule prefix
+and only when it actually ran — a linter that was not installed never marks its
+previous findings fixed.
+
+The same applies to output that reaches a person: where nothing resolved a
+symbol, say **"uses not tracked"**, never "unused". Reporting unknown as zero
+is how someone deletes live code.
+
+## Schema changes need a migration
+
+`CREATE TABLE IF NOT EXISTS` does nothing to a table that already exists, so a
+new column never appears on an existing store — and an index over that column
+then fails at open time with `no such column`.
+
+Add the column in **both** places: `SCHEMA_SQL` (for new stores) and
+`Db.ADDED_COLUMNS` (for existing ones). `Db.migrate()` checks the live table
+with `PRAGMA table_info` rather than a recorded version, so a store that was
+half-upgraded still converges.
+
+Only additive migrations are supported, on purpose. Anything destructive should
+be an explicit, reviewed change, not something that happens when a daemon
+starts.
+
+## The two parsers must agree
+
+`packages/scan-core/src/parse.rs` is the default path;
+`packages/engine/src/scan/parse.ts` is the fallback when no native build
+exists. Any change to symbol or reference extraction lands in both, or the same
+repository produces different answers depending on which ran — and the suite
+passes on one path while the product is wrong on the other.
+
+`node scripts/bench.mjs <repo>` compares them on real code: file sets, hashes,
+line counts, symbols, imports. It is the check that they still agree.
+
+The suite runs both ways in CI. `SDLC_NATIVE=0` forces the fallback.
+
+## Record the vocabulary, not just the shape
+
+Exported constants are a codebase's closed value sets, and they are what a
+caller most often invents a member of. They are recorded as symbols of kind
+`constant` with their **whole declaration flattened onto one line**, because
+the values are the reason to record them at all — a union written across
+several lines loses everything useful if only its first line is kept.
+
+## Blast radius excludes the file itself
+
+A file using its own helper is a real reference but not a consequence of
+changing it for anyone else. `impact` and `brief` count external uses only;
+intra-file uses are reported separately. Before this split, 81% of all
+references were self-references and every blast-radius number was inflated —
+one file reported 189 references when 5 came from elsewhere.
+
+## Say what did not happen
+
+Every summary states its own coverage. An audit that ran five of nine tools
+says so. A finding in a test file says it may be a fixture. A memory written
+against code that has since changed comes back flagged stale rather than
+quietly believed.
+
+## Errors should say what to do
+
+`"The SDLC engine is not running. Open the SDLC desktop app to start it, then
+retry — no need to restart this session."` is the standard: what happened, what
+to do, and what is *not* required.
+
+## Derived sets get one definition
+
+"Which files are on the map" was written twice — membership matched every
+present file, coverage counted only source. The same page then reported boxes
+holding 166 files in a 151-file repository. Where two queries answer the same
+question, name the predicate once and use it in both places.
+
+The same rule applies to rolling counts up a tree: union the sets, never sum
+the counts, unless the children are provably disjoint. Boxes are allowed to
+overlap.
+
+## A handler must be bound where the element actually is
+
+`on()` scoped its query to the view. The drawer hangs off `<body>`, so every
+button inside it was dead — including its own Close — while looking perfectly
+correct in the source. When an element lives outside the usual root, pass the
+root explicitly rather than relying on the default.
+
+Nested clickable regions need `stopPropagation`: without it the outermost
+handler runs last and wins, so clicking a child opens its parent.
+
+## Never strip JSONC comments with a regex
+
+A tsconfig paths key ends in slash-star and an include glob contains
+star-slash. A regex pairs those as a comment and deletes everything between —
+which is usually the aliases the parser existed to find, in a completely
+ordinary Vite/Next config. `stripJsonComments` in `scan/resolve.ts` walks
+characters and passes string literals through untouched. This bug bit twice
+in one day: the doc comment explaining the fix contained the same glob and
+terminated itself.
+
+## Check exit codes, not just output
+
+ruff exits 2 with an empty stdout when its config is broken; mypy's exit-2
+messages carry no line numbers, so a line-oriented regex sees nothing; tsc's
+config-level errors have no `file(line,col)` prefix. In each case "no parsed
+findings" plus "nonzero exit" meant *the tool never ran* — and reporting it
+"ok" closed every finding it had ever recorded. Empty output is only clean
+when the exit code says so.
+
+## The engine's event loop is the product
+
+A synchronous native call blocks the daemon for the whole scan, during which
+health pings time out and every consumer reads "not answering" as "not
+running" — the bridge tells the user to start an engine that is already
+working, and the desktop shell spawns a doomed duplicate. Long native work
+goes through napi `AsyncTask`, never a plain `#[napi] fn`.
+
+## Writes are synchronous inside a transaction
+
+sql.js shares one handle per store across every request. An `await` inside an
+open transaction lets unrelated writes join it — and roll back with it.
+`Db.transaction(fn)` takes a synchronous callback on purpose: read and parse
+first, then write in one synchronous pass. Scans are additionally serialised
+per store (`scan.ts`), because the watcher, the HTTP job and the MCP tool are
+three independent doors into the same handle.
+
+## electron-builder and npm workspaces do not mix unattended
+
+Its "install production dependencies" pass prunes dev dependencies — in a
+hoisted workspace that is the shared root `node_modules`, so it deletes its
+own binaries mid-build and every other workspace's dev deps with them
+(`npmRebuild: false` disables the pass). Its `extraResources.from` rejects
+paths outside the app directory. And an asar archive is unreadable by the
+engine, which runs as a plain Node child (`ELECTRON_RUN_AS_NODE`), so the app
+ships unpacked. Rust build intermediates live outside the package
+(`CARGO_TARGET_DIR`, set in `scan-core/build.mjs`) or they get bundled and
+break codesigning.
+
+## Working on this repository
+
+```bash
+npm run build && npm test -w @sdlc/engine
+SDLC_NATIVE=0 npm test -w @sdlc/engine   # the fallback path must pass too
+node scripts/smoke.mjs                    # end to end through the bridge
+node scripts/bench.mjs <repo>             # the two parsers still agree
+```
+
+A schema change additionally needs a run against an **existing** store, not
+just a fresh one. That is the case `CREATE TABLE IF NOT EXISTS` hides.

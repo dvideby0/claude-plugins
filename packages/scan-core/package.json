@@ -1,0 +1,27 @@
+{
+  "name": "@sdlc/scan-core",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Native repository walking and parsing for the SDLC engine.",
+  "main": "index.js",
+  "types": "index.d.ts",
+  "napi": {
+    "name": "scan-core",
+    "triples": {
+      "additional": [
+        "aarch64-apple-darwin",
+        "x86_64-unknown-linux-gnu",
+        "aarch64-unknown-linux-gnu",
+        "x86_64-pc-windows-msvc"
+      ]
+    }
+  },
+  "files": ["index.js", "index.d.ts", "*.node"],
+  "scripts": {
+    "build": "node build.mjs --release",
+    "build:debug": "node build.mjs"
+  },
+  "devDependencies": {
+    "@napi-rs/cli": "^2.18.4"
+  }
+}

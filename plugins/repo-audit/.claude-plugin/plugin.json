@@ -1,8 +1,0 @@
-{
-  "name": "repo-audit",
-  "version": "4.0.0",
-  "description": "Incremental code audit for TypeScript/JavaScript and Python. Parses a real import graph, runs your own linters, and keeps findings in a SQLite store so repeat runs update knowledge instead of restarting.",
-  "author": {
-    "name": "dvideby0"
-  }
-}
