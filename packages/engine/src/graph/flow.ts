@@ -62,13 +62,12 @@ const CALLABLE = "('function','method','class')";
 const COMMONS_THRESHOLD = 6;
 
 interface Row {
+  id: string;
   symbol: string;
   path: string;
   kind: string;
   line: number;
 }
-
-const idOf = (symbol: string, path: string): string => `${path}#${symbol}`;
 
 /**
  * Callable symbols nothing calls.
@@ -80,7 +79,7 @@ const idOf = (symbol: string, path: string): string => `${path}#${symbol}`;
  */
 function entryPoints(db: Db, limit: number): Row[] {
   return db.all<Row>(
-    `SELECT s.name AS symbol, s.path, s.kind, s.start_line AS line
+    `SELECT s.id, s.name AS symbol, s.path, s.kind, s.start_line AS line
      FROM symbols s
      JOIN files f ON f.path = s.path
      WHERE s.kind IN ${CALLABLE}
@@ -89,41 +88,41 @@ function entryPoints(db: Db, limit: number): Row[] {
        AND NOT EXISTS (
          SELECT 1 FROM refs r
          JOIN files tf ON tf.path = r.src_path
-         WHERE r.name = s.name AND r.dst_path = s.path
-           AND r.src_symbol IS NOT NULL
+         WHERE r.dst_symbol_id = s.id
+           AND r.src_symbol_id IS NOT NULL
            AND tf.is_test = 0
-           AND NOT (r.src_path = s.path AND r.src_symbol = s.name)
+           AND r.src_symbol_id != s.id
        )
        AND EXISTS (
          SELECT 1 FROM refs r2
-         WHERE r2.src_path = s.path AND r2.src_symbol = s.name AND r2.dst_path IS NOT NULL
+         WHERE r2.src_symbol_id = s.id AND r2.dst_symbol_id IS NOT NULL
        )
      ORDER BY (
        SELECT COUNT(*) FROM refs r3
-       WHERE r3.src_path = s.path AND r3.src_symbol = s.name AND r3.dst_path IS NOT NULL
+       WHERE r3.src_symbol_id = s.id AND r3.dst_symbol_id IS NOT NULL
      ) DESC
      LIMIT ?`,
     [limit],
   );
 }
 
-function calleesOf(db: Db, symbol: string, path: string): Row[] {
+function calleesOf(db: Db, symbolId: string): Row[] {
   return db.all<Row>(
-    `SELECT DISTINCT s.name AS symbol, s.path, s.kind, s.start_line AS line
+    `SELECT DISTINCT s.id, s.name AS symbol, s.path, s.kind, s.start_line AS line
      FROM refs r
-     JOIN symbols s ON s.path = r.dst_path AND s.name = r.name
-     WHERE r.src_path = ? AND r.src_symbol = ? AND r.dst_path IS NOT NULL
+     JOIN symbols s ON s.id = r.dst_symbol_id
+     WHERE r.src_symbol_id = ? AND r.dst_symbol_id IS NOT NULL
        AND s.kind IN ${CALLABLE}
-       AND NOT (r.dst_path = r.src_path AND r.name = r.src_symbol)`,
-    [path, symbol],
+       AND r.dst_symbol_id != r.src_symbol_id`,
+    [symbolId],
   );
 }
 
-function callerCount(db: Db, symbol: string, path: string): number {
+function callerCount(db: Db, symbolId: string): number {
   return db.count(
-    `SELECT COUNT(DISTINCT r.src_path || '#' || r.src_symbol) AS n FROM refs r
-     WHERE r.name = ? AND r.dst_path = ? AND r.src_symbol IS NOT NULL`,
-    [symbol, path],
+    `SELECT COUNT(DISTINCT r.src_symbol_id) AS n FROM refs r
+     WHERE r.dst_symbol_id = ? AND r.src_symbol_id IS NOT NULL`,
+    [symbolId],
   );
 }
 
@@ -131,6 +130,8 @@ export interface FlowOptions {
   /** Start from one symbol instead of every entry point. */
   root?: string;
   rootPath?: string;
+  /** Exact declaration id. Preferred when names are ambiguous. */
+  rootId?: string;
   depth?: number;
   maxNodes?: number;
   maxEntries?: number;
@@ -159,10 +160,15 @@ export function flowView(db: Db, options: FlowOptions = {}): FlowView {
   const maxNodes = options.maxNodes ?? 48;
   const maxEntries = options.maxEntries ?? 12;
 
-  const roots: Row[] = options.root
+  const roots: Row[] = options.rootId
     ? db.all<Row>(
-        `SELECT name AS symbol, path, kind, start_line AS line FROM symbols
-         WHERE name = ?${options.rootPath ? " AND path = ?" : ""} LIMIT 1`,
+        `SELECT id, name AS symbol, path, kind, start_line AS line FROM symbols WHERE id = ?`,
+        [options.rootId],
+      )
+    : options.root
+    ? db.all<Row>(
+        `SELECT id, name AS symbol, path, kind, start_line AS line FROM symbols
+         WHERE name = ?${options.rootPath ? " AND path = ?" : ""}`,
         options.rootPath ? [options.root, options.rootPath] : [options.root],
       )
     : entryPoints(db, maxEntries);
@@ -172,10 +178,10 @@ export function flowView(db: Db, options: FlowOptions = {}): FlowView {
   const edgeSeen = new Set<string>();
   let truncated = false;
 
-  const rootIds = new Set(roots.map((row) => idOf(row.symbol, row.path)));
+  const rootIds = new Set(roots.map((row) => row.id));
 
   const add = (row: Row, depth: number): { node: FlowNode; bumped: boolean } => {
-    const id = idOf(row.symbol, row.path);
+    const id = row.id;
     const existing = nodes.get(id);
     if (existing) {
       // Longest path wins, so a node never sits left of something feeding
@@ -195,7 +201,7 @@ export function flowView(db: Db, options: FlowOptions = {}): FlowView {
       kind: row.kind,
       line: row.line,
       depth,
-      callers: callerCount(db, row.symbol, row.path),
+      callers: callerCount(db, row.id),
       callees: 0,
       findings: db.count(
         "SELECT COUNT(*) AS n FROM findings WHERE path = ? AND status IN ('open','regressed')",
@@ -215,10 +221,10 @@ export function flowView(db: Db, options: FlowOptions = {}): FlowView {
     const next: typeof frontier = [];
 
     for (const { row, depth } of frontier) {
-      const parent = nodes.get(idOf(row.symbol, row.path));
+      const parent = nodes.get(row.id);
       if (!parent) continue;
 
-      const children = calleesOf(db, row.symbol, row.path);
+      const children = calleesOf(db, row.id);
       parent.callees = children.length;
 
       if (depth >= maxDepth) {
@@ -227,7 +233,7 @@ export function flowView(db: Db, options: FlowOptions = {}): FlowView {
       }
 
       for (const child of children) {
-        const id = idOf(child.symbol, child.path);
+        const id = child.id;
         const edgeKey = `${parent.id}->${id}`;
 
         if (nodes.size >= maxNodes && !nodes.has(id)) {
@@ -292,7 +298,7 @@ export function flowView(db: Db, options: FlowOptions = {}): FlowView {
   }
 
   return {
-    entries: roots.map((row) => idOf(row.symbol, row.path)),
+    entries: roots.map((row) => row.id),
     nodes: [...nodes.values()],
     edges,
     layers,

@@ -29,9 +29,9 @@ import type { Db } from "../db/db.js";
  */
 export const TYPED_SPECIFIER = "typed";
 
-/** Destination participates in the existing refs primary key via specifier. */
-export function typedSpecifier(destination: string): string {
-  return `${TYPED_SPECIFIER}:${destination}`;
+/** Destination identity participates in the existing refs primary key. */
+export function typedSpecifier(destination: string, line: number, column: number): string {
+  return `${TYPED_SPECIFIER}:${destination}:${line}:${column}`;
 }
 
 export interface TypedResult {
@@ -46,8 +46,11 @@ export interface TypedResult {
 export interface TypedReference {
   src: string;
   line: number;
+  column: number;
   name: string;
   dst: string;
+  dstLine: number;
+  dstColumn: number;
 }
 
 export interface TypedAnalysis {
@@ -300,9 +303,20 @@ export function analyseTypes(projectRoot: string): TypedAnalysis {
               (declaration as ts.NamedDeclaration).name === node;
 
             if (dst && name && !isSelf) {
-              const line =
-                sourceFile.getLineAndCharacterOfPosition(node.getStart()).line + 1;
-              found.push({ src, line, name, dst });
+              const sourcePosition = sourceFile.getLineAndCharacterOfPosition(node.getStart());
+              const declaredNode = (declaration as ts.NamedDeclaration).name;
+              const destinationPosition = declFile.getLineAndCharacterOfPosition(
+                declaredNode?.getStart() ?? declaration.getStart(),
+              );
+              found.push({
+                src,
+                line: sourcePosition.line + 1,
+                column: sourcePosition.character,
+                name,
+                dst,
+                dstLine: destinationPosition.line + 1,
+                dstColumn: destinationPosition.character,
+              });
             }
           }
         }
@@ -393,27 +407,28 @@ export function applyTypedAnalysis(db: Db, analysis: TypedAnalysis): TypedResult
     for (const [src, refs] of refsBySrc) {
       db.run("DELETE FROM refs WHERE src_path = ?", [src]);
       for (const reference of refs) {
-        const key = `${reference.src}|${reference.line}|${reference.name}|${reference.dst}`;
+        const key = `${reference.src}|${reference.line}|${reference.column}|${reference.name}|${reference.dst}|${reference.dstLine}|${reference.dstColumn}`;
         if (seen.has(key)) continue;
         seen.add(key);
         db.run(
-          "INSERT OR REPLACE INTO refs(src_path, src_line, name, specifier, dst_path) VALUES(?, ?, ?, ?, ?)",
-          [reference.src, reference.line, reference.name, typedSpecifier(reference.dst), reference.dst],
+          `INSERT OR REPLACE INTO refs(src_path, src_line, src_column, name, specifier,
+                                      dst_path, dst_line, dst_column)
+           VALUES(?, ?, ?, ?, ?, ?, ?, ?)`,
+          [
+            reference.src,
+            reference.line,
+            reference.column,
+            reference.name,
+            typedSpecifier(reference.dst, reference.dstLine, reference.dstColumn),
+            reference.dst,
+            reference.dstLine,
+            reference.dstColumn,
+          ],
         );
       }
       db.run("UPDATE files SET ref_coverage = 'typed' WHERE path = ?", [src]);
     }
-    // Same attribution as the fast pass — the typed pass replaced these rows.
-    db.run(
-      `UPDATE refs SET src_symbol = (
-         SELECT s.name FROM symbols s
-         WHERE s.path = refs.src_path
-           AND s.start_line <= refs.src_line
-           AND s.end_line   >= refs.src_line
-         ORDER BY (s.end_line - s.start_line) ASC
-         LIMIT 1
-       )`,
-    );
+    db.refreshReferenceIdentity();
   });
 
   const after = db.count("SELECT COUNT(*) AS n FROM refs WHERE dst_path IS NOT NULL");

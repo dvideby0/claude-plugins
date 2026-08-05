@@ -30,6 +30,11 @@ import { loadProfile } from "./service.js";
 export function handleGetProfile(id: string): string { return loadProfile(id); }
 export function handleHealth(): string { return "ok"; }
 `,
+  "src/duplicates.ts": `
+export function alpha(): string { return "a"; }
+export function beta(): string { return "b"; }
+export class A { run(): string { return alpha(); } } export class B { run(): string { return beta(); } }
+`,
 };
 
 let root: string;
@@ -100,7 +105,7 @@ withNative("call chains", () => {
     const query = exact.nodes.find((node) => node.symbol === "query");
     expect(query?.depth).toBe(1);
     expect(query?.truncated).toBe(false);
-    expect(exact.leaves).toContain("src/db.ts#query");
+    expect(exact.leaves).toContain(query?.id);
   });
 
   it("attributes references to the enclosing symbol", async () => {
@@ -135,5 +140,27 @@ withNative("call chains", () => {
     const result = trace(db, "noSuchThing");
     expect(result.rootPath).toBeNull();
     expect(result.nodes).toHaveLength(0);
+  });
+
+  it("keeps same-named methods in one file as distinct declarations", async () => {
+    root = await makeProject(PROJECT);
+    await scan(root, { kind: "full" });
+    const db = await getDb(root);
+    expect(resolveTypes(db, root).ran).toBe(true);
+
+    const methods = db.all<{ id: string; start_line: number }>(
+      "SELECT id, start_line FROM symbols WHERE path = 'src/duplicates.ts' AND name = 'run' ORDER BY start_line, start_column",
+    );
+    expect(methods).toHaveLength(2);
+
+    const first = trace(db, "run", { symbolId: methods[0].id });
+    const second = trace(db, "run", { symbolId: methods[1].id });
+    expect(first.nodes.map((node) => node.symbol)).toContain("alpha");
+    expect(first.nodes.map((node) => node.symbol)).not.toContain("beta");
+    expect(second.nodes.map((node) => node.symbol)).toContain("beta");
+    expect(second.nodes.map((node) => node.symbol)).not.toContain("alpha");
+
+    // Name + path is still ambiguous; trace refuses to pick one arbitrarily.
+    expect(trace(db, "run", { path: "src/duplicates.ts" }).nodes).toHaveLength(0);
   });
 });

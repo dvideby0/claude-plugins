@@ -1,4 +1,4 @@
-export const SCHEMA_VERSION = 10;
+export const SCHEMA_VERSION = 11;
 
 /**
  * The audit store. Files, symbols and edges are the deterministic picture of
@@ -46,7 +46,9 @@ CREATE TABLE IF NOT EXISTS symbols (
   kind       TEXT NOT NULL,
   name       TEXT NOT NULL,
   start_line INTEGER NOT NULL,
+  start_column INTEGER NOT NULL DEFAULT 0,
   end_line   INTEGER NOT NULL,
+  end_column INTEGER NOT NULL DEFAULT 0,
   exported   INTEGER NOT NULL DEFAULT 0,
   default_export INTEGER NOT NULL DEFAULT 0,
   signature  TEXT
@@ -70,6 +72,7 @@ CREATE INDEX IF NOT EXISTS idx_edges_external ON edges(external);
 CREATE TABLE IF NOT EXISTS refs (
   src_path  TEXT NOT NULL,
   src_line  INTEGER NOT NULL,
+  src_column INTEGER NOT NULL DEFAULT 0,
   name      TEXT NOT NULL,
   specifier TEXT NOT NULL,
   dst_path  TEXT,
@@ -77,10 +80,18 @@ CREATE TABLE IF NOT EXISTS refs (
   -- call happens but not who makes it, and a call chain cannot be walked:
   -- imports tell you a file can see another, never that A calls B calls C.
   src_symbol TEXT,
+  src_symbol_id TEXT,
+  -- Typed references carry the declaration line, which distinguishes two
+  -- methods with the same name in the same file.
+  dst_line INTEGER,
+  dst_column INTEGER,
+  dst_symbol_id TEXT,
   PRIMARY KEY (src_path, src_line, name, specifier)
 );
 CREATE INDEX IF NOT EXISTS idx_refs_caller ON refs(src_path, src_symbol);
+CREATE INDEX IF NOT EXISTS idx_refs_caller_id ON refs(src_symbol_id);
 CREATE INDEX IF NOT EXISTS idx_refs_dst ON refs(dst_path, name);
+CREATE INDEX IF NOT EXISTS idx_refs_dst_id ON refs(dst_symbol_id);
 CREATE INDEX IF NOT EXISTS idx_refs_src ON refs(src_path);
 
 CREATE TABLE IF NOT EXISTS findings (

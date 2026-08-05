@@ -18,6 +18,7 @@ export interface SourceRef {
   name: string;
   module: string;
   line: number;
+  column: number;
 }
 
 export interface SourceFile {
@@ -47,13 +48,15 @@ interface NativeFile {
     kind: string;
     name: string;
     startLine: number;
+    startColumn: number;
     endLine: number;
+    endColumn: number;
     exported: boolean;
     defaultExport: boolean;
     signature: string;
   }>;
   imports: string[];
-  refs: Array<{ name: string; module: string; line: number }>;
+  refs: Array<{ name: string; module: string; line: number; column: number }>;
 }
 
 interface NativeCore {

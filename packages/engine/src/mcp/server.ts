@@ -399,14 +399,18 @@ export function createMcpServer(options: McpServerOptions): McpServer {
         .describe("callees = what it calls (default). callers = what reaches it."),
       depth: z.number().optional().describe("Hops to follow. Default 4, max 10."),
       path: z.string().optional().describe("Disambiguate when the name is defined more than once."),
+      line: z.number().int().positive().optional().describe("Declaration line for same-named symbols in one file."),
+      symbolId: z.string().optional().describe("Exact declaration id returned by flow or context."),
     },
-    async ({ projectRoot, symbol, direction, depth, path }) =>
+    async ({ projectRoot, symbol, direction, depth, path, line, symbolId }) =>
       wrap(async () => {
         const db = await getDb(resolveRoot(projectRoot));
         return trace(db, symbol, {
           ...(direction ? { direction } : {}),
           ...(depth ? { depth } : {}),
           ...(path ? { path } : {}),
+          ...(line ? { line } : {}),
+          ...(symbolId ? { symbolId } : {}),
         });
       }),
   );
@@ -678,20 +682,26 @@ export function createMcpServer(options: McpServerOptions): McpServer {
     {
       ...projectRootArg,
       root: z.string().optional().describe("Start from one symbol. Omit for every entry point."),
+      rootId: z.string().optional().describe("Exact declaration id returned by a previous flow."),
       depth: z.number().optional().describe("Layers to follow. Default 4, max 8."),
     },
-    async ({ projectRoot, root, depth }) =>
+    async ({ projectRoot, root, rootId, depth }) =>
       wrap(async () => {
         const db = await getDb(resolveRoot(projectRoot));
-        const view = flowView(db, { ...(root ? { root } : {}), ...(depth ? { depth } : {}) });
+        const view = flowView(db, {
+          ...(root ? { root } : {}),
+          ...(rootId ? { rootId } : {}),
+          ...(depth ? { depth } : {}),
+        });
+        const symbols = new Map(view.nodes.map((node) => [node.id, node.symbol]));
         // The layered ids are for drawing; a caller reading this wants the shape.
         return {
           entries: view.entries,
           layers: view.layers.map((layer, depthIndex) => ({
             depth: depthIndex,
-            symbols: layer.map((id) => id.split("#")[1]),
+            symbols: layer.map((id) => ({ id, name: symbols.get(id) ?? id })),
           })),
-          commons: view.commons.map((id) => id.split("#")[1]),
+          commons: view.commons.map((id) => ({ id, name: symbols.get(id) ?? id })),
           nodes: view.nodes.length,
           truncated: view.truncated,
         };

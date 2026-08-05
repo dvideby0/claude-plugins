@@ -1206,8 +1206,8 @@ async function paneFlow(workspace, pane) {
     return;
   }
 
-  if (!flowRoot || !entryNodes.some((n) => n.symbol === flowRoot.symbol && n.path === flowRoot.path)) {
-    flowRoot = { symbol: entryNodes[0].symbol, path: entryNodes[0].path };
+  if (!flowRoot || !entryNodes.some((node) => node.id === flowRoot.id)) {
+    flowRoot = { id: entryNodes[0].id, symbol: entryNodes[0].symbol, path: entryNodes[0].path };
   }
 
   function renderRail() {
@@ -1216,8 +1216,8 @@ async function paneFlow(workspace, pane) {
       ${entryNodes
         .map(
           (node) => `
-          <button class="rail-item ${node.symbol === flowRoot.symbol && node.path === flowRoot.path ? "active" : ""}"
-                  data-symbol="${esc(node.symbol)}" data-path="${esc(node.path)}">
+          <button class="rail-item ${node.id === flowRoot.id ? "active" : ""}"
+                  data-id="${esc(node.id)}" data-symbol="${esc(node.symbol)}" data-path="${esc(node.path)}">
             <span class="rail-name">${esc(node.symbol)}</span>
             <span class="rail-sub">${esc(node.path.split("/").slice(-2).join("/"))}</span>
             <span class="rail-count">${node.callees}</span>
@@ -1227,7 +1227,7 @@ async function paneFlow(workspace, pane) {
     `;
     for (const button of rail.querySelectorAll(".rail-item")) {
       button.addEventListener("click", () => {
-        flowRoot = { symbol: button.dataset.symbol, path: button.dataset.path };
+        flowRoot = { id: button.dataset.id, symbol: button.dataset.symbol, path: button.dataset.path };
         renderRail();
         void loadFlow();
       });
@@ -1238,8 +1238,7 @@ async function paneFlow(workspace, pane) {
     const depth = document.getElementById("flow-depth").value;
     const params = new URLSearchParams({
       depth,
-      root: flowRoot.symbol,
-      rootPath: flowRoot.path,
+      rootId: flowRoot.id,
     });
     stage.innerHTML = `<div class="loading">Tracing…</div>`;
     document.getElementById("flow-inspector").hidden = true;
@@ -1255,7 +1254,7 @@ async function paneFlow(workspace, pane) {
         onSelect: (hit) => void showFlowNode(workspace, hit),
         // Double-click walks deeper: the clicked symbol becomes the new root.
         onExpand: (hit) => {
-          flowRoot = { symbol: hit.symbol, path: hit.path };
+          flowRoot = { id: hit.id, symbol: hit.symbol, path: hit.path };
           renderRail();
           void loadFlow();
         },

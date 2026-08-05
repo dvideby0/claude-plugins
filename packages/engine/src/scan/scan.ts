@@ -28,7 +28,7 @@ import { canonicalWorkspaceRoot, workspaceIdentityKey } from "../lib/workspace-p
  *
  * When the stored version is behind, the next scan is promoted to a full one.
  */
-export const EXTRACTION_VERSION = 5;
+export const EXTRACTION_VERSION = 6;
 
 export interface ScanOptions {
   /** Re-parse every file, ignoring content hashes. */
@@ -179,15 +179,18 @@ async function doScan(projectRoot: string, options: ScanOptions = {}): Promise<S
 
       for (const symbol of result.symbols) {
         db.run(
-          `INSERT OR REPLACE INTO symbols(id, path, kind, name, start_line, end_line, exported, default_export, signature)
-           VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          `INSERT OR REPLACE INTO symbols(id, path, kind, name, start_line, start_column,
+                                          end_line, end_column, exported, default_export, signature)
+           VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           [
-            `${file.path}#${symbol.kind}:${symbol.name}@${symbol.startLine}`,
+            `${file.path}#${symbol.kind}:${symbol.name}@${symbol.startLine}:${symbol.startColumn}`,
             file.path,
             symbol.kind,
             symbol.name,
             symbol.startLine,
+            symbol.startColumn,
             symbol.endLine,
+            symbol.endColumn,
             symbol.exported ? 1 : 0,
             symbol.defaultExport ? 1 : 0,
             symbol.signature,
@@ -204,8 +207,9 @@ async function doScan(projectRoot: string, options: ScanOptions = {}): Promise<S
 
       for (const reference of file.refs) {
         db.run(
-          "INSERT OR REPLACE INTO refs(src_path, src_line, name, specifier, dst_path) VALUES(?, ?, ?, ?, NULL)",
-          [file.path, reference.line, reference.name, reference.module],
+          `INSERT OR REPLACE INTO refs(src_path, src_line, src_column, name, specifier, dst_path)
+           VALUES(?, ?, ?, ?, ?, NULL)`,
+          [file.path, reference.line, reference.column, reference.name, reference.module],
         );
       }
     }
@@ -273,20 +277,10 @@ async function doScan(projectRoot: string, options: ScanOptions = {}): Promise<S
                   WHERE s.path = refs.dst_path AND s.default_export = 1)`,
     );
 
-    // Attribute each reference to the symbol whose line range encloses it. The
-    // innermost wins, so a call inside a method is credited to the method rather
-    // than to the class around it. Doing this in SQL after the fact keeps both
-    // the fast pass and the typed pass from having to care.
-    db.run(
-      `UPDATE refs SET src_symbol = (
-         SELECT s.name FROM symbols s
-         WHERE s.path = refs.src_path
-           AND s.start_line <= refs.src_line
-           AND s.end_line   >= refs.src_line
-         ORDER BY (s.end_line - s.start_line) ASC
-         LIMIT 1
-       )`,
-    );
+    // The innermost enclosing declaration is the caller. Destination ids use
+    // typed declaration lines where available, so duplicate method names stay
+    // distinct instead of collapsing to path + name.
+    db.refreshReferenceIdentity();
   });
 
   const symbolCount = db.count("SELECT COUNT(*) AS n FROM symbols");

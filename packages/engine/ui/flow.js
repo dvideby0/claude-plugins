@@ -246,7 +246,11 @@
       });
       group.addEventListener("dblclick", (event) => {
         event.stopPropagation();
-        handlers.onExpand?.({ symbol: group.dataset.symbol, path: group.dataset.path });
+        handlers.onExpand?.({
+          id: group.dataset.id,
+          symbol: group.dataset.symbol,
+          path: group.dataset.path,
+        });
       });
     }
 

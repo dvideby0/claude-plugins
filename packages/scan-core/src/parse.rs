@@ -39,7 +39,9 @@ pub struct Symbol {
     pub kind: String,
     pub name: String,
     pub start_line: u32,
+    pub start_column: u32,
     pub end_line: u32,
+    pub end_column: u32,
     pub exported: bool,
     pub default_export: bool,
     pub signature: String,
@@ -53,6 +55,7 @@ pub struct Reference {
     pub name: String,
     pub module: String,
     pub line: u32,
+    pub column: u32,
 }
 
 #[derive(Default)]
@@ -870,6 +873,7 @@ fn collect_refs(
                         };
                         if !shadowed {
                             let line = node.start_position().row as u32 + 1;
+                            let column = node.start_position().column as u32;
                             let name = if binding.exported == "*" {
                                 namespace_member(node, binding, bytes)
                                     .unwrap_or_else(|| binding.exported.clone())
@@ -881,6 +885,7 @@ fn collect_refs(
                                     name,
                                     module: binding.module.clone(),
                                     line,
+                                    column,
                                 });
                             }
                         }
@@ -1119,7 +1124,9 @@ pub fn parse(engines: &mut Engines, path: &str, lang: &str, source: &str) -> Par
 
         let text = node.utf8_text(bytes).unwrap_or("");
         let start_line = node.start_position().row as u32 + 1;
+        let start_column = node.start_position().column as u32;
         let end_line = node.end_position().row as u32 + 1;
+        let end_column = node.end_position().column as u32;
 
         if label == "variable" {
             let value_kind = node
@@ -1144,7 +1151,9 @@ pub fn parse(engines: &mut Engines, path: &str, lang: &str, source: &str) -> Par
                     .to_string(),
                     name: name.to_string(),
                     start_line,
+                    start_column,
                     end_line,
+                    end_column,
                     exported,
                     default_export,
                     signature: first_line(text),
@@ -1158,7 +1167,9 @@ pub fn parse(engines: &mut Engines, path: &str, lang: &str, source: &str) -> Par
                     kind: "constant".to_string(),
                     name: name.to_string(),
                     start_line,
+                    start_column,
                     end_line,
+                    end_column,
                     exported: true,
                     default_export,
                     signature: flattened(text),
@@ -1184,7 +1195,9 @@ pub fn parse(engines: &mut Engines, path: &str, lang: &str, source: &str) -> Par
             kind,
             name: name.to_string(),
             start_line,
+            start_column,
             end_line,
+            end_column,
             exported,
             default_export,
             signature: first_line(text),

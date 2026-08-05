@@ -1,12 +1,17 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { getDb } from "../db/db.js";
 import { flowView } from "../graph/flow.js";
+import { resolveTypes } from "../graph/typed.js";
 import { scan } from "../scan/scan.js";
 import { loadNative } from "../scan/source.js";
 import { cleanup, makeProject } from "./helpers.js";
 
 const PROJECT = {
   "package.json": JSON.stringify({ name: "fixture", version: "1.0.0", type: "module" }),
+  "tsconfig.json": JSON.stringify({
+    compilerOptions: { target: "ES2022", module: "ESNext", moduleResolution: "Bundler", strict: true },
+    include: ["src/**/*"],
+  }),
   "src/log.ts": `export function log(m: string): string { return m; }`,
   "src/db.ts": `
 import { log } from "./log.js";
@@ -31,6 +36,11 @@ export function handleProfile(id: string): string { log("h"); return loadProfile
 import { handleProfile } from "./routes.js";
 handleProfile("x");
 `,
+  "src/duplicates.ts": `
+export function alpha(): string { return "a"; }
+export function beta(): string { return "b"; }
+export class A { run(): string { return alpha(); } } export class B { run(): string { return beta(); } }
+`,
 };
 
 let root: string;
@@ -47,7 +57,9 @@ withNative("flow", () => {
     const db = await getDb(root);
 
     const view = flowView(db, { depth: 4 });
-    const entryNames = view.entries.map((id) => id.split("#")[1]);
+    const entryNames = view.entries.map(
+      (id) => view.nodes.find((node) => node.id === id)?.symbol,
+    );
 
     // handleProfile is called only from a test, which is excluded — otherwise
     // every test file would present itself as a way into the system.
@@ -75,8 +87,9 @@ withNative("flow", () => {
     // log() is called from four places; drawn inline it would cross every
     // column, which is what makes these diagrams unreadable.
     const view = flowView(db, { depth: 4, maxNodes: 40 });
-    const commons = view.commons.map((id) => id.split("#")[1]);
-    const inLayers = view.layers.flat().map((id) => id.split("#")[1]);
+    const nameOf = (id: string) => view.nodes.find((node) => node.id === id)?.symbol;
+    const commons = view.commons.map(nameOf);
+    const inLayers = view.layers.flat().map(nameOf);
 
     if (commons.length > 0) {
       expect(commons).toContain("log");
@@ -105,5 +118,22 @@ withNative("flow", () => {
     const stopped = view.nodes.find((node) => node.symbol === "loadProfile");
     expect(stopped?.expandable).toBe(true);
     expect(view.nodes.map((node) => node.symbol)).not.toContain("findUser");
+  });
+
+  it("roots duplicate method names by exact symbol id", async () => {
+    root = await makeProject(PROJECT);
+    await scan(root, { kind: "full" });
+    const db = await getDb(root);
+    expect(resolveTypes(db, root).ran).toBe(true);
+
+    const methods = db.all<{ id: string }>(
+      "SELECT id FROM symbols WHERE path = 'src/duplicates.ts' AND name = 'run' ORDER BY start_line, start_column",
+    );
+    const first = flowView(db, { rootId: methods[0].id, depth: 2 });
+    const second = flowView(db, { rootId: methods[1].id, depth: 2 });
+    expect(first.nodes.map((node) => node.symbol)).toContain("alpha");
+    expect(first.nodes.map((node) => node.symbol)).not.toContain("beta");
+    expect(second.nodes.map((node) => node.symbol)).toContain("beta");
+    expect(second.nodes.map((node) => node.symbol)).not.toContain("alpha");
   });
 });

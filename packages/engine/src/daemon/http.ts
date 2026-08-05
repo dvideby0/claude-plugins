@@ -534,6 +534,7 @@ export function createHttpServer(options: HttpServerOptions): HttpServerHandle {
             200,
             flowView(db, {
               ...(root ? { root } : {}),
+              ...(query.get("rootId") ? { rootId: query.get("rootId") as string } : {}),
               ...(query.get("rootPath") ? { rootPath: query.get("rootPath") as string } : {}),
               ...(query.get("depth") ? { depth: Number(query.get("depth")) } : {}),
             }),

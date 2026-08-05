@@ -30,7 +30,9 @@ pub struct NativeSymbol {
     pub kind: String,
     pub name: String,
     pub start_line: u32,
+    pub start_column: u32,
     pub end_line: u32,
+    pub end_column: u32,
     pub exported: bool,
     pub default_export: bool,
     pub signature: String,
@@ -43,6 +45,7 @@ pub struct NativeRef {
     /// The specifier it came from, still unresolved.
     pub module: String,
     pub line: u32,
+    pub column: u32,
 }
 
 #[napi(object)]
@@ -114,7 +117,9 @@ fn scan_sync(root: &str) -> NativeScan {
                         kind: symbol.kind,
                         name: symbol.name,
                         start_line: symbol.start_line,
+                        start_column: symbol.start_column,
                         end_line: symbol.end_line,
+                        end_column: symbol.end_column,
                         exported: symbol.exported,
                         default_export: symbol.default_export,
                         signature: symbol.signature,
@@ -128,6 +133,7 @@ fn scan_sync(root: &str) -> NativeScan {
                         name: reference.name,
                         module: reference.module,
                         line: reference.line,
+                        column: reference.column,
                     })
                     .collect(),
             }

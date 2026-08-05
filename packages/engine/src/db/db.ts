@@ -37,6 +37,7 @@ export class Db {
     db.migrate();
 
     db.raw.run(SCHEMA_SQL);
+    db.refreshReferenceIdentity();
     db.run("INSERT OR REPLACE INTO meta(key, value) VALUES('schema_version', ?)", [
       String(SCHEMA_VERSION),
     ]);
@@ -49,7 +50,14 @@ export class Db {
   /** Columns every table must have, added to existing stores if absent. */
   private static readonly ADDED_COLUMNS: Array<{ table: string; column: string; type: string }> = [
     { table: "refs", column: "src_symbol", type: "TEXT" },
+    { table: "refs", column: "src_column", type: "INTEGER NOT NULL DEFAULT 0" },
+    { table: "refs", column: "src_symbol_id", type: "TEXT" },
+    { table: "refs", column: "dst_line", type: "INTEGER" },
+    { table: "refs", column: "dst_column", type: "INTEGER" },
+    { table: "refs", column: "dst_symbol_id", type: "TEXT" },
     { table: "symbols", column: "default_export", type: "INTEGER NOT NULL DEFAULT 0" },
+    { table: "symbols", column: "start_column", type: "INTEGER NOT NULL DEFAULT 0" },
+    { table: "symbols", column: "end_column", type: "INTEGER NOT NULL DEFAULT 0" },
     { table: "files", column: "ref_coverage", type: "TEXT NOT NULL DEFAULT 'none'" },
     { table: "components", column: "member_digest", type: "TEXT" },
     { table: "flow_steps", column: "content_sha", type: "TEXT" },
@@ -119,6 +127,54 @@ export class Db {
 
   lastInsertId(): number {
     return this.count("SELECT last_insert_rowid() AS id");
+  }
+
+  /** Re-attribute reference endpoints to stable declaration ids. */
+  refreshReferenceIdentity(): void {
+    this.run(
+      `UPDATE refs SET
+         src_symbol = (
+           SELECT s.name FROM symbols s
+           WHERE s.path = refs.src_path
+             AND (s.start_line < refs.src_line OR
+                  (s.start_line = refs.src_line AND s.start_column <= refs.src_column))
+             AND (s.end_line > refs.src_line OR
+                  (s.end_line = refs.src_line AND s.end_column >= refs.src_column))
+           ORDER BY (s.end_line - s.start_line) ASC,
+                    (s.end_column - s.start_column) ASC,
+                    CASE s.kind WHEN 'method' THEN 0 WHEN 'function' THEN 1 ELSE 2 END,
+                    s.start_line DESC LIMIT 1
+         ),
+         src_symbol_id = (
+           SELECT s.id FROM symbols s
+           WHERE s.path = refs.src_path
+             AND (s.start_line < refs.src_line OR
+                  (s.start_line = refs.src_line AND s.start_column <= refs.src_column))
+             AND (s.end_line > refs.src_line OR
+                  (s.end_line = refs.src_line AND s.end_column >= refs.src_column))
+           ORDER BY (s.end_line - s.start_line) ASC,
+                    (s.end_column - s.start_column) ASC,
+                    CASE s.kind WHEN 'method' THEN 0 WHEN 'function' THEN 1 ELSE 2 END,
+                    s.start_line DESC LIMIT 1
+         )`,
+    );
+    this.run(
+      `UPDATE refs SET dst_symbol_id = (
+         SELECT s.id FROM symbols s
+         WHERE s.path = refs.dst_path AND s.name = refs.name
+           AND (refs.dst_line IS NULL OR
+                ((s.start_line < refs.dst_line OR
+                  (s.start_line = refs.dst_line AND s.start_column <= refs.dst_column))
+                 AND (s.end_line > refs.dst_line OR
+                  (s.end_line = refs.dst_line AND s.end_column >= refs.dst_column))))
+         ORDER BY
+           s.exported DESC,
+           (s.end_line - s.start_line) ASC,
+           (s.end_column - s.start_column) ASC,
+           s.start_line ASC
+         LIMIT 1
+       )`,
+    );
   }
 
   /**

@@ -7,7 +7,9 @@ export interface NativeSymbol {
   kind: string
   name: string
   startLine: number
+  startColumn: number
   endLine: number
+  endColumn: number
   exported: boolean
   defaultExport: boolean
   signature: string
@@ -18,6 +20,7 @@ export interface NativeRef {
   /** The specifier it came from, still unresolved. */
   module: string
   line: number
+  column: number
 }
 export interface NativeFile {
   path: string

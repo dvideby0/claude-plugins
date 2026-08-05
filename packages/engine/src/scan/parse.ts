@@ -13,7 +13,9 @@ export interface ParsedSymbol {
   kind: "function" | "method" | "class" | "interface" | "type" | "enum" | "constant";
   name: string;
   startLine: number;
+  startColumn: number;
   endLine: number;
+  endColumn: number;
   exported: boolean;
   /** This declaration is the module's default export, whatever its local name. */
   defaultExport: boolean;
@@ -219,7 +221,9 @@ export async function parseFile(
         kind: callable ? (valueType === "class" ? "class" : "function") : "constant",
         name,
         startLine: node.startPosition.row + 1,
+        startColumn: node.startPosition.column,
         endLine: node.endPosition.row + 1,
+        endColumn: node.endPosition.column,
         exported,
         defaultExport,
         signature: callable ? firstLine(node) : flattened(node),
@@ -237,7 +241,9 @@ export async function parseFile(
       kind,
       name,
       startLine: node.startPosition.row + 1,
+      startColumn: node.startPosition.column,
       endLine: node.endPosition.row + 1,
+      endColumn: node.endPosition.column,
       exported: grammar === "python" ? !name.startsWith("_") : isExportedTs(node) || defaultExport,
       defaultExport,
       signature: firstLine(node),

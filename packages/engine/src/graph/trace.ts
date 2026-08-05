@@ -15,6 +15,7 @@
 import type { Db } from "../db/db.js";
 
 export interface TraceNode {
+  id: string;
   symbol: string;
   path: string;
   kind: string | null;
@@ -45,11 +46,12 @@ export interface TraceResult {
   truncated: boolean;
 }
 
-interface Edge {
-  from: string;
-  fromPath: string;
-  to: string;
-  toPath: string;
+interface SymbolRow {
+  id: string;
+  symbol: string;
+  path: string;
+  kind: string;
+  line: number;
 }
 
 /**
@@ -68,66 +70,74 @@ const CALLABLE = "('function','method','class')";
  * that occur inside some other. Both come from the same table read two ways,
  * which is the point of storing the caller alongside the target.
  */
-function step(db: Db, symbol: string, path: string, direction: "callees" | "callers"): Edge[] {
+function step(db: Db, symbolId: string, direction: "callees" | "callers"): SymbolRow[] {
   if (direction === "callees") {
-    return db
-      .all<{ name: string; dst_path: string }>(
-        `SELECT DISTINCT r.name, r.dst_path
-         FROM refs r
-         WHERE r.src_path = ? AND r.src_symbol = ? AND r.dst_path IS NOT NULL
-           AND NOT (r.dst_path = r.src_path AND r.name = r.src_symbol)
-           AND EXISTS (
-             SELECT 1 FROM symbols s
-             WHERE s.path = r.dst_path AND s.name = r.name AND s.kind IN ${CALLABLE}
-           )`,
-        [path, symbol],
-      )
-      .map((row) => ({ from: symbol, fromPath: path, to: row.name, toPath: row.dst_path }));
+    return db.all<SymbolRow>(
+      `SELECT DISTINCT s.id, s.name AS symbol, s.path, s.kind, s.start_line AS line
+       FROM refs r JOIN symbols s ON s.id = r.dst_symbol_id
+       WHERE r.src_symbol_id = ? AND r.dst_symbol_id IS NOT NULL
+         AND r.dst_symbol_id != r.src_symbol_id AND s.kind IN ${CALLABLE}`,
+      [symbolId],
+    );
   }
 
-  return db
-    .all<{ src_symbol: string; src_path: string }>(
-      `SELECT DISTINCT r.src_symbol, r.src_path
-       FROM refs r
-       WHERE r.name = ? AND r.dst_path = ? AND r.src_symbol IS NOT NULL
-         AND NOT (r.src_path = r.dst_path AND r.src_symbol = r.name)
-         AND EXISTS (
-           SELECT 1 FROM symbols s
-           WHERE s.path = r.src_path AND s.name = r.src_symbol AND s.kind IN ${CALLABLE}
-         )`,
-      [symbol, path],
-    )
-    .map((row) => ({
-      from: row.src_symbol,
-      fromPath: row.src_path,
-      to: symbol,
-      toPath: path,
-    }));
+  return db.all<SymbolRow>(
+    `SELECT DISTINCT s.id, s.name AS symbol, s.path, s.kind, s.start_line AS line
+     FROM refs r JOIN symbols s ON s.id = r.src_symbol_id
+     WHERE r.dst_symbol_id = ? AND r.src_symbol_id IS NOT NULL
+       AND r.src_symbol_id != r.dst_symbol_id AND s.kind IN ${CALLABLE}`,
+    [symbolId],
+  );
 }
 
-function locate(db: Db, symbol: string, path?: string): { path: string; kind: string; line: number } | null {
-  const row = path
-    ? db.get<{ path: string; kind: string; start_line: number }>(
-        "SELECT path, kind, start_line FROM symbols WHERE name = ? AND path = ? LIMIT 1",
-        [symbol, path],
-      )
-    : db.get<{ path: string; kind: string; start_line: number }>(
-        "SELECT path, kind, start_line FROM symbols WHERE name = ? ORDER BY exported DESC LIMIT 1",
-        [symbol],
-      );
-  return row ? { path: row.path, kind: row.kind, line: row.start_line } : null;
+function locate(
+  db: Db,
+  symbol: string,
+  options: { path?: string; line?: number; symbolId?: string },
+): SymbolRow | null {
+  if (options.symbolId) {
+    return db.get<SymbolRow>(
+      "SELECT id, name AS symbol, path, kind, start_line AS line FROM symbols WHERE id = ?",
+      [options.symbolId],
+    );
+  }
+  const clauses = ["name = ?"];
+  const params: Array<string | number> = [symbol];
+  if (options.path) {
+    clauses.push("path = ?");
+    params.push(options.path);
+  }
+  if (options.line) {
+    clauses.push("start_line = ?");
+    params.push(options.line);
+  }
+  const rows = db.all<SymbolRow>(
+    `SELECT id, name AS symbol, path, kind, start_line AS line FROM symbols
+     WHERE ${clauses.join(" AND ")} ORDER BY exported DESC, path, start_line LIMIT 2`,
+    params,
+  );
+  // Never guess between duplicate declarations. Callers can retry with the id
+  // returned by flow/context or with path + line.
+  return rows.length === 1 ? rows[0] : null;
 }
 
 export function trace(
   db: Db,
   symbol: string,
-  options: { direction?: "callees" | "callers"; depth?: number; path?: string; maxNodes?: number } = {},
+  options: {
+    direction?: "callees" | "callers";
+    depth?: number;
+    path?: string;
+    line?: number;
+    symbolId?: string;
+    maxNodes?: number;
+  } = {},
 ): TraceResult {
   const direction = options.direction ?? "callees";
   const maxDepth = Math.min(options.depth ?? 4, 10);
   const maxNodes = options.maxNodes ?? 200;
 
-  const root = locate(db, symbol, options.path);
+  const root = locate(db, symbol, options);
   if (!root) {
     return {
       root: symbol,
@@ -142,15 +152,15 @@ export function trace(
     };
   }
 
-  const key = (name: string, path: string): string => `${path}#${name}`;
   const seen = new Map<string, TraceNode>();
   const cycles: string[] = [];
   const leaves: string[] = [];
   let hitNodeCap = false;
   const parents = new Map<string, string>();
 
-  seen.set(key(symbol, root.path), {
-    symbol,
+  seen.set(root.id, {
+    id: root.id,
+    symbol: root.symbol,
     path: root.path,
     kind: root.kind,
     line: root.line,
@@ -159,41 +169,37 @@ export function trace(
     truncated: false,
   });
 
-  let frontier: Array<{ name: string; path: string; depth: number }> = [
-    { name: symbol, path: root.path, depth: 0 },
-  ];
+  let frontier: Array<SymbolRow & { depth: number }> = [{ ...root, depth: 0 }];
 
   while (frontier.length > 0) {
     const next: typeof frontier = [];
 
     for (const current of frontier) {
-      const edges = step(db, current.name, current.path, direction);
+      const neighbours = step(db, current.id, direction);
       if (current.depth >= maxDepth) {
-        const node = seen.get(key(current.name, current.path));
-        if (edges.length > 0) {
+        const node = seen.get(current.id);
+        if (neighbours.length > 0) {
           if (node) node.truncated = true;
         } else {
-          leaves.push(key(current.name, current.path));
+          leaves.push(current.id);
         }
         continue;
       }
 
-      if (edges.length === 0) {
-        leaves.push(key(current.name, current.path));
+      if (neighbours.length === 0) {
+        leaves.push(current.id);
         continue;
       }
 
-      for (const edge of edges) {
-        const [name, path] =
-          direction === "callees" ? [edge.to, edge.toPath] : [edge.from, edge.fromPath];
-        const id = key(name, path);
+      for (const neighbour of neighbours) {
+        const id = neighbour.id;
 
         if (seen.has(id)) {
           // A cycle is reaching an *ancestor on this chain*. Anything else
           // already seen is reconvergence — two callers sharing a callee is
           // the normal shape of a DAG, and reporting a diamond as a cycle
           // sends someone hunting for recursion that does not exist.
-          const from = key(current.name, current.path);
+          const from = current.id;
           let ancestor: string | undefined = from;
           while (ancestor && ancestor !== id) ancestor = parents.get(ancestor);
           if (ancestor === id || id === from) {
@@ -207,18 +213,18 @@ export function trace(
           continue;
         }
 
-        const found = locate(db, name, path);
         seen.set(id, {
-          symbol: name,
-          path,
-          kind: found?.kind ?? null,
-          line: found?.line ?? null,
+          id,
+          symbol: neighbour.symbol,
+          path: neighbour.path,
+          kind: neighbour.kind,
+          line: neighbour.line,
           depth: current.depth + 1,
-          via: key(current.name, current.path),
+          via: current.id,
           truncated: false,
         });
-        parents.set(id, key(current.name, current.path));
-        next.push({ name, path, depth: current.depth + 1 });
+        parents.set(id, current.id);
+        next.push({ ...neighbour, depth: current.depth + 1 });
       }
     }
 
@@ -232,7 +238,7 @@ export function trace(
   const covered = new Set<string>();
 
   for (const node of deepest) {
-    const id = key(node.symbol, node.path);
+    const id = node.id;
     if (covered.has(id) || node.depth === 0) continue;
 
     const parts: string[] = [];
@@ -251,7 +257,7 @@ export function trace(
   }
 
   return {
-    root: symbol,
+    root: root.symbol,
     rootPath: root.path,
     direction,
     depth: maxDepth,
