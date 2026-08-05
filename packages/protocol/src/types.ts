@@ -19,6 +19,8 @@ export interface Workspace {
   name: string;
   addedAt: string;
   lastIndexedAt: string | null;
+  /** Monotonic data generation used by clients to invalidate cached views. */
+  generation: number;
 }
 
 export interface WorkspaceStatus extends Workspace {

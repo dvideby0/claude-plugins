@@ -34,6 +34,7 @@ const state = {
   harnesses: [],
   workspaces: [],
   graph: null,
+  flow: null,
   /** What the current view was rendered from, so polling does not clobber it. */
   renderedKey: null,
   onboarded: localStorage.getItem("sdlc.onboarded") === "1",
@@ -875,7 +876,7 @@ async function paneFindings(workspace, pane) {
       holder.hidden = false;
 
       const suppressWith = async (button, disposition) => {
-        const reason = document.querySelector(`[data-reason="${button.dataset.index}"]`)?.value.trim();
+        const reason = holder.querySelector(`[data-reason="${button.dataset.index}"]`)?.value.trim();
         if (!reason) {
           toast("Give a reason — it is kept with the suppression.");
           return;
@@ -895,8 +896,8 @@ async function paneFindings(workspace, pane) {
           toast(error.message);
         }
       };
-      on("accept", (button) => void suppressWith(button, "accepted"));
-      on("falsep", (button) => void suppressWith(button, "false_positive"));
+      on("accept", (button) => void suppressWith(button, "accepted"), holder);
+      on("falsep", (button) => void suppressWith(button, "false_positive"), holder);
     });
   } catch (error) {
     pane.innerHTML = `<div class="empty">${esc(error.message)}</div>`;
@@ -1162,6 +1163,8 @@ async function showComponent(workspace, id) {
 let flowRoot = null;
 
 async function paneFlow(workspace, pane) {
+  state.flow?.destroy();
+  state.flow = null;
   pane.innerHTML = `
     <div class="graph-bar">
       <span id="flow-caption" class="sub"></span>
@@ -1240,6 +1243,8 @@ async function paneFlow(workspace, pane) {
       depth,
       rootId: flowRoot.id,
     });
+    state.flow?.destroy();
+    state.flow = null;
     stage.innerHTML = `<div class="loading">Tracing…</div>`;
     document.getElementById("flow-inspector").hidden = true;
 
@@ -1250,7 +1255,8 @@ async function paneFlow(workspace, pane) {
         (view.commons.length ? ` · ${view.commons.length} shared` : "") +
         (view.truncated ? " · truncated" : "");
 
-      window.SDLCFlow.render(stage, view, {
+      state.flow?.destroy();
+      state.flow = window.SDLCFlow.render(stage, view, {
         onSelect: (hit) => void showFlowNode(workspace, hit),
         // Double-click walks deeper: the clicked symbol becomes the new root.
         onExpand: (hit) => {
@@ -1530,7 +1536,10 @@ async function removeWorkspace(id) {
 function viewKey(route) {
   // Re-render only when something the current view depends on has moved.
   const workspaces = state.workspaces
-    .map((w) => `${w.id}:${w.indexing ? 1 : 0}:${w.indexedFiles}:${w.openFindings}`)
+    .map(
+      (w) =>
+        `${w.id}:${w.generation}:${w.indexing ? 1 : 0}:${w.indexedFiles}:${w.openFindings}`,
+    )
     .join(",");
   const agents = state.harnesses.map((h) => `${h.id}:${h.connected ? 1 : 0}`).join(",");
   return JSON.stringify([route, workspaces, agents, Boolean(state.status)]);
@@ -1551,6 +1560,10 @@ function render() {
   if (route.name !== "project" || parseHash().tab !== "graph") {
     state.graph?.destroy();
     state.graph = null;
+  }
+  if (route.name !== "project" || parseHash().tab !== "flow") {
+    state.flow?.destroy();
+    state.flow = null;
   }
 
   if (route.name === "welcome") renderWelcome();

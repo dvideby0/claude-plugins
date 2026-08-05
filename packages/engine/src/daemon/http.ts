@@ -166,6 +166,7 @@ export function createHttpServer(options: HttpServerOptions): HttpServerHandle {
           const typed = await resolveTypesInWorker(db, root);
           if (typed.ran) {
             await db.flush();
+            await registry.markUpdated(root);
             log(`typed ${root}: ${typed.resolved} refs in ${typed.durationMs}ms`);
           } else if (typed.reason?.includes("changed while resolving")) {
             scheduleTypedPass(root);

@@ -38,6 +38,7 @@ export class WorkspaceRegistry {
           id,
           root,
           name: basename(root) || root,
+          generation: Number.isFinite(item.generation) ? item.generation : 0,
         };
         const existing = this.items.get(id);
         if (!existing) {
@@ -54,9 +55,14 @@ export class WorkspaceRegistry {
             addedAt:
               existing.addedAt < normalized.addedAt ? existing.addedAt : normalized.addedAt,
             lastIndexedAt: indexed,
+            generation: Math.max(existing.generation, normalized.generation),
           });
         }
-        changed ||= item.id !== id || item.root !== root || Boolean(existing);
+        changed ||=
+          item.id !== id ||
+          item.root !== root ||
+          !Number.isFinite(item.generation) ||
+          Boolean(existing);
       }
     } catch {
       // No registry yet — the first touch creates it.
@@ -102,6 +108,7 @@ export class WorkspaceRegistry {
       name: basename(absolute) || absolute,
       addedAt: new Date().toISOString(),
       lastIndexedAt: null,
+      generation: 0,
     };
     this.items.set(id, workspace);
     await this.save();
@@ -120,6 +127,16 @@ export class WorkspaceRegistry {
     const workspace = this.items.get(idFor(await canonicalWorkspaceRoot(root)));
     if (!workspace) return;
     workspace.lastIndexedAt = new Date().toISOString();
+    workspace.generation++;
+    await this.save();
+  }
+
+  /** Signal a completed background enrichment without claiming a new scan. */
+  async markUpdated(root: string): Promise<void> {
+    await this.load();
+    const workspace = this.items.get(idFor(await canonicalWorkspaceRoot(root)));
+    if (!workspace) return;
+    workspace.generation++;
     await this.save();
   }
 

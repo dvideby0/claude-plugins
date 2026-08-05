@@ -1,6 +1,6 @@
 ---
 description: Turn the machine's index into the map a person would draw — named regions, real flows, annotations — and afterwards keep only what moved up to date
-allowed-tools: Task, Read, Grep, Glob, mcp__sdlc__map, mcp__sdlc__map_drift, mcp__sdlc__describe_component, mcp__sdlc__describe_flow, mcp__sdlc__tag, mcp__sdlc__gaps, mcp__sdlc__flow, mcp__sdlc__trace, mcp__sdlc__audit_query, mcp__sdlc__context, mcp__sdlc__relations, mcp__sdlc__remember
+allowed-tools: Task, Read, Grep, Glob, mcp__sdlc__audit_status, mcp__sdlc__audit_scan, mcp__sdlc__map, mcp__sdlc__map_drift, mcp__sdlc__describe_component, mcp__sdlc__describe_flow, mcp__sdlc__tag, mcp__sdlc__gaps, mcp__sdlc__flow, mcp__sdlc__trace, mcp__sdlc__audit_query, mcp__sdlc__context, mcp__sdlc__relations, mcp__sdlc__remember
 ---
 
 # Map: $ARGUMENTS
@@ -15,7 +15,10 @@ underneath as the evidence.
 
 ## First decide which job this is
 
-Call `map_drift`.
+Call `audit_status`, then `audit_scan` to refresh the deterministic index and
+its change signatures. The scan is incremental, so this is cheap when nothing
+moved, and it prevents a first `/map` call from mistaking an empty index for a
+clean repository. Only after that succeeds, call `map_drift`.
 
 - **`clean: true` and the map is empty** → this is a first drawing. Go to §1.
   It is the expensive pass; do it properly once.

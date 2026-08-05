@@ -94,7 +94,7 @@
         <p class="sub">Entry points are found from the call graph, which needs an index with
         references. Try re-indexing.</p>
       </div>`;
-      return;
+      return { fit() {}, destroy() {} };
     }
 
     const { positions, byId, width, height, flowHeight } = layout(view);
@@ -207,17 +207,19 @@
       panning = { x: at.x - view3.x, y: at.y - view3.y };
       svg.classList.add("panning");
     });
-    global.addEventListener("mousemove", (event) => {
+    const onGlobalMove = (event) => {
       if (!panning) return;
       const at = toUser(event);
       view3.x = at.x - panning.x;
       view3.y = at.y - panning.y;
       apply();
-    });
-    global.addEventListener("mouseup", () => {
+    };
+    const onGlobalUp = () => {
       panning = null;
       svg.classList.remove("panning");
-    });
+    };
+    global.addEventListener("mousemove", onGlobalMove);
+    global.addEventListener("mouseup", onGlobalUp);
 
     const fit = () => {
       view3.k = 1;
@@ -254,7 +256,14 @@
       });
     }
 
-    return { fit };
+    return {
+      fit,
+      destroy() {
+        global.removeEventListener("mousemove", onGlobalMove);
+        global.removeEventListener("mouseup", onGlobalUp);
+        panning = null;
+      },
+    };
   }
 
   global.SDLCFlow = { render };

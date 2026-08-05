@@ -27,6 +27,12 @@ describe("workspace identity", () => {
     const second = await registry.add(alias);
     expect(second.id).toBe(first.id);
     expect(await registry.list()).toHaveLength(1);
+    expect(first.generation).toBe(0);
+
+    await registry.markIndexed(real);
+    expect((await registry.get(first.id))?.generation).toBe(1);
+    await registry.markUpdated(alias);
+    expect((await registry.get(first.id))?.generation).toBe(2);
 
     const [realDb, aliasDb] = await Promise.all([getDb(real), getDb(alias)]);
     expect(aliasDb).toBe(realDb);
