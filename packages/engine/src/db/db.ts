@@ -79,6 +79,47 @@ export class Db {
       if (this.hasColumn(table, column)) continue;
       this.run(`ALTER TABLE ${table} ADD COLUMN ${column} ${type}`);
     }
+    this.migrateReferenceOccurrenceKey();
+  }
+
+  /**
+   * SQLite cannot ALTER a primary key. Rebuild legacy refs tables so two uses
+   * of the same identifier on one line remain separate occurrences.
+   */
+  private migrateReferenceOccurrenceKey(): void {
+    if (!this.tableExists("refs")) return;
+    const primaryKey = this.all<{ name: string; pk: number }>("PRAGMA table_info(refs)")
+      .filter((column) => column.pk > 0)
+      .sort((a, b) => a.pk - b.pk)
+      .map((column) => column.name);
+    if (primaryKey.includes("src_column")) return;
+
+    this.transaction(() => {
+      this.run("DROP TABLE IF EXISTS refs_v12");
+      this.run(`CREATE TABLE refs_v12 (
+        src_path TEXT NOT NULL,
+        src_line INTEGER NOT NULL,
+        src_column INTEGER NOT NULL DEFAULT 0,
+        name TEXT NOT NULL,
+        specifier TEXT NOT NULL,
+        dst_path TEXT,
+        src_symbol TEXT,
+        src_symbol_id TEXT,
+        dst_line INTEGER,
+        dst_column INTEGER,
+        dst_symbol_id TEXT,
+        PRIMARY KEY (src_path, src_line, src_column, name, specifier)
+      )`);
+      this.run(`INSERT OR REPLACE INTO refs_v12(
+          src_path, src_line, src_column, name, specifier, dst_path,
+          src_symbol, src_symbol_id, dst_line, dst_column, dst_symbol_id
+        )
+        SELECT src_path, src_line, src_column, name, specifier, dst_path,
+               src_symbol, src_symbol_id, dst_line, dst_column, dst_symbol_id
+          FROM refs`);
+      this.run("DROP TABLE refs");
+      this.run("ALTER TABLE refs_v12 RENAME TO refs");
+    });
   }
 
   private tableExists(table: string): boolean {

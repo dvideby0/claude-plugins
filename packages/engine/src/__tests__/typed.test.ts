@@ -175,7 +175,7 @@ export function packageEntry() { return makeStore().add("ok"); }
     const result = resolveTypes(db, root);
     expect(result.ran).toBe(true);
     expect(referencesTo(db, "add").callSites).toEqual([
-      { path: "packages/core/src/app.ts", line: 3 },
+      expect.objectContaining({ path: "packages/core/src/app.ts", line: 3 }),
     ]);
   });
 
@@ -200,5 +200,49 @@ export function packageEntry() { return makeStore().add("ok"); }
       )
       .map((row) => row.dst_path);
     expect(destinations).toEqual(["src/a.ts", "src/b.ts"]);
+  });
+
+  it("keeps repeated uses of the same declaration on one physical line", async () => {
+    root = await makeProject({
+      "package.json": JSON.stringify({ name: "same-line-occurrences", type: "module" }),
+      "tsconfig.json": JSON.stringify({
+        compilerOptions: { target: "ES2022", module: "ESNext", moduleResolution: "Bundler" },
+        include: ["src/**/*"],
+      }),
+      "src/store.ts": "export class Store { add(value: string): string { return value; } }\n",
+      "src/app.ts": `import { Store } from "./store.js";\nexport function both() { const store = new Store(); store.add("a"); store.add("b"); }\n`,
+    });
+    await scan(root, { kind: "full" });
+    const db = await getDb(root);
+    resolveTypes(db, root);
+
+    const refs = referencesTo(db, "add");
+    expect(refs.total).toBe(2);
+    expect(new Set(refs.callSites.map((site) => site.column)).size).toBe(2);
+  });
+
+  it("requires declaration identity when one file has duplicate method names", async () => {
+    root = await makeProject({
+      "package.json": JSON.stringify({ name: "ambiguous-members", type: "module" }),
+      "tsconfig.json": JSON.stringify({
+        compilerOptions: { target: "ES2022", module: "ESNext", moduleResolution: "Bundler" },
+        include: ["src/**/*"],
+      }),
+      "src/models.ts": `export class A { run(): string { return "a"; } }\nexport class B { run(): string { return "b"; } }\n`,
+      "src/app.ts": `import { A, B } from "./models.js";\nexport function both() { return new A().run() + new B().run(); }\n`,
+    });
+    await scan(root, { kind: "full" });
+    const db = await getDb(root);
+    resolveTypes(db, root);
+
+    const ambiguous = referencesTo(db, "run");
+    expect(ambiguous.definedIn).toBeNull();
+    expect(ambiguous.total).toBe(0);
+    expect(ambiguous.candidates).toHaveLength(2);
+    expect(referencesTo(db, "run", 100, { path: "src/models.ts" }).definedIn).toBeNull();
+
+    const first = ambiguous.candidates?.[0];
+    expect(first).toBeDefined();
+    expect(referencesTo(db, "run", 100, { symbolId: first!.symbolId }).total).toBe(1);
   });
 });

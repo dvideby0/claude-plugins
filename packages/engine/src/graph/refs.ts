@@ -18,6 +18,24 @@ import { likeEscape } from "../lib/sql.js";
 export interface CallSite {
   path: string;
   line: number;
+  column: number;
+}
+
+export interface ReferenceCandidate {
+  symbolId: string;
+  name: string;
+  path: string;
+  kind: string;
+  startLine: number;
+}
+
+export interface ReferenceSelector {
+  /** Exact declaration identity returned by flow, trace, context, or candidates. */
+  symbolId?: string;
+  /** File containing the declaration. */
+  path?: string;
+  /** Declaration line, for same-named symbols in one file. */
+  line?: number;
 }
 
 export interface SymbolReferences {
@@ -40,66 +58,97 @@ export interface SymbolReferences {
   notes: Memory[];
   /** Zero is only a negative result when this is not `none`. */
   referenceCoverage: "none" | "import" | "typed";
-  candidates?: Array<{ name: string; path: string }>;
+  candidates?: ReferenceCandidate[];
 }
 
-export function referencesTo(db: Db, name: string, limit = 100): SymbolReferences {
-  const definition = db.get<{
+export function referencesTo(
+  db: Db,
+  name: string,
+  limit = 100,
+  selector: ReferenceSelector = {},
+): SymbolReferences {
+  interface Definition {
+    id: string;
     path: string;
     kind: string;
     start_line: number;
     exported: number;
     ref_coverage: "none" | "import" | "typed";
-  }>(
-    `SELECT s.path, s.kind, s.start_line, s.exported, f.ref_coverage
+  }
+
+  const definitions = db.all<Definition>(
+    `SELECT s.id, s.path, s.kind, s.start_line, s.exported, f.ref_coverage
        FROM symbols s JOIN files f ON f.path = s.path
-      WHERE s.name = ? ORDER BY s.exported DESC LIMIT 1`,
+      WHERE s.name = ? AND f.present = 1
+      ORDER BY s.exported DESC, s.path, s.start_line, s.start_column`,
     [name],
   );
 
-  const others = db.all<{ name: string; path: string }>(
-    "SELECT DISTINCT name, path FROM symbols WHERE name = ?",
-    [name],
+  const narrowed = definitions.filter(
+    (candidate) =>
+      (!selector.path || candidate.path === selector.path) &&
+      (!selector.line || candidate.start_line === selector.line),
   );
+  const definition = selector.symbolId
+    ? definitions.find((candidate) => candidate.id === selector.symbolId)
+    : selector.path || selector.line
+      ? narrowed.length === 1
+        ? narrowed[0]
+        : undefined
+      : definitions.length === 1
+        ? definitions[0]
+        : undefined;
+
+  // Old stores can briefly contain refs without declaration ids while an
+  // upgraded index is being refreshed. Name/path fallback is safe only when
+  // the destination file has one declaration with that name.
+  const legacyDestinationIsUnambiguous = Boolean(
+    definition && definitions.filter((candidate) => candidate.path === definition.path).length === 1,
+  );
+  const referenceWhere = definition
+    ? `dst_symbol_id = ?${
+        legacyDestinationIsUnambiguous
+          ? " OR (dst_symbol_id IS NULL AND name = ? AND dst_path = ?)"
+          : ""
+      }`
+    : "0";
+  const referenceParams: Array<string | number> = definition
+    ? [
+        definition.id,
+        ...(legacyDestinationIsUnambiguous ? [name, definition.path] : []),
+      ]
+    : [];
 
   const rows = definition
-    ? db.all<{ src_path: string; src_line: number }>(
-        "SELECT src_path, src_line FROM refs WHERE name = ? AND dst_path = ? ORDER BY src_path, src_line LIMIT ?",
-        [name, definition.path, limit],
+    ? db.all<{ src_path: string; src_line: number; src_column: number }>(
+        `SELECT src_path, src_line, src_column FROM refs
+          WHERE (${referenceWhere}) ORDER BY src_path, src_line, src_column LIMIT ?`,
+        [...referenceParams, limit],
       )
-    : db.all<{ src_path: string; src_line: number }>(
-        "SELECT src_path, src_line FROM refs WHERE name = ? AND dst_path IS NOT NULL ORDER BY src_path, src_line LIMIT ?",
-        [name, limit],
-      );
+    : [];
 
   const total = definition
-    ? db.count("SELECT COUNT(*) AS n FROM refs WHERE name = ? AND dst_path = ?", [
-        name,
-        definition.path,
-      ])
-    : db.count("SELECT COUNT(*) AS n FROM refs WHERE name = ? AND dst_path IS NOT NULL", [name]);
+    ? db.count(`SELECT COUNT(*) AS n FROM refs WHERE (${referenceWhere})`, referenceParams)
+    : 0;
 
   // Counted with their own queries, not from `rows`. Deriving them from a
   // LIMITed page made "48 uses across 5 files" mean "5 files in the first
   // page" — a number that shrinks as you ask for less, which is worse than
   // no number at all.
   const internal = definition
-    ? db.count("SELECT COUNT(*) AS n FROM refs WHERE name = ? AND dst_path = ? AND src_path = ?", [
-        name,
-        definition.path,
-        definition.path,
-      ])
+    ? db.count(
+        `SELECT COUNT(*) AS n FROM refs WHERE (${referenceWhere}) AND src_path = ?`,
+        [...referenceParams, definition.path],
+      )
     : 0;
 
   const fileCount = definition
     ? db.count(
-        "SELECT COUNT(DISTINCT src_path) AS n FROM refs WHERE name = ? AND dst_path = ? AND src_path != ?",
-        [name, definition.path, definition.path],
+        `SELECT COUNT(DISTINCT src_path) AS n FROM refs
+          WHERE (${referenceWhere}) AND src_path != ?`,
+        [...referenceParams, definition.path],
       )
-    : db.count(
-        "SELECT COUNT(DISTINCT src_path) AS n FROM refs WHERE name = ? AND dst_path IS NOT NULL",
-        [name],
-      );
+    : 0;
 
   return {
     name,
@@ -110,7 +159,11 @@ export function referencesTo(db: Db, name: string, limit = 100): SymbolReference
     total,
     external: total - internal,
     internal,
-    callSites: rows.map((row) => ({ path: row.src_path, line: row.src_line })),
+    callSites: rows.map((row) => ({
+      path: row.src_path,
+      line: row.src_line,
+      column: row.src_column,
+    })),
     fileCount,
     /** The distinct files on this page. Use fileCount for the true total. */
     files: [
@@ -120,7 +173,17 @@ export function referencesTo(db: Db, name: string, limit = 100): SymbolReference
     ],
     notes: memoriesForSymbolName(db, name),
     referenceCoverage: definition?.ref_coverage ?? "none",
-    ...(others.length > 1 ? { candidates: others } : {}),
+    ...(definitions.length > 1
+      ? {
+          candidates: definitions.map((candidate) => ({
+            symbolId: candidate.id,
+            name,
+            path: candidate.path,
+            kind: candidate.kind,
+            startLine: candidate.start_line,
+          })),
+        }
+      : {}),
   };
 }
 
@@ -187,9 +250,17 @@ export function impactOf(db: Db, target: string, limit = 200): Impact {
   }>(
     `SELECT s.name, s.kind, s.start_line,
             (SELECT COUNT(*) FROM refs r
-               WHERE r.dst_path = s.path AND r.name = s.name AND r.src_path != s.path) AS ref_count,
+               WHERE r.src_path != s.path AND
+                 (r.dst_symbol_id = s.id OR
+                  (r.dst_symbol_id IS NULL AND r.dst_path = s.path AND r.name = s.name AND
+                   (SELECT COUNT(*) FROM symbols same
+                     WHERE same.path = s.path AND same.name = s.name) = 1))) AS ref_count,
             (SELECT COUNT(DISTINCT r.src_path) FROM refs r
-               WHERE r.dst_path = s.path AND r.name = s.name AND r.src_path != s.path) AS files
+               WHERE r.src_path != s.path AND
+                 (r.dst_symbol_id = s.id OR
+                  (r.dst_symbol_id IS NULL AND r.dst_path = s.path AND r.name = s.name AND
+                   (SELECT COUNT(*) FROM symbols same
+                     WHERE same.path = s.path AND same.name = s.name) = 1))) AS files
      FROM symbols s WHERE s.path = ? AND s.exported = 1
      ORDER BY ref_count DESC, s.start_line LIMIT ?`,
     [file.path, limit],

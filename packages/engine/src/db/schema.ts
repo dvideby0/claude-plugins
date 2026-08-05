@@ -1,4 +1,4 @@
-export const SCHEMA_VERSION = 11;
+export const SCHEMA_VERSION = 12;
 
 /**
  * The audit store. Files, symbols and edges are the deterministic picture of
@@ -86,7 +86,7 @@ CREATE TABLE IF NOT EXISTS refs (
   dst_line INTEGER,
   dst_column INTEGER,
   dst_symbol_id TEXT,
-  PRIMARY KEY (src_path, src_line, name, specifier)
+  PRIMARY KEY (src_path, src_line, src_column, name, specifier)
 );
 CREATE INDEX IF NOT EXISTS idx_refs_caller ON refs(src_path, src_symbol);
 CREATE INDEX IF NOT EXISTS idx_refs_caller_id ON refs(src_symbol_id);
