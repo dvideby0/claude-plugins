@@ -1,0 +1,245 @@
+# Product backlog
+
+Status: proposed and prioritized from the 2026-08-05 audit. This is an outcome backlog, not a commitment to a particular sprint length.
+
+## Ordering rationale
+
+The next phase should make one end-to-end path trustworthy before broadening language coverage, adding more MCP tools, or committing to vector infrastructure. The dependency order is:
+
+```mermaid
+flowchart LR
+  A["Evidence contract and evals"] --> B["App-owned incremental store"]
+  A --> C["Deterministic flow vertical slice"]
+  B --> C
+  C --> D["Human flow workspace"]
+  C --> E["Task context query"]
+  E --> F["Optional semantic and vector enrichment"]
+  B --> G["Reliable Claude and Codex connectors"]
+```
+
+## P0 — foundations that prevent rework
+
+### INT-001: Canonical fact, edge, and provenance contract
+
+Define the common intermediate representation before adding deeper analyzers.
+
+Required fields include stable identity, workspace, producer, producer version, source anchor, confidence or certainty class, generation, ownership scope, input signature, and timestamps. Define an initial vocabulary for containment, import, reference, call, return, branch, throw/catch, await/resume, register/dispatch, read/write, emit/handle, and terminal-effect relations.
+
+Acceptance criteria:
+
+- Parsed, compiler-resolved, framework-inferred, runtime-observed, human-authored, and LLM-derived facts are distinguishable in storage and query responses.
+- Every returned edge can navigate to evidence or state why direct source evidence is unavailable.
+- Unknown and ambiguous relations have explicit representations.
+- Versioned schema documentation includes compatibility and migration rules.
+- Existing symbols/imports/refs and asserted relations can be projected into the contract.
+
+### EVAL-001: Golden corpus and measurement harness
+
+Create small checked-in repositories or fixtures that exercise direct calls, aliases, overloads, callbacks, conditions, exceptions, async work, HTTP registration, events, database effects, and unresolved dynamic behavior. Include expected symbols, relations, entry points, paths, and uncertainty.
+
+Acceptance criteria:
+
+- One command reports symbol/reference/path precision and recall, indexing time, incremental time, peak memory, and store size.
+- Retrieval scenarios report recall at K, evidence coverage, packed tokens, and irrelevant-context rate.
+- Native and fallback extractors are compared against the same oracle.
+- Results are machine-readable and CI fails on agreed correctness regressions.
+- Benchmarks clearly separate cold, warm, and one-file-change runs.
+
+### STORE-001: Move workspace state under app ownership
+
+Replace in-repository, whole-export `sql.js` persistence with a native SQLite owner behind the local engine. Define workspace IDs, store locations, migrations, backups, corruption recovery, and repository relocation behavior.
+
+Acceptance criteria:
+
+- Indexing does not write generated state into the source repository.
+- Transactions update changed facts without exporting the entire database.
+- A workspace can move or be re-opened without silently duplicating or losing knowledge.
+- The daemon handles schema migration and failed migration recovery.
+- FTS5 is enabled and queried through an internal search interface.
+- Existing prototype stores have either a tested migration or a clearly documented disposable reset path.
+
+### INCR-001: Ownership and dependency-directed invalidation
+
+Implement a signature hierarchy and a dependency table for derived artifacts.
+
+Acceptance criteria:
+
+- File, syntax, symbol-interface, symbol-body, relation-set, flow, component, prompt/model, and semantic-result signatures can be recorded where applicable.
+- A comment-only change does not automatically invalidate unrelated semantic and flow artifacts.
+- A public symbol change invalidates known callers and dependent summaries.
+- The application can explain why an item is fresh or stale.
+- Deleted, renamed, and moved files do not leave orphan facts.
+
+## P1 — first differentiated product slice
+
+### FLOW-001: TypeScript entry-to-effect flow MVP
+
+Dogfood the engine on this repository. Recognize daemon HTTP routes and CLI/MCP handlers as entries, then trace calls and branches to responses, database mutations, process execution, filesystem operations, and outbound requests as terminal effects.
+
+This is a progressive static analysis, not a claim of complete path feasibility. Start with a typed syntax-level control-flow representation for function bodies, interprocedural call edges, and explicit framework adapters. Do not rely on undocumented TypeScript compiler internals as the only representation.
+
+Acceptance criteria:
+
+- At least three real flows in this repository can be queried from a named entry to all recognized terminal effects.
+- `if`/switch/loop, early return, throw/catch, and `await` transitions are visible and labeled.
+- Each node/edge includes evidence and provenance; unresolved dispatch is shown as a gap.
+- Cycles and recursion terminate safely and are represented without infinite expansion.
+- Expected paths in the golden corpus pass precision/recall thresholds set by EVAL-001.
+- Asserted relations can be enabled as a clearly labeled overlay in path queries.
+
+### UI-001: Question-centered code and flow workspace
+
+Turn the desktop from an operational viewer into a daily-use exploration surface.
+
+Acceptance criteria:
+
+- A global search box finds paths, symbols, exact text, components, flows, findings, and memories.
+- Selecting a result opens source at the relevant range with definition/reference and caller/callee navigation.
+- A user can choose an entry point, inspect alternate branches and terminal effects, and see provenance, uncertainty, and freshness without reading raw JSON.
+- Source, path, and neighborhood views synchronize selections.
+- Large graphs default to focused neighborhoods and expansion, not an unreadable whole-repository canvas.
+- The workflow remains fully useful with semantic enrichment disabled.
+
+### QUERY-001: One budgeted task-context query
+
+Add an internal query planner and expose one primary agent operation such as `get_task_context`. It should compose lexical search, graph neighborhoods, flow paths, source ranges, tests, changes, findings, and approved memories.
+
+Acceptance criteria:
+
+- Inputs include the task, optional known targets, intent, and a token/byte budget.
+- Results contain a ranked evidence package, omissions, uncertainty, freshness, and recommended follow-up reads.
+- Every excerpt or conclusion has a navigable source/fact reference.
+- It beats an Aider-style symbol-map baseline on agreed EVAL-001 scenarios or remains an experimental internal path.
+- The public MCP catalog is reviewed for redundant tools after this query is proven.
+
+### SEARCH-001: Lexical, structural, and graph-ranked retrieval
+
+Build a strong non-vector baseline using FTS5, identifier-aware scoring, path and language filters, current structural search, and graph centrality/proximity.
+
+Acceptance criteria:
+
+- Exact identifiers, filenames, error strings, phrases, prefixes, and natural-language descriptions have tests.
+- Ranking explains whether a result came from lexical match, graph proximity, flow membership, change relevance, or memory.
+- Search refresh is incremental.
+- Saved queries can be re-run against later index generations for desktop insights.
+
+### CONN-001: Idempotent Claude and Codex connector manager
+
+Introduce a connector interface with plan, apply, verify, repair, update, and remove operations. Package a Codex companion plugin in addition to the existing Claude plugin.
+
+Acceptance criteria:
+
+- The app detects compatible Claude/Codex CLI and desktop surfaces separately.
+- It displays exact proposed changes and requires appropriate consent.
+- It uses supported marketplace/plugin/MCP commands or APIs where available instead of blind config splicing.
+- Installation includes the companion plugin/skills/commands and MCP connection, not MCP alone.
+- Verification performs discovery plus a local engine health/tool call.
+- Re-running is idempotent; repair and uninstall only change app-owned entries.
+- Compatibility failures provide an actionable diagnosis and never leave a half-configured integration without rollback guidance.
+
+## P2 — compound the value
+
+### SEM-001: Evidence-backed semantic components and workflows
+
+Generate component responsibilities, domain concepts, and human-readable workflows from deterministic subgraphs. Store prompts, model/version, inputs, outputs, evidence links, and approval state.
+
+Acceptance criteria:
+
+- Semantic artifacts can be proposed, edited, approved, rejected, and regenerated selectively.
+- A changed dependency marks the artifact stale without deleting the last approved version.
+- The UI shows deterministic facts and semantic interpretation as separate layers.
+- Generation is cached by normalized input/model/prompt signature and has a configurable local or remote provider policy.
+
+### MEM-001: Trustworthy project memory
+
+Evolve notes into a knowledge workflow for gotchas, standards, preferences, decisions, and operational facts.
+
+Acceptance criteria:
+
+- Memories support authorship, evidence, anchors at symbol/range/component/flow level, status, supersession, and review dates.
+- Users can create, edit, validate, reject, and resolve stale memories in the desktop app.
+- Recall combines FTS, graph proximity, task intent, freshness, and approval state.
+- Agent-created assertions never silently become approved team facts.
+
+### VEC-001: Evaluated optional semantic retrieval
+
+Only start after SEARCH-001 and QUERY-001 establish baselines. Embed compact units such as symbol summaries, component descriptions, workflows, documentation, and memories rather than arbitrary fixed-size source chunks by default.
+
+Acceptance criteria:
+
+- Embeddings are derived, versioned, disposable, and excluded from the authoritative backup contract.
+- Hybrid ranking has a documented fusion method and optional reranking.
+- It materially improves named evaluation scenarios at an acceptable indexing-time, disk, latency, privacy, and token cost.
+- The product works when the vector index or embedding model is unavailable.
+
+### LANG-001: Provider architecture and precise-index imports
+
+Define language capability manifests and add providers based on user demand. Prefer importing SCIP or compiler/language-server facts where reliable, with Tree-sitter syntax fallback.
+
+Acceptance criteria:
+
+- Each provider declares supported fact/edge types and precision levels.
+- Mixed-language paths preserve producer and confidence at every boundary.
+- Missing providers degrade to searchable syntax rather than making the workspace unusable.
+- Provider failures are isolated and diagnosable from the desktop app.
+
+### CHANGE-001: Knowledge diff and architectural insights
+
+Retain selected generations so users can compare symbols, dependencies, flows, effects, and semantic maps across working-tree or commit changes.
+
+Acceptance criteria:
+
+- A user can answer “what behavior and dependencies changed?” rather than only “what lines changed?”
+- Saved structural queries show count/history changes.
+- Drift views link directly to source and affected derived knowledge.
+- Retention and compaction are configurable and bounded.
+
+### RUNTIME-001: Runtime evidence overlay
+
+Import test coverage or opt-in traces to confirm dynamic dispatch and path execution. Runtime facts supplement static facts and never erase unobserved possibilities.
+
+Acceptance criteria:
+
+- Observed calls/effects include run identity, environment, test/request context, and time.
+- The UI can distinguish possible, statically resolved, and observed paths.
+- Instrumentation is opt-in, bounded, and documents performance and privacy impact.
+
+## P3 — scale and ecosystem
+
+- **XREPO-001:** cross-repository workspaces and version-aware dependency navigation.
+- **SDK-001:** stable local query/enrichment SDK for language providers and third-party tools.
+- **TEAM-001:** explicit export/import or synchronization of approved semantic knowledge without requiring source/index upload.
+- **INSIGHT-001:** dashboards for architectural boundaries, dependency policy, ownership, risk, and longitudinal change.
+- **SEC-001:** signed integration bundles, supply-chain policy, least-privilege connector permissions, and auditable local data/provider controls.
+
+## Recommended first implementation sequence
+
+### Slice 1: Trust the facts
+
+Deliver INT-001 and the smallest useful EVAL-001 corpus. Migrate existing symbol/reference outputs into the fact contract and make provenance visible in one existing query. This makes subsequent work measurable.
+
+### Slice 2: Own the state
+
+Deliver STORE-001 plus enough INCR-001 to move this repository’s index out of `sdlc-audit/` and update a single changed file transactionally. Add FTS5 and expose it behind the internal search interface.
+
+### Slice 3: Prove a real flow
+
+Deliver FLOW-001 for one daemon route all the way through the UI and MCP query. Use the golden corpus and this repository as dual fixtures. This is the first differentiated demonstration of the product vision.
+
+### Slice 4: Make it a product
+
+Deliver the focused portion of UI-001 needed to search, inspect, and correct that flow, then implement CONN-001 so both Claude and Codex can consume it through thin, supported integrations.
+
+## Explicitly deferred
+
+Until the first four slices are measured and usable, defer:
+
+- a standalone graph database;
+- a production vector database or repository-wide embedding pass;
+- autonomous memory promotion;
+- many additional MCP tools;
+- broad language count as a vanity metric;
+- cloud collaboration infrastructure;
+- full CodeQL/Joern-style data-flow and security-query breadth.
+
+These may become valuable. Deferral protects the evidence model and core user workflow from being buried under infrastructure.
