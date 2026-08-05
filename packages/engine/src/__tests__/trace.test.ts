@@ -91,6 +91,18 @@ withNative("call chains", () => {
     expect(shallow.nodes.some((node) => node.truncated)).toBe(true);
   });
 
+  it("does not call a natural leaf truncated when it lands on the depth limit", async () => {
+    root = await makeProject(PROJECT);
+    await scan(root, { kind: "full" });
+    const db = await getDb(root);
+
+    const exact = trace(db, "countUsers", { direction: "callees", depth: 1 });
+    const query = exact.nodes.find((node) => node.symbol === "query");
+    expect(query?.depth).toBe(1);
+    expect(query?.truncated).toBe(false);
+    expect(exact.leaves).toContain("src/db.ts#query");
+  });
+
   it("attributes references to the enclosing symbol", async () => {
     root = await makeProject(PROJECT);
     await scan(root, { kind: "full" });

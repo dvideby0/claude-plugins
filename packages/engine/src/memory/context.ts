@@ -76,19 +76,21 @@ function resolveTarget(
   );
   if (bySuffix.length === 1) return { path: bySuffix[0]!.path, kind: "file" };
   if (bySuffix.length > 1) {
-    return { path: bySuffix[0]!.path, kind: "file", candidates: bySuffix.map((row) => row.path) };
+    return { path: null, kind: "unknown", candidates: bySuffix.map((row) => row.path) };
   }
 
   const symbol = db.all<{ path: string }>(
     "SELECT DISTINCT path FROM symbols WHERE name = ? LIMIT 25",
     [target],
   );
-  if (symbol.length >= 1) {
+  if (symbol.length === 1) {
     return {
       path: symbol[0]!.path,
       kind: "symbol",
-      ...(symbol.length > 1 ? { candidates: symbol.map((row) => row.path) } : {}),
     };
+  }
+  if (symbol.length > 1) {
+    return { path: null, kind: "unknown", candidates: symbol.map((row) => row.path) };
   }
 
   return { path: null, kind: "unknown" };
@@ -113,7 +115,13 @@ export function neighbourhood(db: Db, target: string, limit = 40): Neighbourhood
     nearbyMemories: [],
   };
 
-  if (!resolved.path) return empty;
+  if (!resolved.path) {
+    return {
+      ...empty,
+      kind: resolved.kind,
+      ...(resolved.candidates ? { candidates: resolved.candidates } : {}),
+    };
+  }
   const path = resolved.path;
 
   const file = db.get<{

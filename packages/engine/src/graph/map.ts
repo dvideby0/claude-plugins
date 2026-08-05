@@ -101,6 +101,21 @@ export function describeComponent(db: Db, input: ComponentInput): { id: string; 
   const parentId = input.parent ? slug(input.parent) : null;
 
   if (parentId === id) throw new Error("A component cannot contain itself.");
+  if (parentId) {
+    let ancestor: string | null = parentId;
+    const visited = new Set<string>();
+    while (ancestor) {
+      if (ancestor === id) throw new Error("A component cannot contain one of its ancestors.");
+      if (visited.has(ancestor)) throw new Error("The proposed parent already belongs to a cycle.");
+      visited.add(ancestor);
+      const parentRow: { parent_id: string | null } | null = db.get(
+        "SELECT parent_id FROM components WHERE id = ?",
+        [ancestor],
+      );
+      if (!parentRow) throw new Error(`Unknown parent component "${input.parent}".`);
+      ancestor = parentRow.parent_id;
+    }
+  }
 
   const existing = db.get<{ id: string }>("SELECT id FROM components WHERE id = ?", [id]);
   if (existing) {
@@ -195,12 +210,12 @@ export function describeFlow(db: Db, input: FlowInput): { id: string; steps: num
   const existing = db.get<{ id: string }>("SELECT id FROM flows WHERE id = ?", [id]);
 
   if (existing) {
-    db.run("UPDATE flows SET summary = ?, trigger = ?, updated_at = ? WHERE id = ?", [
-      input.summary ?? "",
-      input.trigger ?? null,
-      now,
-      id,
-    ]);
+    db.run(
+      `UPDATE flows SET summary = COALESCE(?, summary),
+                        trigger = COALESCE(?, trigger), updated_at = ?
+       WHERE id = ?`,
+      [input.summary ?? null, input.trigger ?? null, now, id],
+    );
   } else {
     db.run(
       "INSERT INTO flows(id, name, summary, trigger, created_at, updated_at) VALUES(?, ?, ?, ?, ?, ?)",

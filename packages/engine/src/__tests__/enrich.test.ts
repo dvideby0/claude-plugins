@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { getDb } from "../db/db.js";
 import { findGaps } from "../graph/gaps.js";
 import { markExplored, relate, relationsFor } from "../graph/relations.js";
+import { remember } from "../memory/store.js";
 import { scan } from "../scan/scan.js";
 import { cleanup, makeProject } from "./helpers.js";
 
@@ -113,6 +114,37 @@ describe("enrichment", () => {
     await scan(root, { kind: "incremental" });
 
     expect(relationsFor(db, "src/graph.py")[0]?.stale).toBe(true);
+  });
+
+  it("flags relations and notes whose source file was deleted", async () => {
+    root = await makeProject(PROJECT);
+    await scan(root, { kind: "full" });
+    const db = await getDb(root);
+
+    relate(db, {
+      kind: "registers",
+      srcPath: "src/graph.py",
+      dstPath: "src/nodes.py",
+      dstSymbol: "classify_node",
+      evidence: 'b.add_node("classify", classify_node)',
+    });
+    remember(db, {
+      kind: "gotcha",
+      title: "Graph registration order matters",
+      anchors: [{ path: "src/graph.py" }],
+    });
+
+    const { rm } = await import("node:fs/promises");
+    const { join } = await import("node:path");
+    await rm(join(root, "src/graph.py"));
+    await scan(root, { kind: "incremental" });
+
+    expect(relationsFor(db, "src/graph.py")[0]?.stale).toBe(true);
+    expect(findGaps(db).gaps).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ kind: "stale-note", path: "src/graph.py" }),
+      ]),
+    );
   });
 
   it("counts exploration only while the file is unchanged", async () => {

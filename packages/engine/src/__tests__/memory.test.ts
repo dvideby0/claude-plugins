@@ -49,6 +49,15 @@ describe("memory", () => {
     expect(listMemories(db).length).toBe(1);
     expect(listMemories(db)[0]?.body).toBe("Superseded reasoning.");
 
+    // Updating only where the note applies must not erase why it exists.
+    remember(db, {
+      kind: "decision",
+      title: "use SQL.JS rather than a native driver",
+      anchors: [{ path: "src/api/users.ts" }],
+    });
+    expect(listMemories(db)[0]?.body).toBe("Superseded reasoning.");
+    expect(listMemories(db)[0]?.anchors[0]?.path).toBe("src/api/users.ts");
+
     expect(forget(db, first.id)).toBe(true);
     expect(listMemories(db).length).toBe(0);
     expect(forget(db, "nope")).toBe(false);
@@ -126,6 +135,9 @@ describe("memory", () => {
 
     const view = neighbourhood(db, "index.ts");
     expect(view.candidates?.length).toBe(2);
+    expect(view.resolved).toBeNull();
+    expect(view.file).toBeNull();
+    expect(view.symbols).toHaveLength(0);
     expect(neighbourhood(db, "does-not-exist.ts").kind).toBe("unknown");
   });
 });

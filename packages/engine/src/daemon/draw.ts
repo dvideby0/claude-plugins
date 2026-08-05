@@ -15,7 +15,8 @@
 
 import { spawn, type ChildProcess } from "node:child_process";
 import { readContent } from "../content.js";
-import { spawnEnv } from "../lib/exec.js";
+import { platformCommand, spawnEnv } from "../lib/exec.js";
+import type { BridgeCommand } from "./harnesses.js";
 
 export type DrawPhase = "scanning" | "drawing" | "done" | "failed";
 
@@ -26,7 +27,7 @@ export interface DrawEvent {
 
 export interface HarnessInvocation {
   bin: string;
-  args: (prompt: string) => string[];
+  args: (prompt: string, bridge: BridgeCommand) => string[];
 }
 
 /** Exact engine surface needed by the unattended map prompt. */
@@ -55,18 +56,35 @@ export const MAP_MCP_TOOLS = [
 const INVOCATIONS: Record<string, HarnessInvocation> = {
   "claude-code": {
     bin: "claude",
-    args: (prompt) => [
+    args: (prompt, bridge) => [
       "-p",
       prompt,
       "--output-format",
       "stream-json",
       "--verbose",
+      // `--allowedTools` controls approval, not availability. The explicit
+      // list removes Bash/Edit/Write even when user settings pre-allow them;
+      // strict MCP config prevents unrelated user servers from loading.
+      "--tools",
+      "Read,Grep,Glob",
+      "--setting-sources",
+      "user",
+      "--strict-mcp-config",
+      "--mcp-config",
+      JSON.stringify({
+        mcpServers: {
+          sdlc: {
+            command: bridge.command,
+            args: bridge.args,
+            ...(bridge.env ? { env: bridge.env } : {}),
+          },
+        },
+      }),
       "--allowedTools",
       ...MAP_MCP_TOOLS.map((tool) => `mcp__sdlc__${tool}`),
       "Read",
       "Grep",
       "Glob",
-      "Task",
     ],
   },
   codex: {
@@ -83,10 +101,14 @@ const INVOCATIONS: Record<string, HarnessInvocation> = {
 };
 
 /** Exposed so the capability ceiling is regression-tested without spawning a CLI. */
-export function drawInvocationArgs(harness: string, prompt: string): string[] {
+export function drawInvocationArgs(
+  harness: string,
+  prompt: string,
+  bridge: BridgeCommand = { command: "sdlc-bridge", args: [] },
+): string[] {
   const invocation = INVOCATIONS[harness];
   if (!invocation) throw new Error(`Unsupported draw harness: ${harness}`);
-  return invocation.args(prompt);
+  return invocation.args(prompt, bridge);
 }
 
 export function supportedHarnesses(): string[] {
@@ -96,6 +118,7 @@ export function supportedHarnesses(): string[] {
 export interface DrawOptions {
   harness: string;
   root: string;
+  bridge: BridgeCommand;
   onEvent: (text: string) => void;
 }
 
@@ -168,7 +191,9 @@ export async function drawMap(options: DrawOptions): Promise<DrawHandle> {
   }
 
   const prompt = await readContent("prompts/map.md");
-  const child = spawn(invocation.bin, drawInvocationArgs(options.harness, prompt), {
+  const rawArgs = drawInvocationArgs(options.harness, prompt, options.bridge);
+  const command = platformCommand(invocation.bin, rawArgs);
+  const child = spawn(command.command, command.args, {
     cwd: options.root,
     stdio: ["ignore", "pipe", "pipe"],
     env: spawnEnv(),

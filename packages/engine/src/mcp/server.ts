@@ -755,7 +755,12 @@ export function createMcpServer(options: McpServerOptions): McpServer {
     async ({ projectRoot, kind, title, body, anchors }) =>
       wrap(async () => {
         const db = await getDb(resolveRoot(projectRoot));
-        const result = remember(db, { kind, title, ...(body ? { body } : {}), ...(anchors ? { anchors } : {}) });
+        const result = remember(db, {
+          kind,
+          title,
+          ...(body !== undefined ? { body } : {}),
+          ...(anchors ? { anchors } : {}),
+        });
         await db.flush();
         return result;
       }),

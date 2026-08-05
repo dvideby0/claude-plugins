@@ -66,6 +66,9 @@ struct Binding {
     local: String,
     exported: String,
     module: String,
+    /// Python's unaliased `import pkg.db` binds `pkg`, but a useful exported
+    /// symbol appears only after the full `pkg.db` qualifier in a use.
+    module_path_bound: bool,
 }
 
 pub fn grammar_for(path: &str, lang: &str) -> Option<Grammar> {
@@ -217,10 +220,12 @@ fn bindings_from_import(node: Node, bytes: &[u8], grammar: Grammar, out: &mut Ve
                     "dotted_name" => {
                         let module = text(child);
                         if !module.is_empty() {
+                            let local = module.split('.').next().unwrap_or(&module).to_string();
                             out.push(Binding {
-                                local: module.clone(),
+                                local,
                                 exported: "*".to_string(),
                                 module,
+                                module_path_bound: true,
                             });
                         }
                     }
@@ -238,6 +243,7 @@ fn bindings_from_import(node: Node, bytes: &[u8], grammar: Grammar, out: &mut Ve
                                 local,
                                 exported: "*".to_string(),
                                 module,
+                                module_path_bound: false,
                             });
                         }
                     }
@@ -265,6 +271,7 @@ fn bindings_from_import(node: Node, bytes: &[u8], grammar: Grammar, out: &mut Ve
                             local: name.clone(),
                             exported: name,
                             module: module.clone(),
+                            module_path_bound: false,
                         });
                     }
                 }
@@ -283,6 +290,7 @@ fn bindings_from_import(node: Node, bytes: &[u8], grammar: Grammar, out: &mut Ve
                             local,
                             exported,
                             module: module.clone(),
+                            module_path_bound: false,
                         });
                     }
                 }
@@ -317,6 +325,7 @@ fn bindings_from_import(node: Node, bytes: &[u8], grammar: Grammar, out: &mut Ve
                     local: text(part),
                     exported: "default".to_string(),
                     module: module.clone(),
+                    module_path_bound: false,
                 }),
                 // `import * as ns from "m"`
                 "namespace_import" => {
@@ -325,6 +334,7 @@ fn bindings_from_import(node: Node, bytes: &[u8], grammar: Grammar, out: &mut Ve
                             local: text(alias),
                             exported: "*".to_string(),
                             module: module.clone(),
+                            module_path_bound: false,
                         });
                     }
                 }
@@ -348,6 +358,7 @@ fn bindings_from_import(node: Node, bytes: &[u8], grammar: Grammar, out: &mut Ve
                                 local,
                                 exported,
                                 module: module.clone(),
+                                module_path_bound: false,
                             });
                         }
                     }
@@ -381,12 +392,35 @@ fn is_member_property(node: Node) -> bool {
     member_parts(node).is_some_and(|(_, property)| property.id() == node.id())
 }
 
-fn namespace_member(node: Node, bytes: &[u8]) -> Option<String> {
-    let (object, property) = member_parts(node)?;
-    if object.id() != node.id() {
-        return None;
+fn namespace_member(node: Node, binding: &Binding, bytes: &[u8]) -> Option<String> {
+    let mut chain = vec![node.utf8_text(bytes).ok()?.to_string()];
+    let mut current = node;
+    while let Some(parent) = current.parent() {
+        let Some((object, property)) = member_parts(current) else {
+            break;
+        };
+        if object.id() != current.id() {
+            break;
+        }
+        chain.push(property.utf8_text(bytes).ok()?.to_string());
+        current = parent;
     }
-    property.utf8_text(bytes).ok().map(str::to_string)
+
+    if binding.module_path_bound {
+        let qualifier: Vec<&str> = binding.module.split('.').collect();
+        if chain.len() <= qualifier.len()
+            || !chain
+                .iter()
+                .take(qualifier.len())
+                .map(String::as_str)
+                .eq(qualifier.iter().copied())
+        {
+            return None;
+        }
+        return chain.get(qualifier.len()).cloned();
+    }
+
+    chain.get(1).cloned()
 }
 
 fn collect_refs(root: Node, bytes: &[u8], bindings: &[Binding]) -> Vec<Reference> {
@@ -415,7 +449,7 @@ fn collect_refs(root: Node, bytes: &[u8], bindings: &[Binding]) -> Vec<Reference
                     if let Some(binding) = bindings.iter().find(|b| b.local == text) {
                         let line = node.start_position().row as u32 + 1;
                         let name = if binding.exported == "*" {
-                            namespace_member(node, bytes)
+                            namespace_member(node, binding, bytes)
                                 .unwrap_or_else(|| binding.exported.clone())
                         } else {
                             binding.exported.clone()

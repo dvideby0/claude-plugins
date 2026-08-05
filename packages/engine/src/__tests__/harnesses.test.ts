@@ -8,6 +8,8 @@ import { describe, expect, it } from "vitest";
 import { spliceCodexBlock } from "../daemon/harnesses.js";
 import { drawInvocationArgs, MAP_MCP_TOOLS, supportedHarnesses } from "../daemon/draw.js";
 import { windowsLauncherCommand } from "../daemon/launcher.js";
+import { platformCommand } from "../lib/exec.js";
+import { reviewInvocationArgs } from "../review/agent.js";
 
 const OURS = `[mcp_servers.sdlc]\ncommand = "node"\nargs = ["/path/bridge.js"]\n`;
 
@@ -85,7 +87,11 @@ describe("draw harness ids", () => {
   });
 
   it("limits unattended Claude and Codex runs to map tools", () => {
-    const claude = drawInvocationArgs("claude-code", "draw");
+    const claude = drawInvocationArgs("claude-code", "draw", {
+      command: "/app/sdlc-bridge",
+      args: ["--stdio"],
+      env: { SDLC_PROJECT_ROOT: "/repo" },
+    });
     const codex = drawInvocationArgs("codex", "draw");
 
     for (const tool of MAP_MCP_TOOLS) {
@@ -93,8 +99,26 @@ describe("draw harness ids", () => {
     }
     expect(claude).not.toContain("mcp__sdlc");
     expect(claude).not.toContain("mcp__sdlc__audit_run_tools");
+    expect(claude).toContain("Read,Grep,Glob");
+    expect(claude).toContain("--strict-mcp-config");
+    expect(claude).toContain("user");
+    const config = JSON.parse(claude[claude.indexOf("--mcp-config") + 1]!) as {
+      mcpServers: { sdlc: { command: string } };
+    };
+    expect(config.mcpServers.sdlc.command).toBe("/app/sdlc-bridge");
     expect(codex.join(" ")).toContain("mcp_servers.sdlc.enabled_tools=");
     expect(codex.join(" ")).not.toContain("audit_run_tools");
+  });
+
+  it("gives headless review no tools or inherited project settings", () => {
+    const args = reviewInvocationArgs();
+    expect(args.slice(args.indexOf("--tools"), args.indexOf("--tools") + 2)).toEqual([
+      "--tools",
+      "",
+    ]);
+    expect(args).toContain("--strict-mcp-config");
+    expect(args.slice(args.indexOf("--setting-sources"), args.indexOf("--setting-sources") + 2))
+      .toEqual(["--setting-sources", "user"]);
   });
 });
 
@@ -105,5 +129,16 @@ describe("Windows bridge launcher", () => {
         command: "C:\\Windows\\cmd.exe",
         args: ["/d", "/s", "/c", "C:\\SDLC Data\\sdlc-bridge.cmd"],
       });
+  });
+
+  it("routes npm CLI shims and bare commands through cmd.exe", () => {
+    expect(platformCommand("C:\\Tools\\claude.cmd", ["--version"], "win32", "cmd.exe"))
+      .toEqual({
+        command: "cmd.exe",
+        args: ["/d", "/s", "/c", "C:\\Tools\\claude.cmd", "--version"],
+      });
+    expect(platformCommand("claude", ["-p"], "win32", "cmd.exe").command).toBe("cmd.exe");
+    expect(platformCommand("C:\\Tools\\codex.exe", ["exec"], "win32", "cmd.exe").command)
+      .toBe("C:\\Tools\\codex.exe");
   });
 });

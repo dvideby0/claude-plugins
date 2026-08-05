@@ -167,13 +167,17 @@ export function trace(
     const next: typeof frontier = [];
 
     for (const current of frontier) {
+      const edges = step(db, current.name, current.path, direction);
       if (current.depth >= maxDepth) {
         const node = seen.get(key(current.name, current.path));
-        if (node) node.truncated = true;
+        if (edges.length > 0) {
+          if (node) node.truncated = true;
+        } else {
+          leaves.push(key(current.name, current.path));
+        }
         continue;
       }
 
-      const edges = step(db, current.name, current.path, direction);
       if (edges.length === 0) {
         leaves.push(key(current.name, current.path));
         continue;

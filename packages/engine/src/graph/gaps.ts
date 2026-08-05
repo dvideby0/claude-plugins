@@ -198,8 +198,9 @@ export function findGaps(db: Db, limit = 25): GapsResult {
   const stale = db.all<{ path: string; symbol: string; title: string }>(
     `SELECT a.path, a.symbol, m.title FROM memory_anchors a
      JOIN memories m ON m.id = a.memory_id
-     JOIN files f ON f.path = a.path
-     WHERE m.status = 'active' AND a.content_sha IS NOT NULL AND a.content_sha != f.content_sha
+     LEFT JOIN files f ON f.path = a.path
+     WHERE m.status = 'active' AND a.content_sha IS NOT NULL
+       AND (f.path IS NULL OR f.present = 0 OR a.content_sha != f.content_sha)
      LIMIT 20`,
   );
   for (const row of stale) {

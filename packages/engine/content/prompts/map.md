@@ -30,9 +30,9 @@ components record what the system does, and they are frequently different.
 - `gaps` and `relations` — dispatch the parser could not follow, and any edges
   a previous enrichment pass recorded.
 
-Read the top handful of hotspots and every entry point. Use `Task` to read them
-in parallel. The question you are answering is: *if someone drew this system on
-a whiteboard, what would the boxes be?*
+Read the top handful of hotspots and every entry point. The question you are
+answering is: *if someone drew this system on a whiteboard, what would the boxes
+be?*
 
 ## 3. Draw the boxes
 

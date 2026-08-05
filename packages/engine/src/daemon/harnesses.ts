@@ -13,7 +13,7 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { promisify } from "node:util";
 import type { DetectedHarness } from "@sdlc/protocol";
-import { spawnEnv, which } from "../lib/exec.js";
+import { platformCommand, spawnEnv, which } from "../lib/exec.js";
 
 const run = promisify(execFile);
 
@@ -25,7 +25,8 @@ const codexConfig = (): string => join(homedir(), ".codex", "config.toml");
 
 async function version(bin: string): Promise<string | null> {
   try {
-    const { stdout } = await run(bin, ["--version"], { timeout: 5000, env: spawnEnv() });
+    const command = platformCommand(bin, ["--version"]);
+    const { stdout } = await run(command.command, command.args, { timeout: 5000, env: spawnEnv() });
     return stdout.trim().split("\n")[0] ?? null;
   } catch {
     return null;
@@ -115,7 +116,7 @@ async function connectClaude(bridge: BridgeCommand): Promise<void> {
   // Argument order matters: `-e` is variadic, so it eats every following
   // non-flag token. The server name has to be behind it, and `--` has to
   // close it, or the name is parsed as another environment variable.
-  await run(bin, [
+  const command = platformCommand(bin, [
     "mcp",
     "add",
     SERVER_NAME,
@@ -125,12 +126,14 @@ async function connectClaude(bridge: BridgeCommand): Promise<void> {
     "--",
     bridge.command,
     ...bridge.args,
-  ], { env: spawnEnv() });
+  ]);
+  await run(command.command, command.args, { env: spawnEnv() });
 }
 
 async function disconnectClaude(): Promise<void> {
   const bin = (await which("claude", spawnEnv())) ?? "claude";
-  await run(bin, ["mcp", "remove", SERVER_NAME, "--scope", "user"], { env: spawnEnv() });
+  const command = platformCommand(bin, ["mcp", "remove", SERVER_NAME, "--scope", "user"]);
+  await run(command.command, command.args, { env: spawnEnv() });
 }
 
 function tomlString(value: string): string {

@@ -46,6 +46,16 @@ import helpers
 def module_loud(text):
     return helpers.shout(text)
 `,
+  "pkg/db.py": `
+def fetch_rows(sql):
+    return sql
+`,
+  "src/dotted_user.py": `
+import pkg.db
+
+def dotted_query():
+    return pkg.db.fetch_rows("select 1")
+`,
 };
 
 let root: string;
@@ -105,6 +115,17 @@ withNative("symbol references", () => {
     expect(shout.definedIn).toBe("src/helpers.py");
     expect(shout.total).toBe(2);
     expect(shout.files.sort()).toEqual(["src/module_user.py", "src/util.py"]);
+  });
+
+  it("resolves the symbol used through an unaliased dotted Python import", async () => {
+    root = await makeProject(PROJECT);
+    await scan(root, { kind: "full" });
+    const db = await getDb(root);
+
+    const rows = referencesTo(db, "fetch_rows");
+    expect(rows.definedIn).toBe("pkg/db.py");
+    expect(rows.files).toContain("src/dotted_user.py");
+    expect(rows.callSites.find((site) => site.path === "src/dotted_user.py")?.line).toBe(5);
   });
 
   it("separates blast radius from import count", async () => {

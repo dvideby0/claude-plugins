@@ -175,6 +175,40 @@ describe("the drawn map", () => {
     const db = await getDb(root);
     expect(() => describeFlow(db, { name: "Empty", steps: [] })).toThrow(/needs steps/);
   });
+
+  it("preserves authored flow metadata when only its steps are refreshed", async () => {
+    root = await makeProject(PROJECT);
+    await scan(root, { kind: "full" });
+    const db = await getDb(root);
+
+    describeFlow(db, {
+      name: "Request",
+      summary: "The public request path.",
+      trigger: "An HTTP call",
+      steps: [{ label: "Authenticate", path: "src/api/auth.py" }],
+    });
+    describeFlow(db, {
+      name: "Request",
+      steps: [{ label: "Handle", path: "src/api/routes.py" }],
+    });
+
+    const flow = systemMap(db).flows[0];
+    expect(flow?.summary).toBe("The public request path.");
+    expect(flow?.trigger).toBe("An HTTP call");
+    expect(flow?.steps[0]?.label).toBe("Handle");
+  });
+
+  it("rejects indirect component-parent cycles", async () => {
+    root = await makeProject(PROJECT);
+    await scan(root, { kind: "full" });
+    const db = await getDb(root);
+
+    const app = describeComponent(db, { name: "App" });
+    describeComponent(db, { name: "API", parent: "App" });
+    expect(() => describeComponent(db, { name: "App", parent: "API" })).toThrow(/ancestor/);
+    expect(systemMap(db).components.find((component) => component.name === "API")?.parent)
+      .toBe(app.id);
+  });
 });
 
 describe("crossing between the two maps", () => {

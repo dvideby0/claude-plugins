@@ -80,11 +80,10 @@ export function remember(db: Db, input: MemoryInput): { id: string; created: boo
   const existing = db.get<{ id: string }>("SELECT id FROM memories WHERE id = ?", [id]);
 
   if (existing) {
-    db.run("UPDATE memories SET body = ?, updated_at = ?, status = 'active' WHERE id = ?", [
-      input.body ?? "",
-      now,
-      id,
-    ]);
+    db.run(
+      "UPDATE memories SET body = COALESCE(?, body), updated_at = ?, status = 'active' WHERE id = ?",
+      [input.body ?? null, now, id],
+    );
   } else {
     db.run(
       `INSERT INTO memories(id, kind, title, body, source, status, created_at, updated_at)

@@ -7,6 +7,7 @@
  */
 
 import { execFile } from "node:child_process";
+import { extname } from "node:path";
 
 export interface ExecResult {
   stdout: string;
@@ -28,6 +29,33 @@ export interface ExecOptions {
 
 const DEFAULT_TIMEOUT = 120_000;
 const DEFAULT_MAX_BUFFER = 16 * 1024 * 1024;
+
+export interface PlatformCommand {
+  command: string;
+  args: string[];
+}
+
+/**
+ * Make a CLI invocation spawnable on every platform.
+ *
+ * npm-installed commands are `.cmd` shims on Windows. Node's execFile/spawn
+ * APIs cannot execute those scripts directly, and callers often begin with a
+ * bare command name that cmd.exe must resolve to the shim. Real `.exe` files
+ * remain direct children so signals and exit codes keep their normal shape.
+ */
+export function platformCommand(
+  command: string,
+  args: string[],
+  platform: NodeJS.Platform = process.platform,
+  comspec = process.env.ComSpec ?? process.env.COMSPEC ?? "cmd.exe",
+): PlatformCommand {
+  const extension = extname(command).toLowerCase();
+  const needsCmd =
+    platform === "win32" && (extension === "" || extension === ".cmd" || extension === ".bat");
+  return needsCmd
+    ? { command: comspec, args: ["/d", "/s", "/c", command, ...args] }
+    : { command, args };
+}
 
 export function exec(
   command: string,

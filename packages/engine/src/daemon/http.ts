@@ -16,7 +16,6 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { dirname, extname, join, normalize } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { EngineStatus, WorkspaceStatus } from "@sdlc/protocol";
-import { runAnalyzers } from "../analyze/run.js";
 import { getDb } from "../db/db.js";
 import { loadPlan } from "../plan/risk.js";
 import { scan } from "../scan/scan.js";
@@ -275,7 +274,6 @@ export function createHttpServer(options: HttpServerOptions): HttpServerHandle {
       try {
         note("Scanning files");
         await scan(root, { kind: "incremental" });
-        await runAnalyzers(root, {});
 
         // Upgrade references from import-resolved to type-resolved. This is a
         // full type-check, so it runs last and only here — the point of a
@@ -306,7 +304,12 @@ export function createHttpServer(options: HttpServerOptions): HttpServerHandle {
 
         job.phase = "drawing";
         note(`Asking ${draw} to draw the map`);
-        const handle = await drawMap({ harness: draw, root, onEvent: note });
+        const handle = await drawMap({
+          harness: draw,
+          root,
+          bridge: options.bridge,
+          onEvent: note,
+        });
         job.child = handle.child;
         if (job.stopped) handle.child.kill("SIGTERM");
         const result = await handle.finished;

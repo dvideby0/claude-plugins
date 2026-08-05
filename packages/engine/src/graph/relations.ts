@@ -152,7 +152,7 @@ function hydrate(rows: Row[]): Relation[] {
 }
 
 const SELECT = `SELECT r.*, f.content_sha AS current_sha FROM relations r
-                LEFT JOIN files f ON f.path = r.src_path`;
+                LEFT JOIN files f ON f.path = r.src_path AND f.present = 1`;
 
 export function relationsFor(db: Db, path: string, symbol?: string): Relation[] {
   const rows = symbol

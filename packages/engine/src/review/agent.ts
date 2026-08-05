@@ -7,7 +7,7 @@
  */
 
 import { spawn } from "node:child_process";
-import { spawnEnv } from "../lib/exec.js";
+import { platformCommand, spawnEnv } from "../lib/exec.js";
 
 export interface AgentResult {
   ok: boolean;
@@ -22,6 +22,28 @@ export interface AgentOptions {
   /** Hard stop, so a stuck review cannot pin a core forever. */
   timeoutMs?: number;
   model?: string;
+}
+
+/** Exposed so the no-tools security boundary can be regression-tested. */
+export function reviewInvocationArgs(options: Pick<AgentOptions, "model"> = {}): string[] {
+  const args = [
+    "-p",
+    "--output-format",
+    "json",
+    "--no-session-persistence",
+    // Review text is untrusted repository input. No tools means it cannot
+    // turn a review prompt into filesystem/MCP side effects, and excluding
+    // project/local settings keeps repository hooks out of the child.
+    "--tools",
+    "",
+    "--setting-sources",
+    "user",
+    "--strict-mcp-config",
+    "--mcp-config",
+    JSON.stringify({ mcpServers: {} }),
+  ];
+  if (options.model) args.push("--model", options.model);
+  return args;
 }
 
 interface ClaudeEnvelope {
@@ -40,11 +62,11 @@ interface ClaudeEnvelope {
  */
 export function runClaude(prompt: string, options: AgentOptions): Promise<AgentResult> {
   const started = Date.now();
-  const args = ["-p", "--output-format", "json"];
-  if (options.model) args.push("--model", options.model);
+  const args = reviewInvocationArgs(options);
+  const command = platformCommand("claude", args);
 
   return new Promise((resolve) => {
-    const child = spawn("claude", args, {
+    const child = spawn(command.command, command.args, {
       cwd: options.cwd,
       stdio: ["pipe", "pipe", "pipe"],
       // Augmented PATH: from a Dock-launched app, launchd's PATH has no
