@@ -154,8 +154,18 @@ export function closeStale(db: Db, runId: number, rulePrefix: string): number {
 
 export function suppress(
   db: Db,
-  options: { findingId?: string; ruleId?: string; pathPrefix?: string; reason: string },
+  options: {
+    findingId?: string;
+    ruleId?: string;
+    pathPrefix?: string;
+    reason: string;
+    disposition?: "accepted" | "false_positive";
+  },
 ): void {
+  const disposition = options.disposition ?? "false_positive";
+  if (disposition === "accepted" && !options.findingId) {
+    throw new Error("Accepted risk applies to an exact finding, not a rule or path.");
+  }
   db.run(
     "INSERT INTO suppressions(finding_id, rule_id, path_prefix, reason, created_at) VALUES(?, ?, ?, ?, ?)",
     [
@@ -167,7 +177,10 @@ export function suppress(
     ],
   );
   if (options.findingId) {
-    db.run("UPDATE findings SET status = 'false_positive' WHERE id = ?", [options.findingId]);
+    db.run("UPDATE findings SET status = ? WHERE id = ?", [
+      disposition,
+      options.findingId,
+    ]);
   } else if (options.ruleId || options.pathPrefix) {
     // Rule- and path-level suppressions retire the findings they cover, the
     // same way a direct suppression does. Leaving them open meant the next

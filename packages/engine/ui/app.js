@@ -870,7 +870,7 @@ async function paneFindings(workspace, pane) {
         </div>`;
       holder.hidden = false;
 
-      const suppressWith = async (button, prefix) => {
+      const suppressWith = async (button, disposition) => {
         const reason = document.querySelector(`[data-reason="${button.dataset.index}"]`)?.value.trim();
         if (!reason) {
           toast("Give a reason — it is kept with the suppression.");
@@ -879,16 +879,20 @@ async function paneFindings(workspace, pane) {
         try {
           await api(`/api/workspaces/${workspace.id}/findings/${button.dataset.id}/suppress`, {
             method: "POST",
-            body: JSON.stringify({ reason: `${prefix}: ${reason}` }),
+            body: JSON.stringify({ reason, disposition }),
           });
-          toast("Suppressed. It will not come back on future runs.");
+          toast(
+            disposition === "accepted"
+              ? "Risk accepted. The decision will persist across future runs."
+              : "Marked false positive. It will not come back on future runs.",
+          );
           void paneFindings(workspace, pane);
         } catch (error) {
           toast(error.message);
         }
       };
       on("accept", (button) => void suppressWith(button, "accepted"));
-      on("falsep", (button) => void suppressWith(button, "false positive"));
+      on("falsep", (button) => void suppressWith(button, "false_positive"));
     });
   } catch (error) {
     pane.innerHTML = `<div class="empty">${esc(error.message)}</div>`;

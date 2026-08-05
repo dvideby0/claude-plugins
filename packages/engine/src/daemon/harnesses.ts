@@ -56,7 +56,11 @@ async function codexConnected(): Promise<boolean> {
 }
 
 export async function detectHarnesses(): Promise<DetectedHarness[]> {
-  const [claudeBin, codexBin] = await Promise.all([which("claude"), which("codex")]);
+  const env = spawnEnv();
+  const [claudeBin, codexBin] = await Promise.all([
+    which("claude", env),
+    which("codex", env),
+  ]);
 
   const [claudeVersion, codexVersion, claudeOn, codexOn] = await Promise.all([
     claudeBin ? version(claudeBin) : Promise.resolve(null),
@@ -106,7 +110,7 @@ async function connectClaude(bridge: BridgeCommand): Promise<void> {
 
   // The absolute path detection found — a bare "claude" fails from a
   // GUI-launched daemon whose PATH never had it.
-  const bin = (await which("claude")) ?? "claude";
+  const bin = (await which("claude", spawnEnv())) ?? "claude";
 
   // Argument order matters: `-e` is variadic, so it eats every following
   // non-flag token. The server name has to be behind it, and `--` has to
@@ -125,7 +129,7 @@ async function connectClaude(bridge: BridgeCommand): Promise<void> {
 }
 
 async function disconnectClaude(): Promise<void> {
-  const bin = (await which("claude")) ?? "claude";
+  const bin = (await which("claude", spawnEnv())) ?? "claude";
   await run(bin, ["mcp", "remove", SERVER_NAME, "--scope", "user"], { env: spawnEnv() });
 }
 

@@ -83,5 +83,7 @@ answer — that is what keeps this loop cheap enough to run often.
 - Coverage before and after
 - Anything you could not resolve, and why
 
-Then say what the flow looks like now that it is wired. `flow` will show
-the real path where before it showed only what could be parsed.
+Then report the asserted overlay with `relations`. The current `flow` result is
+the deterministic reference graph; it does not include asserted relations yet,
+so label those two views clearly instead of implying the overlay is already
+part of the computed flow.

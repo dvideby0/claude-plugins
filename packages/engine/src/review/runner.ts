@@ -11,8 +11,6 @@
  * user's own CLI quota.
  */
 
-import { readFile } from "node:fs/promises";
-import { join } from "node:path";
 import { contentDir } from "../content.js";
 import type { Db } from "../db/db.js";
 import { extractSnippet } from "../findings/fingerprint.js";
@@ -25,6 +23,7 @@ import {
 } from "../findings/types.js";
 import { buildContext } from "../plan/context.js";
 import { loadPlan, type WorkUnit } from "../plan/risk.js";
+import { readWorkspaceText } from "../lib/workspace-path.js";
 import { extractJson, runClaude } from "./agent.js";
 
 export interface ReviewOptions {
@@ -124,7 +123,7 @@ async function sourceFor(
   lineStart?: number,
   lineEnd?: number,
 ): Promise<string> {
-  const content = await readFile(join(projectRoot, path), "utf-8");
+  const content = await readWorkspaceText(projectRoot, path);
   const lines = content.split("\n");
   const from = Math.max(0, (lineStart ?? 1) - 15);
   const to = Math.min(lines.length, (lineEnd ?? lineStart ?? 1) + 15);
@@ -257,7 +256,7 @@ export async function runReview(
       }
 
       try {
-        const content = await readFile(join(projectRoot, proposal.path as string), "utf-8");
+        const content = await readWorkspaceText(projectRoot, proposal.path as string);
         snippet = extractSnippet(content, proposal.lineStart ?? 1, proposal.lineEnd);
       } catch {
         // Fingerprint falls back to the title.

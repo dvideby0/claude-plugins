@@ -15,6 +15,7 @@
 
 import { spawn, type ChildProcess } from "node:child_process";
 import { readContent } from "../content.js";
+import { spawnEnv } from "../lib/exec.js";
 
 export type DrawPhase = "scanning" | "drawing" | "done" | "failed";
 
@@ -36,7 +37,7 @@ export interface HarnessInvocation {
  * read-only file access, and subagents — and nothing that edits the repository.
  */
 const INVOCATIONS: Record<string, HarnessInvocation> = {
-  claude: {
+  "claude-code": {
     bin: "claude",
     args: (prompt) => [
       "-p",
@@ -140,7 +141,7 @@ export async function drawMap(options: DrawOptions): Promise<DrawHandle> {
   const child = spawn(invocation.bin, invocation.args(prompt), {
     cwd: options.root,
     stdio: ["ignore", "pipe", "pipe"],
-    env: { ...process.env },
+    env: spawnEnv(),
   });
 
   let tail = "";

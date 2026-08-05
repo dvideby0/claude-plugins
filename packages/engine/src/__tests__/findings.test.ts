@@ -108,6 +108,24 @@ describe("finding lifecycle", () => {
     );
   });
 
+  it("keeps accepted risks distinct from false positives", async () => {
+    root = await makeProject({ "a.ts": "" });
+    const db = await getDb(root);
+
+    recordFindings(db, 1, [finding()]);
+    const id = db.get<{ id: string }>("SELECT id FROM findings")!.id;
+    suppress(db, {
+      findingId: id,
+      reason: "required for legacy compatibility",
+      disposition: "accepted",
+    });
+
+    recordFindings(db, 2, [finding()]);
+    expect(db.get<{ status: string }>("SELECT status FROM findings")?.status).toBe(
+      "accepted",
+    );
+  });
+
   it("suppresses a rule under a path prefix before it is ever stored", async () => {
     root = await makeProject({ "a.ts": "" });
     const db = await getDb(root);

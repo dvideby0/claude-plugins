@@ -8,8 +8,7 @@
  */
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { readFile } from "node:fs/promises";
-import { resolve, sep } from "node:path";
+import { resolve } from "node:path";
 import { z } from "zod";
 import { runAnalyzers } from "../analyze/run.js";
 import { contentDir } from "../content.js";
@@ -35,6 +34,7 @@ import { loadPlan, planUnits, savePlan } from "../plan/risk.js";
 import { buildReports } from "../report/export.js";
 import { runReview } from "../review/runner.js";
 import { scan } from "../scan/scan.js";
+import { readWorkspaceText } from "../lib/workspace-path.js";
 
 export const ENGINE_VERSION = "0.1.0";
 
@@ -275,14 +275,12 @@ export function createMcpServer(options: McpServerOptions): McpServer {
         for (const finding of findings) {
           let snippet: string | undefined;
           if (finding.path && finding.lineStart) {
-            const target = resolve(root, finding.path);
-            if (target === root || target.startsWith(root + sep)) {
-              try {
-                const content = await readFile(target, "utf-8");
-                snippet = extractSnippet(content, finding.lineStart, finding.lineEnd);
-              } catch {
-                // File unreadable — fingerprint falls back to the title.
-              }
+            try {
+              const content = await readWorkspaceText(root, finding.path);
+              snippet = extractSnippet(content, finding.lineStart, finding.lineEnd);
+            } catch {
+              // Outside the workspace or unreadable — fingerprint falls back
+              // to the title, and no local file contents enter the store.
             }
           }
           enriched.push({ ...finding, source: "llm", snippet });
@@ -329,12 +327,16 @@ export function createMcpServer(options: McpServerOptions): McpServer {
       ruleId: z.string().optional().describe("Suppress a rule, optionally scoped by pathPrefix."),
       pathPrefix: z.string().optional(),
       reason: z.string().min(1),
+      disposition: z
+        .enum(["accepted", "false_positive"])
+        .optional()
+        .describe("Human decision for an exact finding. Defaults to false_positive."),
     },
-    async ({ projectRoot, findingId, ruleId, pathPrefix, reason }) =>
+    async ({ projectRoot, findingId, ruleId, pathPrefix, reason, disposition }) =>
       wrap(async () => {
         if (!findingId && !ruleId) throw new Error("Provide findingId or ruleId.");
         const db = await getDb(resolveRoot(projectRoot));
-        suppress(db, { findingId, ruleId, pathPrefix, reason });
+        suppress(db, { findingId, ruleId, pathPrefix, reason, disposition });
         await db.flush();
         return { suppressed: findingId ?? `${ruleId}${pathPrefix ? ` under ${pathPrefix}` : ""}` };
       }),

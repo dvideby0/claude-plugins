@@ -17,6 +17,11 @@ export function daemonFile(): string {
   return join(stateDir(), "daemon.json");
 }
 
+/** Atomic cross-process ownership marker held for the daemon's lifetime. */
+export function daemonLockDir(): string {
+  return join(stateDir(), "daemon.lock");
+}
+
 /** The set of directories the user has allowed the engine to index. */
 export function workspacesFile(): string {
   return join(stateDir(), "workspaces.json");

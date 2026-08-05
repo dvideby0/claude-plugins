@@ -259,8 +259,12 @@ export function createHttpServer(options: HttpServerOptions): HttpServerHandle {
         // Upgrade references from import-resolved to type-resolved. This is a
         // full type-check, so it runs last and only here — the point of a
         // daemon is that it can afford work a per-session process cannot.
-        const typed = resolveTypes(await getDb(root), root);
+        const db = await getDb(root);
+        const typed = resolveTypes(db, root);
         if (typed.ran) {
+          // resolveTypes mutates refs after runAnalyzers has already flushed.
+          // Persist the upgraded edges before the app can be closed.
+          await db.flush();
           log(`typed ${root}: ${typed.resolved} refs in ${typed.durationMs}ms`);
         }
 
@@ -391,15 +395,32 @@ export function createHttpServer(options: HttpServerOptions): HttpServerHandle {
         sendJson(res, 404, { error: "Unknown workspace." });
         return true;
       }
-      const body = (await readBody(req)) as { reason?: string } | undefined;
+      const body = (await readBody(req)) as
+        | { reason?: string; disposition?: "accepted" | "false_positive" }
+        | undefined;
       if (!body?.reason?.trim()) {
         sendJson(res, 400, { error: "A reason is required." });
         return true;
       }
+      if (
+        body.disposition !== undefined &&
+        body.disposition !== "accepted" &&
+        body.disposition !== "false_positive"
+      ) {
+        sendJson(res, 400, { error: "disposition must be accepted or false_positive." });
+        return true;
+      }
       const db = await getDb(workspace.root);
-      suppress(db, { findingId: suppressMatch[2] as string, reason: body.reason.trim() });
+      suppress(db, {
+        findingId: suppressMatch[2] as string,
+        reason: body.reason.trim(),
+        disposition: body.disposition,
+      });
       await db.flush();
-      sendJson(res, 200, { suppressed: suppressMatch[2] });
+      sendJson(res, 200, {
+        suppressed: suppressMatch[2],
+        disposition: body.disposition ?? "false_positive",
+      });
       return true;
     }
 

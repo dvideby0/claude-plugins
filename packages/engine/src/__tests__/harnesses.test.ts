@@ -6,6 +6,7 @@
 
 import { describe, expect, it } from "vitest";
 import { spliceCodexBlock } from "../daemon/harnesses.js";
+import { supportedHarnesses } from "../daemon/draw.js";
 
 const OURS = `[mcp_servers.sdlc]\ncommand = "node"\nargs = ["/path/bridge.js"]\n`;
 
@@ -73,5 +74,12 @@ describe("codex config splice", () => {
   it("creates a usable file when there is no config yet", () => {
     const result = spliceCodexBlock("", OURS);
     expect(result.trim()).toBe(OURS.trim());
+  });
+});
+
+describe("draw harness ids", () => {
+  it("uses the same Claude id returned by harness detection", () => {
+    expect(supportedHarnesses()).toContain("claude-code");
+    expect(supportedHarnesses()).not.toContain("claude");
   });
 });

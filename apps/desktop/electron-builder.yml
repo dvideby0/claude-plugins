@@ -23,6 +23,12 @@ npmRebuild: false
 # as real files, not archive entries. The whole app stays unpacked.
 asar: false
 
+# Workspace dependencies are symlinks during development. electron-builder
+# follows those links and copies the entire package directory, including Rust
+# build caches and TypeScript sources, so prune and validate the staged app
+# before it is signed.
+afterPack: build/after-pack.cjs
+
 files:
   - dist/**/*
   - preload.cjs

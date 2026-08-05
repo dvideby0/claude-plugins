@@ -19,10 +19,29 @@ import { ENGINE_VERSION } from "../mcp/server.js";
 import type { BridgeCommand } from "./harnesses.js";
 import { createHttpServer } from "./http.js";
 import { writeLauncher } from "./launcher.js";
+import {
+  acquireDaemonLock,
+  DaemonAlreadyRunningError,
+  type DaemonLock,
+} from "./lock.js";
 import { WorkspaceRegistry } from "./workspaces.js";
 
 /** Stable by default so the UI keeps one URL across restarts. */
 const DEFAULT_PORT = Number(process.env.SDLC_PORT ?? 7420);
+let ownership: DaemonLock | null = null;
+let published = false;
+
+async function relinquishOwnership(): Promise<void> {
+  if (!ownership) return;
+  const lock = ownership;
+  try {
+    if (published) await clearDaemon();
+  } finally {
+    published = false;
+    await lock.release();
+    if (ownership === lock) ownership = null;
+  }
+}
 
 function openLog(): WriteStream {
   return createWriteStream(logFile(), { flags: "a" });
@@ -61,10 +80,9 @@ async function resolveBridge(): Promise<BridgeCommand> {
 async function main(): Promise<void> {
   await mkdir(stateDir(), { recursive: true });
 
-  // One daemon per machine. A dead pid is cleaned up by readDaemon(); a live
-  // pid still has to answer — after a reboot the recorded pid usually belongs
-  // to some unrelated process, and treating that as "already running" bricks
-  // startup until someone finds and deletes daemon.json by hand.
+  // Fast path for the common case. Do not remove an unresponsive record yet:
+  // its owner may be between publishing and listening, and the ownership lock
+  // below is the authoritative answer during that startup window.
   const running = await readDaemon();
   if (running) {
     if (await ping(running, 5000)) {
@@ -73,9 +91,26 @@ async function main(): Promise<void> {
       );
       process.exit(3);
     }
-    process.stderr.write(
-      `Ignoring stale daemon.json (pid ${running.pid} is not an engine).\n`,
-    );
+    process.stderr.write(`Found an unresponsive daemon record for pid ${running.pid}.\n`);
+  }
+
+  // daemon.json is discovery, not mutual exclusion. Hold an atomic lock for
+  // the whole process lifetime so two simultaneous starts cannot both open
+  // and mutate the same sql.js stores.
+  ownership = await acquireDaemonLock();
+
+  // A daemon from an older release may not own a lock. Check again after
+  // acquiring so we remain compatible without reviving the start race.
+  const legacyRunning = await readDaemon();
+  if (legacyRunning) {
+    if (await ping(legacyRunning, 5000)) {
+      process.stderr.write(
+        `An engine is already running (pid ${legacyRunning.pid}, port ${legacyRunning.port}).\n`,
+      );
+      await relinquishOwnership();
+      process.exit(3);
+      return;
+    }
     await clearDaemon();
   }
 
@@ -101,17 +136,7 @@ async function main(): Promise<void> {
     version: ENGINE_VERSION,
     startedAt: new Date().toISOString(),
   });
-
-  // Two engines starting in the same instant both pass the check above
-  // before either publishes. Whoever's write survives owns the machine; the
-  // other bows out rather than run as an undiscoverable rival sharing the
-  // same stores.
-  const published = await readDaemon();
-  if (published && published.pid !== process.pid) {
-    write(`another engine won the start race (pid ${published.pid}); exiting`);
-    server.close();
-    process.exit(3);
-  }
+  published = true;
 
   write(`engine ${ENGINE_VERSION} listening on http://127.0.0.1:${port}`);
   write(`bridge command: ${bridge.command} ${bridge.args.join(" ")}`);
@@ -127,7 +152,7 @@ async function main(): Promise<void> {
     handle.shutdown();
 
     server.close(() => {
-      void clearDaemon().finally(() => {
+      void relinquishOwnership().finally(() => {
         log.end();
         process.exit(0);
       });
@@ -135,7 +160,7 @@ async function main(): Promise<void> {
 
     // Do not hang forever on a client holding a connection open.
     setTimeout(() => {
-      void clearDaemon().finally(() => process.exit(0));
+      void relinquishOwnership().finally(() => process.exit(0));
     }, 3000).unref();
   };
 
@@ -148,6 +173,6 @@ async function main(): Promise<void> {
 
 main().catch(async (error) => {
   process.stderr.write(`engine failed to start: ${error?.stack ?? error}\n`);
-  await clearDaemon().catch(() => {});
-  process.exit(1);
+  await relinquishOwnership().catch(() => {});
+  process.exit(error instanceof DaemonAlreadyRunningError ? 3 : 1);
 });

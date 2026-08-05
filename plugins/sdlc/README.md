@@ -1,83 +1,53 @@
-# repo-audit
+# SDLC companion plugin
 
-Incremental code audit for TypeScript/JavaScript and Python.
+Commands and guidance for the standalone SDLC code-intelligence app.
 
-It parses your code with tree-sitter to build a real import graph, runs the
-linters your project already has, and keeps every finding in a SQLite store.
-Run it again next week and it updates what it knows — it does not start over.
+The plugin is intentionally thin. Repository parsing, durable indexes,
+findings, memories, reports, and model-assisted enrichment live in the local
+SDLC engine installed with the desktop app. Claude Code connects to that one
+long-lived engine through a small MCP bridge, so indexes stay warm and can be
+shared with Codex and the desktop UI.
 
-## Requires the SDLC app
+## Setup
 
-This plugin is the workflow layer: commands and prompts, nothing else. The
-parsing, the store and the analysis live in the SDLC engine, which the desktop
-app installs and keeps running.
+1. Install and open the SDLC desktop app.
+2. In **Coding harnesses**, connect Claude Code.
+3. Restart Claude Code so it reloads MCP configuration.
+4. Install the plugin with `/plugin install sdlc`.
 
-1. Install and open the SDLC app.
-2. Under **Coding harnesses**, click **Connect** next to Claude Code.
-3. Restart Claude Code.
-4. `/plugin install repo-audit`
-
-Without a running engine the commands have no tools to call, and say so.
-
-Why it is split this way: an MCP server bundled inside a plugin gets spawned
-once per session. It starts cold every time, cannot share an index between
-sessions, and has to vendor every dependency as a committed binary — this
-plugin used to carry 4.2 MB of wasm for exactly that reason. A long-lived
-local engine fixes all three.
+Without a running engine, the commands have no SDLC tools to call and will say
+so rather than installing a second copy of the engine inside the plugin.
 
 ## Commands
 
-| Command | What it does | Time |
-|---|---|---|
-| `/audit-quick` | Index, run your linters/type checkers, secret scan, dependency advisories, supply-chain and unicode checks | <1 min |
-| `/audit` | Everything above, then sub-agent review of the riskiest code | 3–10 min |
-| `/audit-security` | Same pipeline, security lens on the review pass | 2–5 min |
-
-## Output
-
-Everything lands in `sdlc-audit/` inside the repository being audited:
-
-| Path | Contents |
+| Command | What it does |
 |---|---|
-| `audit.db` | The store — files, symbols, import edges, findings, suppressions |
-| `TASKS.json` | Open findings as actionable tasks, ranked by severity |
-| `reports/AUDIT.md` | Findings by severity and category, per-tool status |
-| `reports/MAP.md` | Languages, most-depended-on files, risk ranking, external packages |
+| `/audit-quick` | Deterministic index, project linters and type checkers, secrets, dependencies, and supply-chain checks |
+| `/audit` | Deterministic audit followed by model review of the highest-risk work units |
+| `/audit-security` | The audit pipeline with a security-focused review lens |
+| `/map` | Build or refresh the human-readable system map |
+| `/enrich` | Investigate deterministic graph gaps and record evidence-backed relations |
 
-Your source is never modified. Undo everything with `rm -rf sdlc-audit/`.
+## Persistent knowledge
 
-## Repeat runs
+The engine keeps a per-workspace store under `~/.sdlc/stores`. Repeated scans
+reuse unchanged results, finding fingerprints survive line movement, accepted
+risks and false positives remain sticky, and memories can be attached to code
+with deterministic signatures so stale knowledge is visible after changes.
 
-Findings have a fingerprint derived from the rule, file, enclosing symbol and
-the shape of the code — not the line number. So on the next run:
+The desktop app renders the same store directly. MCP tools such as
+`audit_status`, `audit_scan`, `audit_run_tools`, `audit_plan`, `audit_review`,
+`audit_record_findings`, `audit_query`, `audit_suppress`, `audit_report`,
+`context`, `flow`, `relations`, and `remember` expose focused slices to coding
+agents without asking them to reread the repository.
 
-- unchanged files are not re-parsed,
-- a finding that moved down the file is still the same finding,
-- a finding that disappeared is marked `fixed`,
-- one that came back is marked `regressed`.
+The deterministic `flow` view currently follows parsed and type-resolved
+references. Evidence-backed relations recorded during enrichment are a
+separate overlay available through `relations`; combining both into one
+computed flow is roadmap work.
 
-To retire a finding permanently, ask Claude to suppress it (or call
-`audit_suppress` with the finding id and a reason). Suppressions survive every
-future run.
-
-## Tools
-
-The engine exposes `audit_status`, `audit_scan`, `audit_run_tools`,
-`audit_plan`, `audit_context`, `audit_record_findings`, `audit_query`,
-`audit_suppress` and `audit_export`. You can drive them directly — ask Claude
-things like "which files import `db.ts`?" or "show open security findings".
-
-## What the deterministic pass covers
-
-Your own linters and type checkers, plus checks that run without any external
-tool: secrets, dependency advisories (OSV), import cycles, unicode smuggling
-(bidi and zero-width characters), and supply-chain risk — install hooks that
-execute remote code, workflows that interpolate attacker-controlled values or
-check out untrusted refs with secrets, and agent config (`.claude/`,
-`.mcp.json`, `.vscode/tasks.json`) that runs commands when the repo is opened.
-
-See [docs/STRATEGY.md](docs/STRATEGY.md) for how it works. The engine itself
-lives in [`packages/engine`](../../packages/engine).
+See [docs/STRATEGY.md](docs/STRATEGY.md) for the analysis model. The engine
+source lives in [`packages/engine`](../../packages/engine).
 
 ## License
 

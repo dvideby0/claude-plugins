@@ -23,6 +23,7 @@ export interface ExecOptions {
   cwd?: string;
   timeout?: number;
   maxBuffer?: number;
+  env?: NodeJS.ProcessEnv;
 }
 
 const DEFAULT_TIMEOUT = 120_000;
@@ -42,6 +43,7 @@ export function exec(
         timeout: options.timeout ?? DEFAULT_TIMEOUT,
         maxBuffer: options.maxBuffer ?? DEFAULT_MAX_BUFFER,
         encoding: "utf-8",
+        env: options.env,
       },
       (error, stdout, stderr) => {
         if (!error) {
@@ -94,9 +96,12 @@ export function exec(
 }
 
 /** Resolve a command on PATH. Returns its path, or null when absent. */
-export async function which(command: string): Promise<string | null> {
+export async function which(
+  command: string,
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<string | null> {
   const finder = process.platform === "win32" ? "where" : "which";
-  const result = await exec(finder, [command], { timeout: 5_000 });
+  const result = await exec(finder, [command], { timeout: 5_000, env });
   if (result.spawnFailed || result.exitCode !== 0) return null;
   const path = result.stdout.trim().split("\n")[0];
   return path.length > 0 ? path : null;
