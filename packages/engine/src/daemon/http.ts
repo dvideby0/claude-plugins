@@ -28,8 +28,10 @@ import { findingsView, fileView, graphView, memoriesView, overviewView } from ".
 import { CROSS_KINDS, crossQuery, type CrossKind } from "../graph/cross.js";
 import { flowView } from "../graph/flow.js";
 import { componentDetail, systemMap } from "../graph/map.js";
-import { resolveTypes } from "../graph/typed.js";
+import { resolveTypesInWorker } from "../graph/typed.js";
+import { terminateProcessTree } from "../lib/exec.js";
 import { WorkspaceWatcher } from "./watcher.js";
+import { hasTypedConfigChange, WatchRefreshQueue } from "./watch-refresh.js";
 import { WorkspaceRegistry } from "./workspaces.js";
 
 export interface HttpServerOptions {
@@ -80,11 +82,11 @@ export function requestIndexStop(job: StoppableIndexJob, graceMs = STOP_GRACE_MS
   job.error = "Stopped.";
 
   if (!child) return;
-  child.kill(force ? "SIGKILL" : "SIGTERM");
+  terminateProcessTree(child, force);
   if (force) return;
 
   const escalation = setTimeout(() => {
-    if (job.child === child) child.kill("SIGKILL");
+    if (job.child === child) terminateProcessTree(child, true);
   }, graceMs);
   escalation.unref();
 }
@@ -142,35 +144,9 @@ export interface HttpServerHandle {
 export function createHttpServer(options: HttpServerOptions): HttpServerHandle {
   const { registry, token, log } = options;
   const jobs = new Map<string, IndexJob>();
+  const indexingRoots = new Set<string>();
   let boundPort = 0;
   let watchEnabled = process.env.SDLC_WATCH !== "0";
-
-  /**
-   * A watched change triggers a scan, never the analyser pass. Re-running the
-   * project's linters and type checker on every save would be intolerable;
-   * keeping the graph current is what the index is for.
-   */
-  const watcher = new WorkspaceWatcher({
-    log,
-    onChange: (root, changed) => {
-      log(`${changed} file(s) changed in ${root}`);
-      void (async () => {
-        const workspace = (await registry.list()).find((item) => item.root === root);
-        if (!workspace) return;
-        if (jobs.get(workspace.id)?.running) return;
-        try {
-          const result = await scan(root, { kind: "watch" });
-          await registry.markIndexed(root);
-          log(`rescanned ${root}: ${result.filesParsed} parsed, ${result.references} refs`);
-          // Deletions change the graph too — refs into the removed files are
-          // gone and need the typed pass to re-derive what remains.
-          if (result.filesParsed > 0 || result.filesRemoved > 0) scheduleTypedPass(root);
-        } catch (error) {
-          log(`watch rescan failed for ${root}: ${error instanceof Error ? error.message : error}`);
-        }
-      })();
-    },
-  });
 
   /**
    * Re-parsing invalidates the typed refs for the files that changed, so a
@@ -187,10 +163,12 @@ export function createHttpServer(options: HttpServerOptions): HttpServerHandle {
       void (async () => {
         try {
           const db = await getDb(root);
-          const typed = resolveTypes(db, root);
+          const typed = await resolveTypesInWorker(db, root);
           if (typed.ran) {
             await db.flush();
             log(`typed ${root}: ${typed.resolved} refs in ${typed.durationMs}ms`);
+          } else if (typed.reason?.includes("changed while resolving")) {
+            scheduleTypedPass(root);
           }
         } catch (error) {
           log(`typed pass failed for ${root}: ${error instanceof Error ? error.message : error}`);
@@ -200,6 +178,40 @@ export function createHttpServer(options: HttpServerOptions): HttpServerHandle {
     timer.unref();
     typedTimers.set(root, timer);
   }
+
+  /**
+   * A watched change triggers a scan, never the analyser pass. Re-running the
+   * project's linters on every save would be intolerable; keeping the graph
+   * current is what the index is for. Typed resolution is separately debounced.
+   */
+  const watchRefresh = new WatchRefreshQueue({
+    blocked: (root) => indexingRoots.has(root),
+    refresh: async (root, paths) => {
+      const result = await scan(root, { kind: "watch" });
+      await registry.markIndexed(root);
+      log(`rescanned ${root}: ${result.filesParsed} parsed, ${result.references} refs`);
+      // Deletions and compiler config changes can invalidate typed rows even
+      // when no source file was parsed by the incremental pass.
+      if (
+        result.filesParsed > 0 ||
+        result.filesRemoved > 0 ||
+        hasTypedConfigChange(paths)
+      ) {
+        scheduleTypedPass(root);
+      }
+    },
+    onError: (root, error) => {
+      log(`watch rescan failed for ${root}: ${error instanceof Error ? error.message : error}`);
+    },
+  });
+
+  const watcher = new WorkspaceWatcher({
+    log,
+    onChange: (root, changed, paths) => {
+      log(`${changed} file(s) changed in ${root}`);
+      watchRefresh.enqueue(root, paths);
+    },
+  });
 
   async function syncWatchers(): Promise<void> {
     if (!watchEnabled) {
@@ -263,6 +275,7 @@ export function createHttpServer(options: HttpServerOptions): HttpServerHandle {
       stopped: false,
     };
     jobs.set(id, job);
+    indexingRoots.add(root);
     log(`indexing ${root}`);
 
     const note = (text: string): void => {
@@ -279,12 +292,14 @@ export function createHttpServer(options: HttpServerOptions): HttpServerHandle {
         // full type-check, so it runs last and only here — the point of a
         // daemon is that it can afford work a per-session process cannot.
         const db = await getDb(root);
-        const typed = resolveTypes(db, root);
+        const typed = await resolveTypesInWorker(db, root);
         if (typed.ran) {
-          // resolveTypes mutates refs after runAnalyzers has already flushed.
-          // Persist the upgraded edges before the app can be closed.
+          // The scan has flushed; persist the worker's upgraded references
+          // before the app can be closed.
           await db.flush();
           log(`typed ${root}: ${typed.resolved} refs in ${typed.durationMs}ms`);
+        } else if (typed.reason?.includes("changed while resolving")) {
+          scheduleTypedPass(root);
         }
 
         await registry.markIndexed(root);
@@ -298,7 +313,6 @@ export function createHttpServer(options: HttpServerOptions): HttpServerHandle {
         // cheap and local, the one after spends tokens.
         if (!draw || job.stopped) {
           job.phase = job.stopped ? "failed" : "done";
-          job.running = false;
           return;
         }
 
@@ -311,22 +325,26 @@ export function createHttpServer(options: HttpServerOptions): HttpServerHandle {
           onEvent: note,
         });
         job.child = handle.child;
-        if (job.stopped) handle.child.kill("SIGTERM");
+        if (job.stopped) terminateProcessTree(handle.child);
         const result = await handle.finished;
         job.child = null;
         note(result.summary);
         job.phase = !job.stopped && result.ok ? "done" : "failed";
         job.error = job.stopped ? "Stopped." : result.ok ? null : result.summary;
-        job.running = false;
         log(`draw ${root}: ${result.summary}`);
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        job.running = false;
         job.phase = "failed";
         job.error = message;
         job.child = null;
         note(message);
         log(`build failed for ${root}: ${message}`);
+      } finally {
+        job.running = false;
+        indexingRoots.delete(root);
+        // Files changed during the scan or drawing pass were retained by the
+        // queue; release them now instead of waiting for another edit.
+        watchRefresh.resume(root);
       }
     })();
   }
@@ -493,6 +511,7 @@ export function createHttpServer(options: HttpServerOptions): HttpServerHandle {
         if (job) requestIndexStop(job);
         await registry.remove(id);
         jobs.delete(id);
+        watchRefresh.discard(workspace.root);
         await syncWatchers();
         sendJson(res, 200, { removed: true });
         return true;
@@ -749,7 +768,7 @@ export function createHttpServer(options: HttpServerOptions): HttpServerHandle {
     // shutdown means an unattended CLI burning tokens with no UI record.
     for (const job of jobs.values()) {
       job.stopped = true;
-      job.child?.kill("SIGTERM");
+      if (job.child) terminateProcessTree(job.child);
     }
   }
 

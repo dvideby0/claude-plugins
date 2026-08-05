@@ -8,7 +8,7 @@ import { describe, expect, it } from "vitest";
 import { spliceCodexBlock } from "../daemon/harnesses.js";
 import { drawInvocationArgs, MAP_MCP_TOOLS, supportedHarnesses } from "../daemon/draw.js";
 import { windowsLauncherCommand } from "../daemon/launcher.js";
-import { platformCommand } from "../lib/exec.js";
+import { platformCommand, processTreeTerminationCommand } from "../lib/exec.js";
 import { reviewInvocationArgs } from "../review/agent.js";
 
 const OURS = `[mcp_servers.sdlc]\ncommand = "node"\nargs = ["/path/bridge.js"]\n`;
@@ -140,5 +140,19 @@ describe("Windows bridge launcher", () => {
     expect(platformCommand("claude", ["-p"], "win32", "cmd.exe").command).toBe("cmd.exe");
     expect(platformCommand("C:\\Tools\\codex.exe", ["exec"], "win32", "cmd.exe").command)
       .toBe("C:\\Tools\\codex.exe");
+  });
+
+  it("terminates the wrapper and its full descendant tree", () => {
+    expect(processTreeTerminationCommand(412, false, "win32")).toEqual({
+      command: "taskkill.exe",
+      args: ["/pid", "412", "/t"],
+    });
+    expect(processTreeTerminationCommand(412, true, "win32")?.args).toEqual([
+      "/pid",
+      "412",
+      "/t",
+      "/f",
+    ]);
+    expect(processTreeTerminationCommand(412, true, "darwin")).toBeNull();
   });
 });

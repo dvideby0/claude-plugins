@@ -136,7 +136,10 @@ A synchronous native call blocks the daemon for the whole scan, during which
 health pings time out and every consumer reads "not answering" as "not
 running" — the bridge tells the user to start an engine that is already
 working, and the desktop shell spawns a doomed duplicate. Long native work
-goes through napi `AsyncTask`, never a plain `#[napi] fn`.
+goes through napi `AsyncTask`, never a plain `#[napi] fn`. Compiler-grade
+typed resolution follows the same rule: program construction and AST walking
+run in a worker thread, and only the short generation check plus database
+transaction returns to the daemon event loop.
 
 ## Writes are synchronous inside a transaction
 

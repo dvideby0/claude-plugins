@@ -141,4 +141,41 @@ describe("typed resolution", () => {
     expect(result.reason).toMatch(/tsconfig/i);
     expect(result.resolved).toBe(0);
   });
+
+  it("analyses referenced packages when the root config also owns files", async () => {
+    root = await makeProject({
+      "package.json": JSON.stringify({ name: "mixed-root", private: true }),
+      "tsconfig.json": JSON.stringify({
+        compilerOptions: { target: "ES2022", module: "ESNext", moduleResolution: "Bundler" },
+        include: ["src/**/*"],
+        references: [{ path: "./packages/core" }],
+      }),
+      "src/root.ts": "export function rootEntry() { return 1; }\n",
+      "packages/core/tsconfig.json": JSON.stringify({
+        compilerOptions: {
+          target: "ES2022",
+          module: "ESNext",
+          moduleResolution: "Bundler",
+          composite: true,
+        },
+        include: ["src/**/*"],
+      }),
+      "packages/core/src/store.ts": `
+export class Store { add(value: string): string { return value; } }
+export function makeStore(): Store { return new Store(); }
+`,
+      "packages/core/src/app.ts": `
+import { makeStore } from "./store.js";
+export function packageEntry() { return makeStore().add("ok"); }
+`,
+    });
+    await scan(root, { kind: "full" });
+    const db = await getDb(root);
+
+    const result = resolveTypes(db, root);
+    expect(result.ran).toBe(true);
+    expect(referencesTo(db, "add").callSites).toEqual([
+      { path: "packages/core/src/app.ts", line: 3 },
+    ]);
+  });
 });

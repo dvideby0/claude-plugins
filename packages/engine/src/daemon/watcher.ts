@@ -24,7 +24,7 @@ const IGNORED_SEGMENTS = new Set([
 export interface WatcherOptions {
   /** Quiet period before re-indexing. */
   debounceMs?: number;
-  onChange: (root: string, changed: number) => void;
+  onChange: (root: string, changed: number, paths: string[]) => void;
   log: (message: string) => void;
 }
 
@@ -91,10 +91,10 @@ export class WorkspaceWatcher {
       entry.pending.add(relative);
       if (entry.timer) clearTimeout(entry.timer);
       entry.timer = setTimeout(() => {
-        const changed = entry.pending.size;
+        const paths = [...entry.pending];
         entry.pending.clear();
         entry.timer = null;
-        this.options.onChange(root, changed);
+        this.options.onChange(root, paths.length, paths);
       }, this.debounceMs);
       entry.timer.unref();
     });

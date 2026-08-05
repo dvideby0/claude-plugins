@@ -6,7 +6,7 @@
  * tell them apart.
  */
 
-import { execFile } from "node:child_process";
+import { execFile, spawn, type ChildProcess } from "node:child_process";
 import { extname } from "node:path";
 
 export interface ExecResult {
@@ -33,6 +33,57 @@ const DEFAULT_MAX_BUFFER = 16 * 1024 * 1024;
 export interface PlatformCommand {
   command: string;
   args: string[];
+}
+
+export interface ProcessTreeCommand {
+  command: string;
+  args: string[];
+}
+
+/** The native Windows operation that terminates a shell and every descendant. */
+export function processTreeTerminationCommand(
+  pid: number,
+  force = false,
+  platform: NodeJS.Platform = process.platform,
+): ProcessTreeCommand | null {
+  if (platform !== "win32") return null;
+  return {
+    command: "taskkill.exe",
+    args: ["/pid", String(pid), "/t", ...(force ? ["/f"] : [])],
+  };
+}
+
+/**
+ * Stop a spawned tool without orphaning an npm `.cmd` descendant on Windows.
+ *
+ * `platformCommand` deliberately puts cmd.exe in front of those shims. A
+ * signal to that shell does not reach the model CLI, so Stop and shutdown use
+ * taskkill's tree mode there. Unix children remain ordinary signal targets.
+ */
+export function terminateProcessTree(
+  child: Pick<ChildProcess, "pid" | "kill">,
+  force = false,
+  platform: NodeJS.Platform = process.platform,
+): boolean {
+  const command = child.pid
+    ? processTreeTerminationCommand(child.pid, force, platform)
+    : null;
+  if (!command) return child.kill(force ? "SIGKILL" : "SIGTERM");
+
+  try {
+    const killer = spawn(command.command, command.args, {
+      stdio: "ignore",
+      windowsHide: true,
+    });
+    killer.once("error", () => {
+      child.kill(force ? "SIGKILL" : "SIGTERM");
+    });
+    killer.unref();
+    return true;
+  } catch {
+    // If taskkill itself is unavailable, retain the old best-effort behavior.
+    return child.kill(force ? "SIGKILL" : "SIGTERM");
+  }
 }
 
 /**

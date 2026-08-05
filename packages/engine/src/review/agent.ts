@@ -7,7 +7,7 @@
  */
 
 import { spawn } from "node:child_process";
-import { platformCommand, spawnEnv } from "../lib/exec.js";
+import { platformCommand, spawnEnv, terminateProcessTree } from "../lib/exec.js";
 
 export interface AgentResult {
   ok: boolean;
@@ -86,7 +86,7 @@ export function runClaude(prompt: string, options: AgentOptions): Promise<AgentR
     };
 
     const timer = setTimeout(() => {
-      child.kill("SIGKILL");
+      terminateProcessTree(child, true);
       finish({
         ok: false,
         text: "",

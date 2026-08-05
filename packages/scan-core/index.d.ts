@@ -59,6 +59,6 @@ export interface NativeMatch {
  * The query is tree-sitter's own S-expression syntax, run against whichever
  * grammar each file needs.
  */
-export declare function searchStructural(root: string, query: string, languages?: Array<string> | undefined | null, limit?: number | undefined | null): Promise<Array<NativeMatch>>
+export declare function searchStructural(root: string, query: string, languages?: Array<string> | undefined | null, limit?: number | undefined | null, textFilter?: string | undefined | null): Promise<Array<NativeMatch>>
 /** Walk only — used to compare phases against the TypeScript walker. */
 export declare function walkRepo(root: string): Promise<Array<NativeFile>>

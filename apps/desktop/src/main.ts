@@ -20,6 +20,11 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 /** Only an engine we started is ours to stop. */
 let child: ChildProcess | null = null;
 let window: BrowserWindow | null = null;
+let allowedEngineOrigin: string | null = null;
+let shuttingDown = false;
+let recoveryTimer: NodeJS.Timeout | null = null;
+let recoveryRunning = false;
+let recoveryAttempt = 0;
 
 function enginePath(): string {
   try {
@@ -46,6 +51,7 @@ function engineEnv(): NodeJS.ProcessEnv {
 }
 
 function startEngine(): void {
+  if (child || shuttingDown) return;
   const script = enginePath();
   child = spawn(process.execPath, [script], {
     env: engineEnv(),
@@ -59,7 +65,65 @@ function startEngine(): void {
   child.on("exit", (code, signal) => {
     process.stderr.write(`[engine] exited (code ${code ?? "null"}, signal ${signal ?? "none"})\n`);
     child = null;
+    if (!shuttingDown) {
+      void showRecoveryState().catch((error) => {
+        process.stderr.write(
+          `[shell] could not show recovery state: ${error instanceof Error ? error.message : String(error)}\n`,
+        );
+      });
+      scheduleEngineRecovery();
+    }
   });
+}
+
+/** Bounded exponential backoff: quick recovery first, no crash loop later. */
+export function engineRecoveryDelay(attempt: number): number {
+  return Math.min(1_000 * 2 ** Math.max(0, attempt), 30_000);
+}
+
+async function showRecoveryState(): Promise<void> {
+  if (!window || window.isDestroyed()) return;
+  const html = `<!doctype html><meta charset="utf-8"><title>SDLC is recovering</title>
+    <style>body{margin:0;background:#16150f;color:#eee8d5;font:15px system-ui;display:grid;place-items:center;height:100vh}
+    main{max-width:30rem;padding:2rem}p{color:#aaa48f;line-height:1.5}</style>
+    <main><h2>The local engine stopped.</h2><p>SDLC is restarting it now. This window will reconnect automatically.</p></main>`;
+  await window.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`);
+}
+
+function scheduleEngineRecovery(): void {
+  if (shuttingDown || recoveryRunning || recoveryTimer) return;
+  const delay = engineRecoveryDelay(recoveryAttempt++);
+  recoveryTimer = setTimeout(() => {
+    recoveryTimer = null;
+    void recoverEngine();
+  }, delay);
+  recoveryTimer.unref();
+}
+
+async function recoverEngine(): Promise<void> {
+  if (shuttingDown || recoveryRunning) return;
+  recoveryRunning = true;
+  let retry = false;
+  try {
+    let daemon = await findDaemon();
+    if (!daemon) {
+      startEngine();
+      daemon = await waitForEngine();
+    }
+    recoveryAttempt = 0;
+    if (window && !window.isDestroyed()) {
+      allowedEngineOrigin = new URL(baseUrl(daemon)).origin;
+      await window.loadURL(baseUrl(daemon));
+    }
+  } catch (error) {
+    process.stderr.write(
+      `[shell] engine recovery failed: ${error instanceof Error ? error.message : String(error)}\n`,
+    );
+    retry = true;
+  } finally {
+    recoveryRunning = false;
+    if (retry) scheduleEngineRecovery();
+  }
 }
 
 /** Wait for an engine — ours or one already running — to answer. */
@@ -111,12 +175,11 @@ async function createWindow(daemon: DaemonInfo): Promise<void> {
   });
 
   // Same-window navigation gets the same rule: the shell shows the engine and
-  // nothing else. The preload's IPC (openPath — "launch any local file") rides
-  // along to whatever origin this window displays, so a stray link in
-  // engine-rendered content must not carry it to a foreign page.
-  const engineOrigin = new URL(baseUrl(daemon)).origin;
+  // nothing else. The recovery page is app-authored data; every external page
+  // still opens in the user's browser without inheriting the preload bridge.
+  allowedEngineOrigin = new URL(baseUrl(daemon)).origin;
   window.webContents.on("will-navigate", (event, url) => {
-    if (new URL(url).origin === engineOrigin) return;
+    if (url.startsWith("data:text/html") || new URL(url).origin === allowedEngineOrigin) return;
     event.preventDefault();
     void shell.openExternal(url);
   });
@@ -138,12 +201,6 @@ ipcMain.handle("sdlc:pick-directory", async () => {
     properties: ["openDirectory", "createDirectory"],
   });
   return result.canceled ? null : (result.filePaths[0] ?? null);
-});
-
-ipcMain.handle("sdlc:open-path", async (_event, target: unknown) => {
-  if (typeof target !== "string" || target.length === 0) return false;
-  const error = await shell.openPath(target);
-  return error === "";
 });
 
 // A second launch should focus the existing window, not start a rival engine.
@@ -179,6 +236,9 @@ if (!app.requestSingleInstanceLock()) {
   });
 
   app.on("before-quit", () => {
+    shuttingDown = true;
+    if (recoveryTimer) clearTimeout(recoveryTimer);
+    recoveryTimer = null;
     // Adopted engines keep running — we did not start them.
     if (child) {
       process.stderr.write("[shell] stopping the engine we started\n");

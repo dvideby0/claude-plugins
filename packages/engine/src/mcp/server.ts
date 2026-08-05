@@ -17,7 +17,7 @@ import { extractSnippet } from "../findings/fingerprint.js";
 import { recordFindings, suppress } from "../findings/record.js";
 import { CATEGORIES, CONFIDENCES, SEVERITIES, type FindingInput } from "../findings/types.js";
 import { buildBrief } from "../graph/brief.js";
-import { resolveTypes } from "../graph/typed.js";
+import { resolveTypesInWorker } from "../graph/typed.js";
 import { CROSS_KINDS, crossQuery, type CrossKind, type WorkspaceRef } from "../graph/cross.js";
 import { impactOf, referencesTo } from "../graph/refs.js";
 import { flowView } from "../graph/flow.js";
@@ -681,7 +681,7 @@ export function createMcpServer(options: McpServerOptions): McpServer {
       wrap(async () => {
         const root = resolveRoot(projectRoot);
         const db = await getDb(root);
-        const result = resolveTypes(db, root);
+        const result = await resolveTypesInWorker(db, root);
         await db.flush();
         return result;
       }),

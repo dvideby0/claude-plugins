@@ -176,22 +176,35 @@ pub struct NativeMatch {
     pub capture: String,
 }
 
-fn search_sync(root: &str, query: &str, wanted: &[String], cap: usize) -> Vec<NativeMatch> {
+fn search_sync(
+    root: &str,
+    query: &str,
+    wanted: &[String],
+    cap: usize,
+    text_filter: Option<&str>,
+) -> Vec<NativeMatch> {
     let files = walk::walk(Path::new(root));
+    let needle = text_filter.map(str::to_lowercase);
     let matches: Vec<NativeMatch> = files
         .par_iter()
         .filter(|file| wanted.iter().any(|lang| lang == file.lang) && !walk::is_noise(&file.path))
         .flat_map_iter(|file| {
-            parse::search(&file.path, file.lang, &file.content, query)
-                .into_iter()
-                .map(|hit| NativeMatch {
-                    path: file.path.clone(),
-                    line: hit.line,
-                    end_line: hit.end_line,
-                    text: hit.text,
-                    capture: hit.capture,
-                })
-                .collect::<Vec<_>>()
+            parse::search(
+                &file.path,
+                file.lang,
+                &file.content,
+                query,
+                needle.as_deref(),
+            )
+            .into_iter()
+            .map(|hit| NativeMatch {
+                path: file.path.clone(),
+                line: hit.line,
+                end_line: hit.end_line,
+                text: hit.text,
+                capture: hit.capture,
+            })
+            .collect::<Vec<_>>()
         })
         .collect();
 
@@ -206,6 +219,7 @@ pub struct SearchTask {
     query: String,
     wanted: Vec<String>,
     cap: usize,
+    text_filter: Option<String>,
 }
 
 #[napi]
@@ -214,7 +228,13 @@ impl Task for SearchTask {
     type JsValue = Vec<NativeMatch>;
 
     fn compute(&mut self) -> Result<Self::Output> {
-        Ok(search_sync(&self.root, &self.query, &self.wanted, self.cap))
+        Ok(search_sync(
+            &self.root,
+            &self.query,
+            &self.wanted,
+            self.cap,
+            self.text_filter.as_deref(),
+        ))
     }
 
     fn resolve(&mut self, _env: Env, output: Self::Output) -> Result<Self::JsValue> {
@@ -237,6 +257,7 @@ pub fn search_structural(
     query: String,
     languages: Option<Vec<String>>,
     limit: Option<u32>,
+    text_filter: Option<String>,
 ) -> Result<AsyncTask<SearchTask>> {
     require_dir(&root)?;
 
@@ -261,6 +282,7 @@ pub fn search_structural(
         query,
         wanted,
         cap: limit.unwrap_or(200) as usize,
+        text_filter,
     }))
 }
 

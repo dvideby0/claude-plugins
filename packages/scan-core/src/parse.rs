@@ -69,6 +69,23 @@ struct Binding {
     /// Python's unaliased `import pkg.db` binds `pkg`, but a useful exported
     /// symbol appears only after the full `pkg.db` qualifier in a use.
     module_path_bound: bool,
+    /// Lexical scope that owns the import. This keeps a function-local import
+    /// from resolving same-named identifiers elsewhere in the module.
+    scope_start: usize,
+    scope_end: usize,
+}
+
+fn lexical_scope(mut node: Node) -> Node {
+    while let Some(parent) = node.parent() {
+        node = parent;
+        if matches!(
+            node.kind(),
+            "function_definition" | "lambda" | "class_definition" | "module" | "program"
+        ) {
+            return node;
+        }
+    }
+    node
 }
 
 pub fn grammar_for(path: &str, lang: &str) -> Option<Grammar> {
@@ -206,6 +223,9 @@ fn is_exported_ts(node: Node) -> bool {
 /// than the walk, and this has to handle all of them to resolve usages.
 fn bindings_from_import(node: Node, bytes: &[u8], grammar: Grammar, out: &mut Vec<Binding>) {
     let text = |n: Node| n.utf8_text(bytes).unwrap_or("").to_string();
+    let scope = lexical_scope(node);
+    let scope_start = scope.start_byte();
+    let scope_end = scope.end_byte();
 
     if grammar == Grammar::Python {
         // `import m` / `import m as n`: there is no module_name field on an
@@ -226,6 +246,8 @@ fn bindings_from_import(node: Node, bytes: &[u8], grammar: Grammar, out: &mut Ve
                                 exported: "*".to_string(),
                                 module,
                                 module_path_bound: true,
+                                scope_start,
+                                scope_end,
                             });
                         }
                     }
@@ -244,6 +266,8 @@ fn bindings_from_import(node: Node, bytes: &[u8], grammar: Grammar, out: &mut Ve
                                 exported: "*".to_string(),
                                 module,
                                 module_path_bound: false,
+                                scope_start,
+                                scope_end,
                             });
                         }
                     }
@@ -272,6 +296,8 @@ fn bindings_from_import(node: Node, bytes: &[u8], grammar: Grammar, out: &mut Ve
                             exported: name,
                             module: module.clone(),
                             module_path_bound: false,
+                            scope_start,
+                            scope_end,
                         });
                     }
                 }
@@ -291,6 +317,8 @@ fn bindings_from_import(node: Node, bytes: &[u8], grammar: Grammar, out: &mut Ve
                             exported,
                             module: module.clone(),
                             module_path_bound: false,
+                            scope_start,
+                            scope_end,
                         });
                     }
                 }
@@ -326,6 +354,8 @@ fn bindings_from_import(node: Node, bytes: &[u8], grammar: Grammar, out: &mut Ve
                     exported: "default".to_string(),
                     module: module.clone(),
                     module_path_bound: false,
+                    scope_start,
+                    scope_end,
                 }),
                 // `import * as ns from "m"`
                 "namespace_import" => {
@@ -335,6 +365,8 @@ fn bindings_from_import(node: Node, bytes: &[u8], grammar: Grammar, out: &mut Ve
                             exported: "*".to_string(),
                             module: module.clone(),
                             module_path_bound: false,
+                            scope_start,
+                            scope_end,
                         });
                     }
                 }
@@ -359,6 +391,8 @@ fn bindings_from_import(node: Node, bytes: &[u8], grammar: Grammar, out: &mut Ve
                                 exported,
                                 module: module.clone(),
                                 module_path_bound: false,
+                                scope_start,
+                                scope_end,
                             });
                         }
                     }
@@ -423,6 +457,184 @@ fn namespace_member(node: Node, binding: &Binding, bytes: &[u8]) -> Option<Strin
     chain.get(1).cloned()
 }
 
+fn pattern_binds(node: Node, name: &str, bytes: &[u8]) -> bool {
+    if node.kind() == "identifier" {
+        return node.utf8_text(bytes).is_ok_and(|value| value == name);
+    }
+    // Assigning `object.name` or `items[name]` does not create a lexical name.
+    if matches!(node.kind(), "attribute" | "subscript") {
+        return false;
+    }
+    let mut cursor = node.walk();
+    let found = node
+        .named_children(&mut cursor)
+        .any(|child| pattern_binds(child, name, bytes));
+    found
+}
+
+fn field_binds(node: Node, field: &str, name: &str, bytes: &[u8]) -> bool {
+    node.child_by_field_name(field)
+        .is_some_and(|target| pattern_binds(target, name, bytes))
+}
+
+fn within(node: Node, container: Node) -> bool {
+    container.start_byte() <= node.start_byte() && node.end_byte() <= container.end_byte()
+}
+
+/** A binding site is a declaration, not a use of an imported value. */
+fn python_binding_occurrence(node: Node) -> bool {
+    let mut current = node;
+    while let Some(parent) = current.parent() {
+        let in_field = |field: &str| {
+            parent
+                .child_by_field_name(field)
+                .is_some_and(|target| within(node, target))
+        };
+        match parent.kind() {
+            "parameters" | "lambda_parameters" => return true,
+            "default_parameter" | "typed_default_parameter" => return in_field("name"),
+            "typed_parameter" => return !in_field("type"),
+            "assignment" | "augmented_assignment" | "for_statement" => return in_field("left"),
+            "named_expression" | "function_definition" | "class_definition" => {
+                return in_field("name")
+            }
+            "except_clause" | "as_pattern" => return in_field("alias"),
+            "call" | "return_statement" | "expression_statement" | "block" => return false,
+            _ => current = parent,
+        }
+    }
+    false
+}
+
+fn parameters_bind(parameters: Node, name: &str, bytes: &[u8]) -> bool {
+    let mut cursor = parameters.walk();
+    for parameter in parameters.named_children(&mut cursor) {
+        let binds = match parameter.kind() {
+            "identifier" | "tuple_pattern" | "list_splat_pattern" | "dictionary_splat_pattern" => {
+                pattern_binds(parameter, name, bytes)
+            }
+            "default_parameter" | "typed_default_parameter" => {
+                field_binds(parameter, "name", name, bytes)
+            }
+            "typed_parameter" => {
+                let type_node = parameter.child_by_field_name("type");
+                let mut children = parameter.walk();
+                let found = parameter.named_children(&mut children).any(|child| {
+                    type_node.is_none_or(|kind| kind.id() != child.id())
+                        && pattern_binds(child, name, bytes)
+                });
+                found
+            }
+            _ => false,
+        };
+        if binds {
+            return true;
+        }
+    }
+    false
+}
+
+fn scope_declares_global(scope: Node, name: &str, bytes: &[u8]) -> bool {
+    fn visit(node: Node, scope_id: usize, name: &str, bytes: &[u8]) -> bool {
+        if node.id() != scope_id
+            && matches!(
+                node.kind(),
+                "function_definition" | "lambda" | "class_definition"
+            )
+        {
+            return false;
+        }
+        if node.kind() == "global_statement" {
+            let mut cursor = node.walk();
+            return node.named_children(&mut cursor).any(|child| {
+                child.kind() == "identifier"
+                    && child.utf8_text(bytes).is_ok_and(|value| value == name)
+            });
+        }
+        let mut cursor = node.walk();
+        let found = node
+            .named_children(&mut cursor)
+            .any(|child| visit(child, scope_id, name, bytes));
+        found
+    }
+    visit(scope, scope.id(), name, bytes)
+}
+
+fn scope_binds(scope: Node, name: &str, bytes: &[u8]) -> bool {
+    if scope
+        .child_by_field_name("parameters")
+        .is_some_and(|parameters| parameters_bind(parameters, name, bytes))
+    {
+        return true;
+    }
+
+    fn visit(node: Node, scope_id: usize, name: &str, bytes: &[u8]) -> bool {
+        if node.id() != scope_id
+            && matches!(
+                node.kind(),
+                "function_definition" | "lambda" | "class_definition"
+            )
+        {
+            // The declaration name belongs to the outer scope; its body does not.
+            return matches!(node.kind(), "function_definition" | "class_definition")
+                && field_binds(node, "name", name, bytes);
+        }
+
+        let binds = match node.kind() {
+            "assignment" | "augmented_assignment" | "for_statement" => {
+                field_binds(node, "left", name, bytes)
+            }
+            "named_expression" => field_binds(node, "name", name, bytes),
+            "except_clause" => field_binds(node, "alias", name, bytes),
+            "as_pattern" => field_binds(node, "alias", name, bytes),
+            _ => false,
+        };
+        if binds {
+            return true;
+        }
+
+        let mut cursor = node.walk();
+        let found = node
+            .named_children(&mut cursor)
+            .any(|child| visit(child, scope_id, name, bytes));
+        found
+    }
+
+    scope
+        .child_by_field_name("body")
+        .is_some_and(|body| visit(body, scope.id(), name, bytes))
+}
+
+/** Whether a scope nested inside the import shadows its local name. */
+fn python_shadowed(node: Node, binding: &Binding, bytes: &[u8]) -> bool {
+    let mut current = node.parent();
+    while let Some(scope) = current {
+        if matches!(
+            scope.kind(),
+            "function_definition" | "lambda" | "class_definition" | "module"
+        ) {
+            if scope.start_byte() == binding.scope_start && scope.end_byte() == binding.scope_end {
+                return false;
+            }
+
+            // Defaults and annotations execute outside the new function scope.
+            let inside_parameters = scope
+                .child_by_field_name("parameters")
+                .is_some_and(|params| {
+                    params.start_byte() <= node.start_byte() && node.end_byte() <= params.end_byte()
+                });
+            if !inside_parameters
+                && !scope_declares_global(scope, &binding.local, bytes)
+                && scope_binds(scope, &binding.local, bytes)
+            {
+                return true;
+            }
+        }
+        current = scope.parent();
+    }
+    false
+}
+
 fn collect_refs(root: Node, bytes: &[u8], bindings: &[Binding]) -> Vec<Reference> {
     if bindings.is_empty() {
         return Vec::new();
@@ -444,22 +656,35 @@ fn collect_refs(root: Node, bytes: &[u8], bindings: &[Binding]) -> Vec<Reference
             // in `object.query`, `query` must not resolve to an unrelated
             // named import. The object can be a namespace import, though, in
             // which case its member is the exported symbol we need to record.
-            if node.kind() == "identifier" && !is_member_property(node) {
+            if node.kind() == "identifier"
+                && !is_member_property(node)
+                && !python_binding_occurrence(node)
+            {
                 if let Ok(text) = node.utf8_text(bytes) {
-                    if let Some(binding) = bindings.iter().find(|b| b.local == text) {
-                        let line = node.start_position().row as u32 + 1;
-                        let name = if binding.exported == "*" {
-                            namespace_member(node, binding, bytes)
-                                .unwrap_or_else(|| binding.exported.clone())
-                        } else {
-                            binding.exported.clone()
-                        };
-                        if seen.insert((name.clone(), binding.module.clone(), line)) {
-                            refs.push(Reference {
-                                name,
-                                module: binding.module.clone(),
-                                line,
-                            });
+                    let binding = bindings
+                        .iter()
+                        .filter(|binding| {
+                            binding.local == text
+                                && binding.scope_start <= node.start_byte()
+                                && node.end_byte() <= binding.scope_end
+                        })
+                        .min_by_key(|binding| binding.scope_end - binding.scope_start);
+                    if let Some(binding) = binding {
+                        if !python_shadowed(node, binding, bytes) {
+                            let line = node.start_position().row as u32 + 1;
+                            let name = if binding.exported == "*" {
+                                namespace_member(node, binding, bytes)
+                                    .unwrap_or_else(|| binding.exported.clone())
+                            } else {
+                                binding.exported.clone()
+                            };
+                            if seen.insert((name.clone(), binding.module.clone(), line)) {
+                                refs.push(Reference {
+                                    name,
+                                    module: binding.module.clone(),
+                                    line,
+                                });
+                            }
                         }
                     }
                 }
@@ -543,7 +768,13 @@ pub struct Hit {
 /// The query is compiled per call rather than cached: structural search is
 /// interactive and ad-hoc, so the pattern is different nearly every time and a
 /// cache would only hold garbage.
-pub fn search(path: &str, lang: &str, source: &str, query_source: &str) -> Vec<Hit> {
+pub fn search(
+    path: &str,
+    lang: &str,
+    source: &str,
+    query_source: &str,
+    text_filter: Option<&str>,
+) -> Vec<Hit> {
     let Some(grammar) = grammar_for(path, lang) else {
         return Vec::new();
     };
@@ -570,6 +801,9 @@ pub fn search(path: &str, lang: &str, source: &str, query_source: &str) -> Vec<H
         let capture = mat.captures[*index];
         let node = capture.node;
         let text = node.utf8_text(bytes).unwrap_or("");
+        if text_filter.is_some_and(|needle| !text.to_lowercase().contains(needle)) {
+            continue;
+        }
         let flat = text.split_whitespace().collect::<Vec<_>>().join(" ");
         hits.push(Hit {
             line: node.start_position().row as u32 + 1,

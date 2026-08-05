@@ -99,6 +99,7 @@ interface NativeSearch {
     query: string,
     languages?: string[] | undefined,
     limit?: number | undefined,
+    text?: string | undefined,
   ): Promise<StructuralMatch[]>;
 }
 
@@ -139,17 +140,13 @@ export async function structuralSearch(
     };
   }
 
-  let matches = await native.searchStructural(
+  const matches = await native.searchStructural(
     projectRoot,
     query,
     options.languages ?? known?.languages,
     Math.min(options.limit ?? 200, 1000),
+    options.text,
   );
-
-  if (options.text) {
-    const needle = options.text.toLowerCase();
-    matches = matches.filter((match) => match.text.toLowerCase().includes(needle));
-  }
 
   const counts = new Map<string, number>();
   for (const match of matches) counts.set(match.path, (counts.get(match.path) ?? 0) + 1);

@@ -15,8 +15,10 @@
  * spawned per session never could.
  */
 
-
-import { isAbsolute, join, relative, sep } from "node:path";
+import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
+import { Worker } from "node:worker_threads";
+import { basename, isAbsolute, join, relative, resolve, sep } from "node:path";
 import ts from "typescript";
 import type { Db } from "../db/db.js";
 
@@ -33,6 +35,25 @@ export interface TypedResult {
   filesAnalysed: number;
   resolved: number;
   upgraded: number;
+  durationMs: number;
+}
+
+export interface TypedReference {
+  src: string;
+  line: number;
+  name: string;
+  dst: string;
+}
+
+export interface TypedAnalysis {
+  ran: boolean;
+  reason?: string;
+  filesAnalysed: number;
+  references: TypedReference[];
+  /** Every source whose existing refs can be replaced by this complete pass. */
+  analysedFiles: string[];
+  /** Inputs prove a worker result still describes the generation in the store. */
+  inputs: Array<{ path: string; contentSha: string }>;
   durationMs: number;
 }
 
@@ -111,36 +132,60 @@ function findConfigs(projectRoot: string, maxDepth = 4): string[] {
     let files: string[];
     let directories: string[];
     try {
-      files = ts.sys
-        .readDirectory(dir, undefined, undefined, undefined, 1)
-        .filter((file) => {
-          const name = file.split(/[\\/]/).pop() ?? "";
-          return name === "tsconfig.json" || name === "jsconfig.json";
-        });
+      files = ["tsconfig.json", "jsconfig.json"]
+        .map((name) => join(dir, name))
+        .filter(ts.sys.fileExists);
       directories = ts.sys.getDirectories(dir);
     } catch {
       return;
     }
 
-    for (const file of files) found.push(file);
+    for (const file of files) found.push(resolve(file));
     for (const child of directories) {
-      if (SKIP_DIRS.has(child) || child.startsWith(".")) continue;
-      walk(join(dir, child), depth + 1);
+      const name = basename(child);
+      if (SKIP_DIRS.has(name) || name.startsWith(".")) continue;
+      walk(isAbsolute(child) ? child : join(dir, child), depth + 1);
     }
   };
 
   walk(projectRoot, 0);
 
-  // A root config usually pulls in everything via references or includes, so
-  // prefer it alone and avoid type-checking the same files several times.
+  // A root config usually pulls in everything via includes, so prefer it alone
+  // when it is a single project. A mixed config can both own files and refer to
+  // package projects; returning only the root in that shape silently drops the
+  // referenced packages because createProgram does not index their sources as
+  // part of the root program.
   const rootConfig = found.find(
-    (file) => file === join(projectRoot, "tsconfig.json") || file === join(projectRoot, "jsconfig.json"),
+    (file) =>
+      file === resolve(projectRoot, "tsconfig.json") ||
+      file === resolve(projectRoot, "jsconfig.json"),
   );
   if (rootConfig) {
     const parsed = readConfig(rootConfig);
-    if (parsed && parsed.fileNames.length > 0) return [rootConfig];
+    if (parsed && parsed.fileNames.length > 0 && !parsed.projectReferences?.length) {
+      return [rootConfig];
+    }
+
+    // References are authoritative even when their config sits below the
+    // normal discovery depth. Follow them recursively and still retain any
+    // independently discovered projects in a mixed monorepo.
+    const referenced: string[] = [];
+    const visitReferences = (configPath: string): void => {
+      const config = readConfig(configPath);
+      for (const reference of config?.projectReferences ?? []) {
+        const child = resolve(ts.resolveProjectReferencePath(reference));
+        if (referenced.includes(child)) continue;
+        referenced.push(child);
+        visitReferences(child);
+      }
+    };
+    visitReferences(rootConfig);
+    found.push(...referenced);
   }
-  return found;
+  return [...new Set(found)].sort((a, b) => {
+    const depth = (path: string) => relative(projectRoot, path).split(/[\\/]/).length;
+    return depth(a) - depth(b) || a.localeCompare(b);
+  });
 }
 
 function readConfig(configPath: string): ts.ParsedCommandLine | undefined {
@@ -150,7 +195,18 @@ function readConfig(configPath: string): ts.ParsedCommandLine | undefined {
   } as ts.ParseConfigFileHost);
 }
 
-export function resolveTypes(db: Db, projectRoot: string): TypedResult {
+function contentSha(content: string): string {
+  return createHash("sha256").update(content).digest("hex").slice(0, 16);
+}
+
+/**
+ * Compute type-precise references without touching the database.
+ *
+ * This is intentionally serializable so the daemon can run it in a worker;
+ * TypeScript program construction and AST traversal are CPU-bound and must not
+ * make health checks and MCP requests wait behind a large repository.
+ */
+export function analyseTypes(projectRoot: string): TypedAnalysis {
   const started = Date.now();
   const configs = findConfigs(projectRoot);
 
@@ -159,8 +215,9 @@ export function resolveTypes(db: Db, projectRoot: string): TypedResult {
       ran: false,
       reason: "No tsconfig.json found — typed resolution is TypeScript/JavaScript only.",
       filesAnalysed: 0,
-      resolved: 0,
-      upgraded: 0,
+      references: [],
+      analysedFiles: [],
+      inputs: [],
       durationMs: Date.now() - started,
     };
   }
@@ -173,15 +230,20 @@ export function resolveTypes(db: Db, projectRoot: string): TypedResult {
     return rel;
   };
 
-  interface TypedRef {
-    src: string;
-    line: number;
-    name: string;
-    dst: string;
-  }
-  const found: TypedRef[] = [];
+  const found: TypedReference[] = [];
   const analysed = new Set<string>();
+  const inputs = new Map<string, string>();
   let filesAnalysed = 0;
+
+  for (const configPath of configs) {
+    const path = inRepo(configPath);
+    if (!path) continue;
+    try {
+      inputs.set(path, contentSha(readFileSync(configPath, "utf-8")));
+    } catch {
+      // readConfig will report the unusable config by producing no files.
+    }
+  }
 
   // One program per config. Merging every package's compilerOptions into one
   // bag let the first-walked package's `paths` and `baseUrl` win for all of
@@ -192,13 +254,17 @@ export function resolveTypes(db: Db, projectRoot: string): TypedResult {
     const parsed = readConfig(configPath);
     if (!parsed || parsed.fileNames.length === 0) continue;
 
-    const program = ts.createProgram(parsed.fileNames, {
-      ...parsed.options,
-      // Declarations and emit are irrelevant here; skipping them is most of
-      // the difference between this being slow and being unusable.
-      noEmit: true,
-      skipLibCheck: true,
-      skipDefaultLibCheck: true,
+    const program = ts.createProgram({
+      rootNames: parsed.fileNames,
+      options: {
+        ...parsed.options,
+        // Declarations and emit are irrelevant here; skipping them is most of
+        // the difference between this being slow and being unusable.
+        noEmit: true,
+        skipLibCheck: true,
+        skipDefaultLibCheck: true,
+      },
+      projectReferences: parsed.projectReferences,
     });
     const checker = program.getTypeChecker();
 
@@ -211,6 +277,7 @@ export function resolveTypes(db: Db, projectRoot: string): TypedResult {
       if (analysed.has(sourceFile.fileName)) continue;
       analysed.add(sourceFile.fileName);
       filesAnalysed++;
+      inputs.set(src, contentSha(sourceFile.text));
 
       const visit = (node: ts.Node): void => {
         if (ts.isIdentifier(node) && !isImportOrExportName(node)) {
@@ -245,17 +312,71 @@ export function resolveTypes(db: Db, projectRoot: string): TypedResult {
       ran: false,
       reason: `Found ${configs.length} config(s) but no files to analyse.`,
       filesAnalysed: 0,
-      resolved: 0,
-      upgraded: 0,
+      references: [],
+      analysedFiles: [],
+      inputs: [...inputs].map(([path, sha]) => ({ path, contentSha: sha })),
       durationMs: Date.now() - started,
     };
   }
 
-  // Replace rows only for files the checker produced references *for*. A file
-  // it saw but resolved nothing in keeps its import-resolved rows — this pass
-  // upgrades the graph or leaves it alone, never thins it.
-  const refsBySrc = new Map<string, TypedRef[]>();
-  for (const reference of found) {
+  return {
+    ran: true,
+    filesAnalysed,
+    references: found,
+    analysedFiles: [
+      ...new Set(
+        found
+          .map((reference) => reference.src)
+          .concat(
+            [...analysed]
+              .map((file) => inRepo(file))
+              .filter((path): path is string => Boolean(path)),
+          ),
+      ),
+    ],
+    inputs: [...inputs].map(([path, sha]) => ({ path, contentSha: sha })),
+    durationMs: Date.now() - started,
+  };
+}
+
+/** Apply one complete worker result in a short, synchronous transaction. */
+export function applyTypedAnalysis(db: Db, analysis: TypedAnalysis): TypedResult {
+  if (!analysis.ran) {
+    return {
+      ran: false,
+      ...(analysis.reason ? { reason: analysis.reason } : {}),
+      filesAnalysed: analysis.filesAnalysed,
+      resolved: 0,
+      upgraded: 0,
+      durationMs: analysis.durationMs,
+    };
+  }
+
+  // A scan may complete while the worker is still analysing the previous
+  // generation. Never let that stale result overwrite refs for newer code or
+  // compiler configuration; the next scheduled pass will use the new inputs.
+  const current = new Map(
+    db
+      .all<{ path: string; content_sha: string }>(
+        "SELECT path, content_sha FROM files WHERE present = 1",
+      )
+      .map((row) => [row.path, row.content_sha]),
+  );
+  const changed = analysis.inputs.find((input) => current.get(input.path) !== input.contentSha);
+  if (changed) {
+    return {
+      ran: false,
+      reason: `Typed inputs changed while resolving (${changed.path}); retry scheduled.`,
+      filesAnalysed: analysis.filesAnalysed,
+      resolved: 0,
+      upgraded: 0,
+      durationMs: analysis.durationMs,
+    };
+  }
+
+  const refsBySrc = new Map<string, TypedReference[]>();
+  for (const src of analysis.analysedFiles) refsBySrc.set(src, []);
+  for (const reference of analysis.references) {
     const list = refsBySrc.get(reference.src);
     if (list) list.push(reference);
     else refsBySrc.set(reference.src, [reference]);
@@ -293,9 +414,54 @@ export function resolveTypes(db: Db, projectRoot: string): TypedResult {
 
   return {
     ran: true,
-    filesAnalysed,
+    filesAnalysed: analysis.filesAnalysed,
     resolved: seen.size,
     upgraded: after - before,
-    durationMs: Date.now() - started,
+    durationMs: analysis.durationMs,
   };
+}
+
+/** Synchronous compatibility path for tests and direct library callers. */
+export function resolveTypes(db: Db, projectRoot: string): TypedResult {
+  return applyTypedAnalysis(db, analyseTypes(projectRoot));
+}
+
+interface WorkerReply {
+  analysis?: TypedAnalysis;
+  error?: string;
+}
+
+/** Run the expensive compiler pass off the event loop, then commit its facts. */
+export function resolveTypesInWorker(db: Db, projectRoot: string): Promise<TypedResult> {
+  return new Promise((resolveResult, reject) => {
+    const worker = new Worker(new URL("./typed-worker.js", import.meta.url), {
+      workerData: { projectRoot },
+      // A host launched through `node --input-type=module -e` cannot pass that
+      // flag on to a file-backed worker; Node rejects the otherwise valid URL.
+      execArgv: process.execArgv.filter((arg) => !arg.startsWith("--input-type")),
+    });
+    let settled = false;
+    const fail = (error: Error): void => {
+      if (settled) return;
+      settled = true;
+      reject(error);
+    };
+    worker.once("message", (reply: WorkerReply) => {
+      if (settled) return;
+      settled = true;
+      if (reply.error) reject(new Error(reply.error));
+      else if (!reply.analysis) reject(new Error("Typed worker returned no analysis."));
+      else {
+        try {
+          resolveResult(applyTypedAnalysis(db, reply.analysis));
+        } catch (error) {
+          reject(error);
+        }
+      }
+    });
+    worker.once("error", fail);
+    worker.once("exit", (code) => {
+      if (code !== 0) fail(new Error(`Typed worker exited with code ${code}.`));
+    });
+  });
 }

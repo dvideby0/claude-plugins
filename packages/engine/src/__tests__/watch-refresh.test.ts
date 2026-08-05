@@ -1,0 +1,56 @@
+import { describe, expect, it, vi } from "vitest";
+import { hasTypedConfigChange, WatchRefreshQueue } from "../daemon/watch-refresh.js";
+
+describe("watch refresh queue", () => {
+  it("retains changes while a foreground index job is running", async () => {
+    let blocked = true;
+    const refresh = vi.fn(async () => {});
+    const queue = new WatchRefreshQueue({
+      blocked: () => blocked,
+      refresh,
+      onError: vi.fn(),
+    });
+
+    queue.enqueue("/repo", ["src/a.ts"]);
+    queue.enqueue("/repo", ["src/b.ts", "src/a.ts"]);
+    await Promise.resolve();
+
+    expect(refresh).not.toHaveBeenCalled();
+    expect(queue.pendingCount("/repo")).toBe(2);
+
+    blocked = false;
+    queue.resume("/repo");
+    await vi.waitFor(() => expect(refresh).toHaveBeenCalledWith("/repo", ["src/a.ts", "src/b.ts"]));
+    expect(queue.pendingCount("/repo")).toBe(0);
+  });
+
+  it("runs a second coalesced batch for edits that arrive during refresh", async () => {
+    let releaseFirst!: () => void;
+    const first = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    const batches: string[][] = [];
+    const queue = new WatchRefreshQueue({
+      blocked: () => false,
+      refresh: async (_root, paths) => {
+        batches.push(paths);
+        if (batches.length === 1) await first;
+      },
+      onError: vi.fn(),
+    });
+
+    queue.enqueue("/repo", ["src/a.ts"]);
+    await vi.waitFor(() => expect(batches).toHaveLength(1));
+    queue.enqueue("/repo", ["src/b.ts"]);
+    releaseFirst();
+
+    await vi.waitFor(() => expect(batches).toEqual([["src/a.ts"], ["src/b.ts"]]));
+  });
+
+  it("recognizes compiler configuration changes independent of source parsing", () => {
+    expect(hasTypedConfigChange(["tsconfig.json"])).toBe(true);
+    expect(hasTypedConfigChange(["packages/api/tsconfig.build.json"])).toBe(true);
+    expect(hasTypedConfigChange(["jsconfig.json"])).toBe(true);
+    expect(hasTypedConfigChange(["src/app.ts", "package.json"])).toBe(false);
+  });
+});

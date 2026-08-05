@@ -11,5 +11,4 @@ const { contextBridge, ipcRenderer } = require("electron");
 contextBridge.exposeInMainWorld("sdlcShell", {
   platform: process.platform,
   pickDirectory: () => ipcRenderer.invoke("sdlc:pick-directory"),
-  openPath: (target) => ipcRenderer.invoke("sdlc:open-path", target),
 });

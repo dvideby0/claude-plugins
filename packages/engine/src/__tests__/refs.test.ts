@@ -40,6 +40,12 @@ def loud(text):
 def shout(text):
     return text.upper()
 `,
+  "src/shadow.py": `
+from .helpers import shout
+
+def apply_local(shout):
+    return shout("local callback")
+`,
   "src/module_user.py": `
 import helpers
 
@@ -115,6 +121,15 @@ withNative("symbol references", () => {
     expect(shout.definedIn).toBe("src/helpers.py");
     expect(shout.total).toBe(2);
     expect(shout.files.sort()).toEqual(["src/module_user.py", "src/util.py"]);
+  });
+
+  it("does not resolve a shadowing parameter as the imported symbol", async () => {
+    root = await makeProject(PROJECT);
+    await scan(root, { kind: "full" });
+    const db = await getDb(root);
+
+    const shout = referencesTo(db, "shout");
+    expect(shout.callSites.some((site) => site.path === "src/shadow.py")).toBe(false);
   });
 
   it("resolves the symbol used through an unaliased dotted Python import", async () => {

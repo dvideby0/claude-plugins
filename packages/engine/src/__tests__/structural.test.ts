@@ -54,6 +54,9 @@ withNative("structural search", () => {
     const handled = await structuralSearch(root, {
       pattern: "swallowed-errors",
       text: "console.error",
+      // Filtering must happen against full matches before the native page is
+      // truncated; the matching catch is second in source order.
+      limit: 1,
     });
     expect(handled.total).toBe(1);
   });
