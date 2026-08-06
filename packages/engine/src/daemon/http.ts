@@ -659,7 +659,7 @@ export function createHttpServer(options: HttpServerOptions): HttpServerHandle {
         if (action === "connect") await connectHarness(id, options.bridge);
         else await disconnectHarness(id);
         log(`${action}ed ${id}`);
-        sendJson(res, 200, { ok: true, harnesses: await detectHarnesses() });
+        sendJson(res, 200, { ok: true, harnesses: await detectHarnesses(true) });
       } catch (error) {
         sendJson(res, 500, {
           error: error instanceof Error ? error.message : String(error),

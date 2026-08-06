@@ -39,6 +39,8 @@ const state = {
   renderedKey: null,
   onboarded: localStorage.getItem("sdlc.onboarded") === "1",
 };
+const HARNESS_REFRESH_MS = 60_000;
+let harnessRefreshAt = 0;
 
 // --- plumbing --------------------------------------------------------------
 
@@ -183,6 +185,12 @@ function renderWelcome() {
       if (!harness.binPath) {
         return `<div class="agent-row muted">
           <div><strong>${esc(harness.name)}</strong><div class="sub">Not installed on this machine</div></div>
+          ${
+            harness.connected
+              ? `<button class="danger" data-action="toggle-agent" data-id="${harness.id}"
+                         data-connected="true">Disconnect stale config</button>`
+              : ""
+          }
         </div>`;
       }
       return `<div class="agent-row">
@@ -1407,7 +1415,7 @@ function renderSettings() {
         </div>
         <button class="${harness.connected ? "danger" : "primary"}"
                 data-action="toggle-agent" data-id="${harness.id}"
-                data-connected="${harness.connected}" ${installed ? "" : "disabled"}>
+                data-connected="${harness.connected}" ${installed || harness.connected ? "" : "disabled"}>
           ${harness.connected ? "Disconnect" : "Connect"}
         </button>
       </div>`;
@@ -1466,6 +1474,7 @@ async function toggleAgent(id, connected) {
       method: "POST",
     });
     state.harnesses = result.harnesses;
+    harnessRefreshAt = Date.now();
     state.renderedKey = null;
     render();
     toast(
@@ -1494,9 +1503,11 @@ async function addWorkspace(root, navigate = true) {
 
 async function startIndex(id, draw = false) {
   try {
-    const harness = draw ? (state.harnesses ?? []).find((item) => item.connected) : null;
+    const harness = draw
+      ? (state.harnesses ?? []).find((item) => item.connected && item.binPath)
+      : null;
     if (draw && !harness) {
-      toast("Connect a coding agent in Settings first — the drawing pass runs through it.");
+      toast("Connect an installed coding agent in Settings first — the drawing pass runs through it.");
       go("#/settings");
       return;
     }
@@ -1599,13 +1610,16 @@ async function refresh(force = false) {
   if (inFlight) return;
   inFlight = true;
   try {
+    const shouldRefreshHarnesses =
+      state.harnesses.length === 0 || Date.now() - harnessRefreshAt >= HARNESS_REFRESH_MS;
     const [status, harnesses, workspaces] = await Promise.all([
       api("/api/status"),
-      api("/api/harnesses"),
+      shouldRefreshHarnesses ? api("/api/harnesses") : Promise.resolve(state.harnesses),
       api("/api/workspaces"),
     ]);
     state.status = status;
     state.harnesses = harnesses;
+    if (shouldRefreshHarnesses) harnessRefreshAt = Date.now();
     state.workspaces = workspaces;
     if (force) state.renderedKey = null;
     render();

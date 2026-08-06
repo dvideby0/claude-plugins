@@ -10,6 +10,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   hasCodexServer,
   readCodexForWrite,
+  removeClaudeServerFile,
   spliceCodexBlock,
   writeCodexFile,
 } from "../daemon/harnesses.js";
@@ -157,6 +158,36 @@ mcp_servers.sdlc.env.ELECTRON_RUN_AS_NODE = "1"
     expect(hasCodexServer('"mcp_servers"."sdlc".command = "node"')).toBe(true);
     expect(hasCodexServer("[mcp_servers.sdlcx]")).toBe(false);
     expect(hasCodexServer('mcp_servers.sdlcx.command = "node"')).toBe(false);
+  });
+});
+
+describe("stale Claude connection cleanup", () => {
+  it("removes only the SDLC server without requiring the missing CLI", async () => {
+    const original = JSON.stringify(
+      {
+        theme: "dark",
+        mcpServers: {
+          other: { command: "other" },
+          sdlc: { command: "old-sdlc" },
+        },
+      },
+      null,
+      4,
+    );
+    root = await makeProject({ ".claude.json": original });
+    const path = join(root, ".claude.json");
+
+    await removeClaudeServerFile(path);
+
+    const result = JSON.parse(await readFile(path, "utf-8")) as {
+      theme: string;
+      mcpServers: Record<string, unknown>;
+    };
+    expect(result.theme).toBe("dark");
+    expect(result.mcpServers.other).toBeDefined();
+    expect(result.mcpServers.sdlc).toBeUndefined();
+    expect(await readFile(`${path}.sdlc-backup`, "utf-8")).toBe(original);
+    expect((await readdir(root)).filter((name) => name.endsWith(".tmp"))).toEqual([]);
   });
 });
 

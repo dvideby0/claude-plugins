@@ -27,6 +27,11 @@ let recoveryRunning = false;
 let recoveryAttempt = 0;
 let quitAfterEngineStops = false;
 let engineStopInFlight: Promise<void> | null = null;
+let engineMonitor: NodeJS.Timeout | null = null;
+let engineCheckRunning = false;
+let observedEngine: string | null = null;
+let engineUnavailable = false;
+let engineMisses = 0;
 
 function enginePath(): string {
   try {
@@ -139,6 +144,7 @@ function startEngine(): void {
     process.stderr.write(`[engine] exited (code ${code ?? "null"}, signal ${signal ?? "none"})\n`);
     child = null;
     if (!shuttingDown) {
+      engineUnavailable = true;
       void showRecoveryState().catch((error) => {
         process.stderr.write(
           `[shell] could not show recovery state: ${error instanceof Error ? error.message : String(error)}\n`,
@@ -147,6 +153,65 @@ function startEngine(): void {
       scheduleEngineRecovery();
     }
   });
+}
+
+function engineIdentity(daemon: DaemonInfo): string {
+  return `${daemon.pid}:${daemon.port}:${daemon.startedAt}`;
+}
+
+function observeEngine(daemon: DaemonInfo): void {
+  observedEngine = engineIdentity(daemon);
+  engineUnavailable = false;
+  engineMisses = 0;
+}
+
+/**
+ * An adopted daemon has no ChildProcess exit event for Electron to observe.
+ * Poll the authenticated discovery record at a low rate so a terminal-owned
+ * engine receives the same recovery behavior as one spawned by this shell.
+ */
+async function checkEngineHealth(): Promise<void> {
+  if (shuttingDown || recoveryRunning || engineCheckRunning) return;
+  engineCheckRunning = true;
+  try {
+    const daemon = await findDaemon();
+    if (!daemon) {
+      engineMisses++;
+      // A temporarily busy daemon is not dead. The ownership lock prevents a
+      // second writer, but avoiding a false recovery page is better than
+      // relying on that last line of defence.
+      if (engineMisses < 3) return;
+      if (!engineUnavailable) {
+        engineUnavailable = true;
+        scheduleEngineRecovery();
+        await showRecoveryState();
+      }
+      return;
+    }
+
+    engineMisses = 0;
+    if (engineIdentity(daemon) !== observedEngine) {
+      observeEngine(daemon);
+      recoveryAttempt = 0;
+      if (window && !window.isDestroyed()) {
+        allowedEngineOrigin = new URL(baseUrl(daemon)).origin;
+        await window.loadURL(authenticatedUiUrl(daemon));
+      }
+    }
+  } catch (error) {
+    process.stderr.write(
+      `[shell] engine health check failed: ${error instanceof Error ? error.message : String(error)}\n`,
+    );
+  } finally {
+    engineCheckRunning = false;
+  }
+}
+
+function startEngineMonitor(daemon: DaemonInfo): void {
+  observeEngine(daemon);
+  if (engineMonitor) return;
+  engineMonitor = setInterval(() => void checkEngineHealth(), 5_000);
+  engineMonitor.unref();
 }
 
 /** Bounded exponential backoff: quick recovery first, no crash loop later. */
@@ -184,6 +249,7 @@ async function recoverEngine(): Promise<void> {
       daemon = await waitForEngine();
     }
     recoveryAttempt = 0;
+    observeEngine(daemon);
     if (window && !window.isDestroyed()) {
       allowedEngineOrigin = new URL(baseUrl(daemon)).origin;
       await window.loadURL(authenticatedUiUrl(daemon));
@@ -258,6 +324,7 @@ async function createWindow(daemon: DaemonInfo): Promise<void> {
   });
 
   await window.loadURL(authenticatedUiUrl(daemon));
+  startEngineMonitor(daemon);
 }
 
 function showStartupFailure(error: unknown): void {
@@ -297,8 +364,12 @@ if (!app.requestSingleInstanceLock()) {
 
     app.on("activate", async () => {
       if (BrowserWindow.getAllWindows().length > 0) return;
-      const daemon = await readDaemon();
-      if (daemon) await createWindow(daemon);
+      try {
+        const daemon = await ensureEngine();
+        await createWindow(daemon);
+      } catch (error) {
+        showStartupFailure(error);
+      }
     });
   });
 
@@ -312,6 +383,8 @@ if (!app.requestSingleInstanceLock()) {
     shuttingDown = true;
     if (recoveryTimer) clearTimeout(recoveryTimer);
     recoveryTimer = null;
+    if (engineMonitor) clearInterval(engineMonitor);
+    engineMonitor = null;
     // Adopted engines keep running — we did not start them.
     if (child && !quitAfterEngineStops) {
       event.preventDefault();

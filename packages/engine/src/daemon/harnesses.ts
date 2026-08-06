@@ -23,6 +23,8 @@ export const SERVER_NAME = "sdlc";
 
 const claudeConfig = (): string => join(homedir(), ".claude.json");
 const codexConfig = (): string => join(homedir(), ".codex", "config.toml");
+const DETECTION_TTL_MS = 5 * 60_000;
+let detectionCache: { expiresAt: number; harnesses: DetectedHarness[] } | null = null;
 const tomlExactKey = (key: string): string => `(?:${key}|"${key}"|'${key}')`;
 const CODEX_SERVER_HEADER = new RegExp(
   `^\\s*\\[\\s*${tomlExactKey("mcp_servers")}\\s*\\.\\s*` +
@@ -77,7 +79,10 @@ async function codexConnected(): Promise<boolean> {
   }
 }
 
-export async function detectHarnesses(): Promise<DetectedHarness[]> {
+export async function detectHarnesses(refresh = false): Promise<DetectedHarness[]> {
+  if (!refresh && detectionCache && detectionCache.expiresAt > Date.now()) {
+    return detectionCache.harnesses;
+  }
   const env = spawnEnv();
   const [claudeBin, codexBin] = await Promise.all([
     which("claude", env),
@@ -91,7 +96,7 @@ export async function detectHarnesses(): Promise<DetectedHarness[]> {
     codexConnected(),
   ]);
 
-  return [
+  const harnesses: DetectedHarness[] = [
     {
       id: "claude-code",
       name: "Claude Code",
@@ -109,6 +114,8 @@ export async function detectHarnesses(): Promise<DetectedHarness[]> {
       connected: codexOn,
     },
   ];
+  detectionCache = { expiresAt: Date.now() + DETECTION_TTL_MS, harnesses };
+  return harnesses;
 }
 
 // --- connecting ------------------------------------------------------------
@@ -155,7 +162,11 @@ async function connectClaude(bridge: BridgeCommand): Promise<void> {
 }
 
 async function disconnectClaude(): Promise<void> {
-  const bin = (await which("claude", spawnEnv())) ?? "claude";
+  const bin = await which("claude", spawnEnv());
+  if (!bin) {
+    await removeClaudeServerFile(claudeConfig());
+    return;
+  }
   const command = platformCommand(bin, ["mcp", "remove", SERVER_NAME, "--scope", "user"]);
   await run(command.command, command.args, {
     env: spawnEnv(),
@@ -242,9 +253,13 @@ export async function writeCodexFile(path: string, block: string | null): Promis
   await mkdir(dirname(path), { recursive: true });
 
   const existing = await readCodexForWrite(path);
+  await atomicConfigWrite(path, spliceCodexBlock(existing, block));
+}
+
+async function atomicConfigWrite(path: string, content: string): Promise<void> {
   const temporary = `${path}.sdlc-${process.pid}-${randomBytes(8).toString("hex")}.tmp`;
   try {
-    await writeFile(temporary, spliceCodexBlock(existing, block), {
+    await writeFile(temporary, content, {
       encoding: "utf-8",
       flag: "wx",
       mode: 0o600,
@@ -256,19 +271,47 @@ export async function writeCodexFile(path: string, block: string | null): Promis
   }
 }
 
+/** Remove a stale Claude MCP entry when the CLI itself is no longer installed. */
+export async function removeClaudeServerFile(path: string): Promise<void> {
+  let existing: string;
+  try {
+    existing = await readConfigForWrite(path, "Claude");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+    throw error;
+  }
+
+  const parsed = JSON.parse(existing) as { mcpServers?: Record<string, unknown> };
+  if (!parsed.mcpServers || !Object.prototype.hasOwnProperty.call(parsed.mcpServers, SERVER_NAME)) {
+    return;
+  }
+  delete parsed.mcpServers[SERVER_NAME];
+
+  const indent = existing.match(/\n([ \t]+)"/)?.[1] ?? "  ";
+  const newline = existing.endsWith("\n") ? "\n" : "";
+  await atomicConfigWrite(path, `${JSON.stringify(parsed, null, indent)}${newline}`);
+}
+
 async function writeCodex(block: string | null): Promise<void> {
   await writeCodexFile(codexConfig(), block);
 }
 
 /** Read a Codex config and guarantee its pristine backup before mutation. */
 export async function readCodexForWrite(path: string): Promise<string> {
-  let existing = "";
+  return readConfigForWrite(path, "Codex", true);
+}
+
+async function readConfigForWrite(
+  path: string,
+  product: string,
+  missingIsEmpty = false,
+): Promise<string> {
+  let existing: string;
   try {
     existing = await readFile(path, "utf-8");
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-    // No config yet — creating one is fine.
-    return "";
+    if ((error as NodeJS.ErrnoException).code === "ENOENT" && missingIsEmpty) return "";
+    throw error;
   }
 
   // Create-if-absent: the backup's value is being the user's *pristine*
@@ -280,7 +323,9 @@ export async function readCodexForWrite(path: string): Promise<string> {
     if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
     const backup = await lstat(`${path}.sdlc-backup`);
     if (!backup.isFile()) {
-      throw new Error(`Cannot preserve Codex config: ${path}.sdlc-backup is not a regular file.`);
+      throw new Error(
+        `Cannot preserve ${product} config: ${path}.sdlc-backup is not a regular file.`,
+      );
     }
   }
   return existing;
