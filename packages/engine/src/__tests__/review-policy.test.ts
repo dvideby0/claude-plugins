@@ -1,9 +1,18 @@
-import { describe, expect, it } from "vitest";
+import { writeFile } from "node:fs/promises";
+import { join } from "node:path";
+import { afterEach, describe, expect, it } from "vitest";
 import {
   MAX_PROPOSALS_PER_UNIT,
   selectReviewProposals,
+  sourceFor,
   type ProposedFinding,
 } from "../review/runner.js";
+import { cleanup, makeProject } from "./helpers.js";
+
+let root: string;
+afterEach(async () => {
+  if (root) await cleanup(root);
+});
 
 function finding(index: number, overrides: Partial<ProposedFinding> = {}): ProposedFinding {
   return {
@@ -39,5 +48,15 @@ describe("review proposal policy", () => {
     const selected = selectReviewProposals(proposals);
     expect(selected).toHaveLength(MAX_PROPOSALS_PER_UNIT);
     expect(new Set(selected.map((item) => item.ruleId)).size).toBe(MAX_PROPOSALS_PER_UNIT);
+  });
+
+  it("fingerprints the complete source generation used for verification", async () => {
+    root = await makeProject({ "src/index.ts": "export const value = 1;\n" });
+    const verified = await sourceFor(root, "src/index.ts", 1);
+
+    await writeFile(join(root, "src/index.ts"), "export const value = 2;\n");
+    const current = await sourceFor(root, "src/index.ts", 1);
+
+    expect(current.contentSha).not.toBe(verified.contentSha);
   });
 });

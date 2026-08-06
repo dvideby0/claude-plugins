@@ -11,6 +11,7 @@
  * user's own CLI quota.
  */
 
+import { createHash } from "node:crypto";
 import { contentDir } from "../content.js";
 import type { Db } from "../db/db.js";
 import { extractSnippet } from "../findings/fingerprint.js";
@@ -95,10 +96,11 @@ Rules:
 - If nothing is wrong, return [].
 `;
 
-interface SourceSlice {
+export interface SourceSlice {
   text: string;
   firstLine: number;
   lastLine: number;
+  contentSha: string;
 }
 
 interface VerificationItem {
@@ -135,7 +137,11 @@ A correctedLine must be one of the numbered source lines supplied for that claim
 }
 
 /** Read the numbered slice of a file the finding points at, plus surrounding context. */
-async function sourceFor(
+function sourceSha(content: string): string {
+  return createHash("sha256").update(content).digest("hex").slice(0, 20);
+}
+
+export async function sourceFor(
   projectRoot: string,
   path: string,
   lineStart?: number,
@@ -154,6 +160,7 @@ async function sourceFor(
   return {
     firstLine: from + 1,
     lastLine: to,
+    contentSha: sourceSha(content),
     text: lines
       .slice(from, to)
       .map((line, index) => `${String(from + index + 1).padStart(5)}  ${line}`)
@@ -348,9 +355,20 @@ export async function runReview(
       let snippet: string | undefined;
       try {
         const content = await readWorkspaceText(projectRoot, proposal.path as string);
+        // Verification reasoned about candidate.source. If the file moved
+        // while that model call was running, neither its verdict nor its line
+        // correction applies to the current workspace.
+        if (sourceSha(content) !== candidate.source.contentSha) {
+          summary.rejected++;
+          continue;
+        }
         snippet = extractSnippet(content, proposal.lineStart ?? 1, proposal.lineEnd);
       } catch {
-        // Fingerprint falls back to the title.
+        // Deleted, unreadable, or escaped since verification is also a source
+        // generation change. Never record a verdict against code we cannot
+        // prove is still the code it reviewed.
+        summary.rejected++;
+        continue;
       }
 
       confirmed.push({

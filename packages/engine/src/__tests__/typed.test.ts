@@ -1,7 +1,13 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { getDb } from "../db/db.js";
 import { referencesTo } from "../graph/refs.js";
-import { analyseTypes, resolveTypes, resolveTypesInWorker } from "../graph/typed.js";
+import {
+  analyseTypes,
+  applyTypedAnalysis,
+  resolveTypes,
+  resolveTypesInWorker,
+  typedWorkspaceGeneration,
+} from "../graph/typed.js";
 import { neighbourhood } from "../memory/context.js";
 import { scan } from "../scan/scan.js";
 import { loadNative } from "../scan/source.js";
@@ -224,6 +230,60 @@ export function packageEntry() { return makeStore().add("ok"); }
     expect(referencesTo(db, "add").callSites).toEqual([
       expect.objectContaining({ path: "packages/core/src/app.ts", line: 3 }),
     ]);
+  });
+
+  it("retains independently configured packages when the root also owns files", async () => {
+    root = await makeProject({
+      "package.json": JSON.stringify({ name: "independent-packages", private: true }),
+      "tsconfig.json": JSON.stringify({
+        compilerOptions: { target: "ES2022", module: "ESNext", moduleResolution: "Bundler" },
+        include: ["src/**/*"],
+      }),
+      "src/root.ts": "export const rootValue = 1;\n",
+      "packages/core/tsconfig.json": JSON.stringify({
+        compilerOptions: { target: "ES2022", module: "ESNext", moduleResolution: "Bundler" },
+        include: ["src/**/*"],
+      }),
+      "packages/core/src/store.ts":
+        "export class Store { add(value: string): string { return value; } }\n",
+      "packages/core/src/app.ts":
+        "import { Store } from './store.js';\nexport const run = () => new Store().add('ok');\n",
+    });
+    await scan(root, { kind: "full" });
+    const db = await getDb(root);
+
+    const result = resolveTypes(db, root);
+    expect(result.ran).toBe(true);
+    expect(referencesTo(db, "add").callSites).toEqual([
+      expect.objectContaining({ path: "packages/core/src/app.ts", line: 2 }),
+    ]);
+  });
+
+  it("rejects a worker generation when an overlapping scan adds an input", async () => {
+    root = await makeProject({
+      "package.json": JSON.stringify({ name: "generation-fence", type: "module" }),
+      "tsconfig.json": JSON.stringify({
+        compilerOptions: { target: "ES2022", module: "ESNext", moduleResolution: "Bundler" },
+        include: ["src/**/*"],
+      }),
+      "src/foo/index.ts": "export function value(): number { return 1; }\n",
+      "src/app.ts": "import { value } from './foo.js';\nexport const current = value();\n",
+    });
+    await scan(root, { kind: "full" });
+    const db = await getDb(root);
+    const analysis = {
+      ...analyseTypes(root),
+      workspaceGeneration: typedWorkspaceGeneration(db),
+    };
+
+    const { writeFile } = await import("node:fs/promises");
+    const { join } = await import("node:path");
+    await writeFile(join(root, "src/foo.ts"), "export function value(): number { return 2; }\n");
+    await scan(root, { kind: "incremental" });
+
+    const result = applyTypedAnalysis(db, analysis);
+    expect(result.ran).toBe(false);
+    expect(result.reason).toMatch(/workspace inputs changed/i);
   });
 
   it("keeps same-line same-name references when they resolve to different destinations", async () => {

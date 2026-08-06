@@ -62,7 +62,26 @@ export interface TypedAnalysis {
   analysedFiles: string[];
   /** Inputs prove a worker result still describes the generation in the store. */
   inputs: Array<{ path: string; contentSha: string }>;
+  /** Complete indexed workspace generation captured before analysis began. */
+  workspaceGeneration?: string;
   durationMs: number;
+}
+
+/**
+ * A cheap generation fence for the worker result.
+ *
+ * Individual input hashes prove files that existed at worker start did not
+ * change. This digest also covers the set of indexed paths, so an overlapping
+ * scan that adds or removes a source/config file invalidates the old result.
+ */
+export function typedWorkspaceGeneration(db: Db): string {
+  const files = db.all<{ path: string; content_sha: string }>(
+    "SELECT path, content_sha FROM files WHERE present = 1 ORDER BY path",
+  );
+  return createHash("sha256")
+    .update(files.map((file) => `${file.path}:${file.content_sha}`).join("|"))
+    .digest("hex")
+    .slice(0, 20);
 }
 
 function toPosix(path: string): string {
@@ -158,22 +177,15 @@ function findConfigs(projectRoot: string, maxDepth = 4): string[] {
 
   walk(projectRoot, 0);
 
-  // A root config usually pulls in everything via includes, so prefer it alone
-  // when it is a single project. A mixed config can both own files and refer to
-  // package projects; returning only the root in that shape silently drops the
-  // referenced packages because createProgram does not index their sources as
-  // part of the root program.
+  // A mixed config can both own files and refer to package projects. Retain
+  // independently discovered configs too: a root that owns `src/` says
+  // nothing about an unreferenced package with different compiler options.
   const rootConfig = found.find(
     (file) =>
       file === resolve(projectRoot, "tsconfig.json") ||
       file === resolve(projectRoot, "jsconfig.json"),
   );
   if (rootConfig) {
-    const parsed = readConfig(rootConfig);
-    if (parsed && parsed.fileNames.length > 0 && !parsed.projectReferences?.length) {
-      return [rootConfig];
-    }
-
     // References are authoritative even when their config sits below the
     // normal discovery depth. Follow them recursively and still retain any
     // independently discovered projects in a mixed monorepo.
@@ -409,6 +421,20 @@ export function applyTypedAnalysis(db: Db, analysis: TypedAnalysis): TypedResult
     };
   }
 
+  if (
+    analysis.workspaceGeneration &&
+    analysis.workspaceGeneration !== typedWorkspaceGeneration(db)
+  ) {
+    return {
+      ran: false,
+      reason: "Typed workspace inputs changed while resolving; retry scheduled.",
+      filesAnalysed: analysis.filesAnalysed,
+      resolved: 0,
+      upgraded: 0,
+      durationMs: analysis.durationMs,
+    };
+  }
+
   // A scan may complete while the worker is still analysing the previous
   // generation. Never let that stale result overwrite refs for newer code or
   // compiler configuration; the next scheduled pass will use the new inputs.
@@ -482,7 +508,8 @@ export function applyTypedAnalysis(db: Db, analysis: TypedAnalysis): TypedResult
 
 /** Synchronous compatibility path for tests and direct library callers. */
 export function resolveTypes(db: Db, projectRoot: string): TypedResult {
-  return applyTypedAnalysis(db, analyseTypes(projectRoot));
+  const workspaceGeneration = typedWorkspaceGeneration(db);
+  return applyTypedAnalysis(db, { ...analyseTypes(projectRoot), workspaceGeneration });
 }
 
 interface WorkerReply {
@@ -497,6 +524,7 @@ export function resolveTypesInWorker(
   signal?: AbortSignal,
 ): Promise<TypedResult> {
   if (signal?.aborted) return Promise.reject(new Error("Typed resolution cancelled."));
+  const workspaceGeneration = typedWorkspaceGeneration(db);
   return new Promise((resolveResult, reject) => {
     const worker = new Worker(new URL("./typed-worker.js", import.meta.url), {
       workerData: { projectRoot },
@@ -527,7 +555,7 @@ export function resolveTypesInWorker(
       else if (!reply.analysis) reject(new Error("Typed worker returned no analysis."));
       else {
         try {
-          resolveResult(applyTypedAnalysis(db, reply.analysis));
+          resolveResult(applyTypedAnalysis(db, { ...reply.analysis, workspaceGeneration }));
         } catch (error) {
           reject(error);
         }

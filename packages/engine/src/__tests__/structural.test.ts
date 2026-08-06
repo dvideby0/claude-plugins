@@ -73,6 +73,23 @@ withNative("structural search", () => {
       limit: 1,
     });
     expect(handled.total).toBe(1);
+    expect(handled.truncated).toBe(false);
+  });
+
+  it("says when the requested result window is incomplete", async () => {
+    root = await makeProject({
+      "src/many.ts": "const alpha = 1; const beta = 2; const gamma = 3;\n",
+    });
+
+    const result = await structuralSearch(root, {
+      query: "(identifier) @id",
+      languages: ["typescript"],
+      limit: 2,
+    });
+
+    expect(result.matches).toHaveLength(2);
+    expect(result.total).toBe(2);
+    expect(result.truncated).toBe(true);
   });
 
   it("accepts a raw tree-sitter query", async () => {

@@ -88,6 +88,8 @@ export interface StructuralResult {
   why: string | null;
   matches: StructuralMatch[];
   total: number;
+  /** More matches exist than the bounded result contains. */
+  truncated: boolean;
   /** Files grouped, since "where is this concentrated" is the usual question. */
   byFile: Array<{ path: string; count: number }>;
   available: boolean;
@@ -135,18 +137,22 @@ export async function structuralSearch(
       why: known?.why ?? null,
       matches: [],
       total: 0,
+      truncated: false,
       byFile: [],
       available: false,
     };
   }
 
-  const matches = await native.searchStructural(
+  const limit = Math.max(1, Math.min(options.limit ?? 200, 1000));
+  const collected = await native.searchStructural(
     projectRoot,
     query,
     options.languages ?? known?.languages,
-    Math.min(options.limit ?? 200, 1000),
+    limit + 1,
     options.text,
   );
+  const truncated = collected.length > limit;
+  const matches = collected.slice(0, limit);
 
   const counts = new Map<string, number>();
   for (const match of matches) counts.set(match.path, (counts.get(match.path) ?? 0) + 1);
@@ -157,6 +163,7 @@ export async function structuralSearch(
     why: known?.why ?? null,
     matches,
     total: matches.length,
+    truncated,
     byFile: [...counts.entries()]
       .map(([path, count]) => ({ path, count }))
       .sort((a, b) => b.count - a.count),
