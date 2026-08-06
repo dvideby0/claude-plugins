@@ -7,7 +7,8 @@
  */
 
 import { execFile, spawn, type ChildProcess } from "node:child_process";
-import { extname } from "node:path";
+import { homedir } from "node:os";
+import { delimiter, extname, join } from "node:path";
 
 export interface ExecResult {
   stdout: string;
@@ -234,11 +235,15 @@ export async function which(
  * `claude` and no `codex`, even though every terminal finds both. The
  * standard install locations are appended rather than trusted to be there.
  */
-export function spawnEnv(): NodeJS.ProcessEnv {
-  if (process.platform !== "darwin") return process.env;
-  const extras = ["/opt/homebrew/bin", "/usr/local/bin"];
-  const parts = (process.env.PATH ?? "").split(":");
+export function spawnEnv(
+  platform: NodeJS.Platform = process.platform,
+  env: NodeJS.ProcessEnv = process.env,
+  userHome: string = homedir(),
+): NodeJS.ProcessEnv {
+  if (platform !== "darwin") return env;
+  const extras = [join(userHome, ".local", "bin"), "/opt/homebrew/bin", "/usr/local/bin"];
+  const parts = (env.PATH ?? "").split(delimiter).filter(Boolean);
   const missing = extras.filter((dir) => !parts.includes(dir));
-  if (missing.length === 0) return process.env;
-  return { ...process.env, PATH: [...parts, ...missing].join(":") };
+  if (missing.length === 0) return env;
+  return { ...env, PATH: [...parts, ...missing].join(delimiter) };
 }

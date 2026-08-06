@@ -22,6 +22,16 @@ export const SERVER_NAME = "sdlc";
 
 const claudeConfig = (): string => join(homedir(), ".claude.json");
 const codexConfig = (): string => join(homedir(), ".codex", "config.toml");
+const tomlExactKey = (key: string): string => `(?:${key}|"${key}"|'${key}')`;
+const CODEX_SERVER_HEADER = new RegExp(
+  `^\\s*\\[\\s*${tomlExactKey("mcp_servers")}\\s*\\.\\s*` +
+    `${tomlExactKey(SERVER_NAME)}(?:\\s*\\.[^\\]]+)?\\s*\\]`,
+  "m",
+);
+
+export function hasCodexServer(toml: string): boolean {
+  return CODEX_SERVER_HEADER.test(toml);
+}
 
 async function version(bin: string): Promise<string | null> {
   try {
@@ -53,8 +63,7 @@ async function claudeConnected(): Promise<boolean> {
 async function codexConnected(): Promise<boolean> {
   try {
     const toml = await readFile(codexConfig(), "utf-8");
-    // TOML permits whitespace around and inside the header.
-    return new RegExp(`^\\s*\\[\\s*mcp_servers\\s*\\.\\s*${SERVER_NAME}\\s*\\]`, "m").test(toml);
+    return hasCodexServer(toml);
   } catch {
     return false;
   }
@@ -155,19 +164,15 @@ function tomlString(value: string): string {
  * the user's config untouched. A .bak copy is taken before every write.
  */
 function spliceCodexBlock(toml: string, block: string | null): string {
-  // Whitespace-tolerant: `  [ mcp_servers.sdlc ]` is legal TOML, and missing
-  // it here appends a duplicate table Codex then rejects wholesale.
-  const header = new RegExp(
-    `^\\s*\\[\\s*mcp_servers\\s*\\.\\s*${SERVER_NAME}\\s*(\\.[^\\]]+)?\\]`,
-    "m",
-  );
+  // Whitespace and quote tolerant: `[mcp_servers."sdlc"]` names the same
+  // table as `[mcp_servers.sdlc]`; retaining both invalidates the whole file.
   const lines = toml.split("\n");
   const kept: string[] = [];
 
   let skipping = false;
   for (const line of lines) {
     const isSectionHeader = /^\s*\[/.test(line);
-    if (isSectionHeader) skipping = header.test(line);
+    if (isSectionHeader) skipping = CODEX_SERVER_HEADER.test(line);
     if (!skipping) kept.push(line);
   }
 

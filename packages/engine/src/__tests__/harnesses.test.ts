@@ -5,7 +5,7 @@
  */
 
 import { describe, expect, it } from "vitest";
-import { spliceCodexBlock } from "../daemon/harnesses.js";
+import { hasCodexServer, spliceCodexBlock } from "../daemon/harnesses.js";
 import {
   codexMcpOverride,
   drawInvocationArgs,
@@ -13,7 +13,7 @@ import {
   supportedHarnesses,
 } from "../daemon/draw.js";
 import { posixShellQuote, windowsLauncherCommand } from "../daemon/launcher.js";
-import { exec, platformCommand, processTreeTerminationCommand } from "../lib/exec.js";
+import { exec, platformCommand, processTreeTerminationCommand, spawnEnv } from "../lib/exec.js";
 import { reviewInvocationArgs, runClaude } from "../review/agent.js";
 
 const OURS = `[mcp_servers.sdlc]\ncommand = "node"\nargs = ["/path/bridge.js"]\n`;
@@ -82,6 +82,37 @@ describe("codex config splice", () => {
   it("creates a usable file when there is no config yet", () => {
     const result = spliceCodexBlock("", OURS);
     expect(result.trim()).toBe(OURS.trim());
+  });
+
+  it("replaces equivalent quoted table keys without creating invalid TOML", () => {
+    const quoted = `${EXISTING}\n[mcp_servers."sdlc"]\ncommand = "old"\n\n[mcp_servers.'sdlc'.env]\nOLD = "1"\n`;
+    const result = spliceCodexBlock(quoted, OURS);
+
+    expect(result).not.toContain('mcp_servers."sdlc"');
+    expect(result).not.toContain("mcp_servers.'sdlc'");
+    expect(result.match(/^\[mcp_servers\.sdlc\]$/gm)).toHaveLength(1);
+    expect(result).not.toContain('command = "old"');
+  });
+
+  it("detects bare and quoted forms of both dotted keys", () => {
+    for (const header of [
+      "[mcp_servers.sdlc]",
+      "[mcp_servers.\"sdlc\"]",
+      "[\"mcp_servers\".sdlc]",
+      "['mcp_servers'.'sdlc']",
+    ]) {
+      expect(hasCodexServer(`${header}\ncommand = "node"\n`)).toBe(true);
+    }
+    expect(hasCodexServer("[mcp_servers.sdlcx]")).toBe(false);
+  });
+});
+
+describe("GUI subprocess environment", () => {
+  it("finds native Claude installs when launched outside a login shell", () => {
+    const env = spawnEnv("darwin", { PATH: "/usr/bin:/bin", KEEP: "yes" }, "/Users/example");
+    expect(env.PATH?.split(":")).toContain("/Users/example/.local/bin");
+    expect(env.PATH?.split(":")).toContain("/opt/homebrew/bin");
+    expect(env.KEEP).toBe("yes");
   });
 });
 
