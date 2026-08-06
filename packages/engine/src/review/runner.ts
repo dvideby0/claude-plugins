@@ -115,6 +115,17 @@ interface VerificationVerdict {
   correctedLine?: number | null;
 }
 
+/** Model JSON is untrusted: only the boolean literal true confirms a claim. */
+export function isSubstantiatedVerdict(
+  verdict: unknown,
+): verdict is VerificationVerdict & { substantiated: true } {
+  return (
+    verdict !== null &&
+    typeof verdict === "object" &&
+    (verdict as VerificationVerdict).substantiated === true
+  );
+}
+
 function verificationPrompt(items: VerificationItem[]): string {
   const claims = items.map(({ index, finding, source }) => ({
     index,
@@ -332,7 +343,7 @@ export async function runReview(
       if (verify) {
         const verdict = verdicts.get(candidate.index);
         // Missing, malformed, or failed verification is unsubstantiated.
-        if (!verdict?.substantiated) {
+        if (!isSubstantiatedVerdict(verdict)) {
           summary.rejected++;
           continue;
         }

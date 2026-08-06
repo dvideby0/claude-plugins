@@ -2,7 +2,7 @@
  * SQLite access. One writer (this server), one file: sdlc-audit/audit.db.
  */
 
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { access, mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { loadSqlJs, type SqlDatabase } from "../runtime/assets.js";
 import { SCHEMA_SQL, SCHEMA_VERSION } from "./schema.js";
@@ -24,7 +24,11 @@ export class Db {
     try {
       const bytes = await readFile(dbPath);
       raw = new SQL.Database(new Uint8Array(bytes));
-    } catch {
+    } catch (error) {
+      // A missing store is the only reason to start a new one. Treating a
+      // permission error or corrupt SQLite image as "not found" silently
+      // replaces an index the user still needs with an empty database.
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
       raw = new SQL.Database();
     }
 
@@ -280,6 +284,19 @@ export async function getDb(projectRoot: string): Promise<Db> {
   // A failed open must not poison the cache for every later call.
   opening.catch(() => open.delete(key));
   return opening;
+}
+
+/** Open a store only when an index already exists on disk. */
+export async function getExistingDb(projectRoot: string): Promise<Db> {
+  const canonical = await canonicalWorkspaceRoot(projectRoot);
+  const dbPath = join(canonical, "sdlc-audit", "audit.db");
+  // Check before and after consulting the cache. The second check closes the
+  // small deletion race and prevents a cached, never-flushed empty handle from
+  // making an unindexed registered workspace look like a valid empty index.
+  await access(dbPath);
+  const db = await getDb(canonical);
+  await access(dbPath);
+  return db;
 }
 
 /** Drop the cached handles — used by tests. */

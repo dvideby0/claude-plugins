@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   MAX_PROPOSALS_PER_UNIT,
+  isSubstantiatedVerdict,
   selectReviewProposals,
   sourceFor,
   type ProposedFinding,
@@ -48,6 +49,13 @@ describe("review proposal policy", () => {
     const selected = selectReviewProposals(proposals);
     expect(selected).toHaveLength(MAX_PROPOSALS_PER_UNIT);
     expect(new Set(selected.map((item) => item.ruleId)).size).toBe(MAX_PROPOSALS_PER_UNIT);
+  });
+
+  it("accepts only a literal boolean true verification verdict", () => {
+    expect(isSubstantiatedVerdict({ substantiated: true })).toBe(true);
+    expect(isSubstantiatedVerdict({ substantiated: false })).toBe(false);
+    expect(isSubstantiatedVerdict({ substantiated: "true" })).toBe(false);
+    expect(isSubstantiatedVerdict({ substantiated: "false" })).toBe(false);
   });
 
   it("fingerprints the complete source generation used for verification", async () => {

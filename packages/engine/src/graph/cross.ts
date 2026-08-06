@@ -8,7 +8,7 @@
  * not.
  */
 
-import { getDb } from "../db/db.js";
+import { getExistingDb } from "../db/db.js";
 import { recall as recallMemories } from "../memory/store.js";
 
 export const CROSS_KINDS = ["package", "symbol", "memory", "finding", "file"] as const;
@@ -50,7 +50,9 @@ export async function crossQuery(
   for (const workspace of workspaces) {
     let rows: Array<Record<string, unknown>> = [];
     try {
-      const db = await getDb(workspace.root);
+      // Cross-workspace search is read-only and must not manufacture a blank
+      // store for a registered repository whose index is missing or corrupt.
+      const db = await getExistingDb(workspace.root);
 
       if (kind === "package") {
         rows = db.all(
