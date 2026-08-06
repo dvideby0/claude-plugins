@@ -44,7 +44,7 @@ function parseNpmLock(raw: string): Dependency[] {
       name: key.slice(key.lastIndexOf("node_modules/") + "node_modules/".length),
       version: value.version,
       ecosystem: "npm",
-      source: "package.json",
+      source: "package-lock.json",
     });
   }
   return deps;
@@ -134,6 +134,7 @@ export async function auditDependencies(projectRoot: string): Promise<AnalyzerOu
   const CHUNK = 500;
   const results: NonNullable<OsvBatchResponse["results"]> = [];
   const failures: string[] = [];
+  let unchecked = 0;
   for (let start = 0; start < deps.length; start += CHUNK) {
     const slice = deps.slice(start, start + CHUNK);
     try {
@@ -150,6 +151,7 @@ export async function auditDependencies(projectRoot: string): Promise<AnalyzerOu
       });
       if (!response.ok) {
         failures.push(`OSV returned ${response.status}`);
+        unchecked += slice.length;
         results.push(...slice.map(() => ({})));
         continue;
       }
@@ -159,11 +161,12 @@ export async function auditDependencies(projectRoot: string): Promise<AnalyzerOu
       for (let i = 0; i < slice.length; i++) results.push(rows[i] ?? {});
     } catch {
       failures.push("OSV unreachable");
+      unchecked += slice.length;
       results.push(...slice.map(() => ({})));
     }
   }
 
-  if (failures.length * CHUNK >= deps.length) {
+  if (unchecked >= deps.length) {
     return {
       tool: "deps",
       status: "skipped",
@@ -215,7 +218,6 @@ export async function auditDependencies(projectRoot: string): Promise<AnalyzerOu
   // Partial coverage is a gap, not a pass: an "ok" here closes advisories
   // for the dependencies that were in the batches that failed.
   if (failures.length > 0) {
-    const unchecked = failures.length * CHUNK;
     return {
       tool: "deps",
       status: "failed",

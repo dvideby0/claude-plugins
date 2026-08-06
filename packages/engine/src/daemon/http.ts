@@ -157,6 +157,7 @@ export function createHttpServer(options: HttpServerOptions): HttpServerHandle {
   const jobs = new Map<string, IndexJob>();
   const indexingRoots = new Set<string>();
   const activeMcpSessions = new Set<() => void>();
+  const removedRoots = new Set<string>();
   let boundPort = 0;
   let watchEnabled = process.env.SDLC_WATCH !== "0";
 
@@ -167,15 +168,43 @@ export function createHttpServer(options: HttpServerOptions): HttpServerHandle {
    * that on every save would make watching worse than not watching.
    */
   const typedTimers = new Map<string, NodeJS.Timeout>();
+  const typedControllers = new Map<string, Set<AbortController>>();
+
+  function cancelTypedPasses(root: string): void {
+    const timer = typedTimers.get(root);
+    if (timer) clearTimeout(timer);
+    typedTimers.delete(root);
+    for (const controller of typedControllers.get(root) ?? []) controller.abort();
+    typedControllers.delete(root);
+  }
+
+  async function runTypedPass(root: string) {
+    if (removedRoots.has(root)) return null;
+    const controller = new AbortController();
+    const active = typedControllers.get(root) ?? new Set<AbortController>();
+    active.add(controller);
+    typedControllers.set(root, active);
+    try {
+      const db = await getDb(root);
+      const typed = await resolveTypesInWorker(db, root, controller.signal);
+      return removedRoots.has(root) ? null : { db, typed };
+    } finally {
+      active.delete(controller);
+      if (active.size === 0) typedControllers.delete(root);
+    }
+  }
+
   function scheduleTypedPass(root: string): void {
+    if (removedRoots.has(root)) return;
     const existing = typedTimers.get(root);
     if (existing) clearTimeout(existing);
     const timer = setTimeout(() => {
       typedTimers.delete(root);
       void (async () => {
         try {
-          const db = await getDb(root);
-          const typed = await resolveTypesInWorker(db, root);
+          const pass = await runTypedPass(root);
+          if (!pass) return;
+          const { db, typed } = pass;
           if (typed.ran) {
             await db.flush();
             await registry.markUpdated(root);
@@ -184,6 +213,7 @@ export function createHttpServer(options: HttpServerOptions): HttpServerHandle {
             scheduleTypedPass(root);
           }
         } catch (error) {
+          if (removedRoots.has(root)) return;
           log(`typed pass failed for ${root}: ${error instanceof Error ? error.message : error}`);
         }
       })();
@@ -201,6 +231,7 @@ export function createHttpServer(options: HttpServerOptions): HttpServerHandle {
     blocked: (root) => indexingRoots.has(root),
     refresh: async (root, paths) => {
       const result = await scan(root, { kind: "watch" });
+      if (removedRoots.has(root)) return;
       await registry.markIndexed(root);
       log(`rescanned ${root}: ${result.filesParsed} parsed, ${result.references} refs`);
       // Deletions and compiler config changes can invalidate typed rows even
@@ -300,12 +331,18 @@ export function createHttpServer(options: HttpServerOptions): HttpServerHandle {
       try {
         note("Scanning files");
         await scan(root, { kind: "incremental" });
+        if (job.stopped || removedRoots.has(root)) {
+          job.phase = "failed";
+          job.error = "Stopped.";
+          return;
+        }
 
         // Upgrade references from import-resolved to type-resolved. This is a
         // full type-check, so it runs last and only here — the point of a
         // daemon is that it can afford work a per-session process cannot.
-        const db = await getDb(root);
-        const typed = await resolveTypesInWorker(db, root);
+        const pass = await runTypedPass(root);
+        if (!pass) return;
+        const { db, typed } = pass;
         if (typed.ran) {
           // The scan has flushed; persist the worker's upgraded references
           // before the app can be closed.
@@ -443,6 +480,7 @@ export function createHttpServer(options: HttpServerOptions): HttpServerHandle {
         return true;
       }
       const created = await registry.add(body.root);
+      removedRoots.delete(created.root);
       await syncWatchers();
       sendJson(res, 201, created);
       return true;
@@ -530,6 +568,8 @@ export function createHttpServer(options: HttpServerOptions): HttpServerHandle {
       if (!sub && method === "DELETE") {
         const job = jobs.get(id);
         if (job) requestIndexStop(job);
+        removedRoots.add(workspace.root);
+        cancelTypedPasses(workspace.root);
         await registry.remove(id);
         jobs.delete(id);
         watchRefresh.discard(workspace.root);
@@ -733,14 +773,18 @@ export function createHttpServer(options: HttpServerOptions): HttpServerHandle {
       onWorkspaceTouched: (root) => {
         void registry
           .add(root)
-          .then(() => syncWatchers())
+          .then((workspace) => {
+            removedRoots.delete(workspace.root);
+            return syncWatchers();
+          })
           .catch(() => {});
       },
       onWorkspaceChanged: async (root, kind) => {
         // Registration and publication are one awaited operation here. The
         // touch callback is intentionally fire-and-forget and may still be in
         // flight when a fast MCP write completes.
-        await registry.add(root);
+        const workspace = await registry.add(root);
+        removedRoots.delete(workspace.root);
         if (kind === "indexed") await registry.markIndexed(root);
         else await registry.markUpdated(root);
         await syncWatchers();
@@ -811,6 +855,11 @@ export function createHttpServer(options: HttpServerOptions): HttpServerHandle {
   function shutdown(): void {
     watcher.stopAll();
     for (const timer of typedTimers.values()) clearTimeout(timer);
+    typedTimers.clear();
+    for (const controllers of typedControllers.values()) {
+      for (const controller of controllers) controller.abort();
+    }
+    typedControllers.clear();
     // Closing an MCP server aborts every in-flight handler signal. Reviews
     // propagate that signal to their Claude process trees.
     for (const closeSession of [...activeMcpSessions]) closeSession();

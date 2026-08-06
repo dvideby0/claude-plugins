@@ -27,6 +27,32 @@ describe("daemon ownership lock", () => {
     await second.release();
   });
 
+  it("publishes owner metadata atomically before contenders can observe the lock", async () => {
+    root = await makeProject({});
+    const path = join(root, "daemon.lock");
+    let releasePublish!: () => void;
+    let candidateReady!: () => void;
+    const ready = new Promise<void>((resolve) => {
+      candidateReady = resolve;
+    });
+    const blocked = new Promise<void>((resolve) => {
+      releasePublish = resolve;
+    });
+
+    const delayed = acquireDaemonLock(path, {
+      beforePublish: () => {
+        candidateReady();
+        return blocked;
+      },
+    });
+    await ready;
+
+    const winner = await acquireDaemonLock(path);
+    releasePublish();
+    await expect(delayed).rejects.toBeInstanceOf(DaemonAlreadyRunningError);
+    await winner.release();
+  });
+
   it("recovers a lock left by a dead process", async () => {
     root = await makeProject({});
     const path = join(root, "daemon.lock");

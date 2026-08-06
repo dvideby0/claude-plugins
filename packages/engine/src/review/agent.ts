@@ -176,6 +176,13 @@ export function runClaude(prompt: string, options: AgentOptions): Promise<AgentR
     // missing binary) emits EPIPE here; without a handler that is an uncaught
     // exception in the daemon. The close handler reports the real failure.
     child.stdin.on("error", () => {});
+    // AbortSignal does not replay an abort to listeners attached after it
+    // fires. Close the spawn/listener race only after every child error path
+    // has a handler, and before writing the paid prompt.
+    if (options.signal?.aborted) {
+      abort();
+      return;
+    }
     child.stdin.write(prompt);
     child.stdin.end();
   });

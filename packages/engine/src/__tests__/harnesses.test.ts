@@ -4,8 +4,10 @@
  * nested sub-tables, and our own block already being present.
  */
 
-import { describe, expect, it } from "vitest";
-import { hasCodexServer, spliceCodexBlock } from "../daemon/harnesses.js";
+import { mkdir } from "node:fs/promises";
+import { join } from "node:path";
+import { afterEach, describe, expect, it } from "vitest";
+import { hasCodexServer, readCodexForWrite, spliceCodexBlock } from "../daemon/harnesses.js";
 import {
   codexMcpOverride,
   drawInvocationArgs,
@@ -15,6 +17,12 @@ import {
 import { posixShellQuote, windowsLauncherCommand } from "../daemon/launcher.js";
 import { exec, platformCommand, processTreeTerminationCommand, spawnEnv } from "../lib/exec.js";
 import { reviewInvocationArgs, runClaude } from "../review/agent.js";
+import { cleanup, makeProject } from "./helpers.js";
+
+let root: string;
+afterEach(async () => {
+  if (root) await cleanup(root);
+});
 
 const OURS = `[mcp_servers.sdlc]\ncommand = "node"\nargs = ["/path/bridge.js"]\n`;
 
@@ -39,6 +47,14 @@ enabled = true
 `;
 
 describe("codex config splice", () => {
+  it("refuses to mutate a config when its pristine backup cannot be created", async () => {
+    root = await makeProject({ "config.toml": EXISTING });
+    const path = join(root, "config.toml");
+    await mkdir(`${path}.sdlc-backup`);
+
+    await expect(readCodexForWrite(path)).rejects.toThrow();
+  });
+
   it("appends without disturbing anything already there", () => {
     const result = spliceCodexBlock(EXISTING, OURS);
 

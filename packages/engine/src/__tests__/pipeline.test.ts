@@ -1,4 +1,4 @@
-import { readFile } from "node:fs/promises";
+import { readFile, symlink } from "node:fs/promises";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { runAnalyzers } from "../analyze/run.js";
@@ -38,11 +38,36 @@ def load():
 };
 
 let root: string;
+let outside: string;
 afterEach(async () => {
   if (root) await cleanup(root);
+  if (outside) await cleanup(outside);
 });
 
 describe("pipeline", () => {
+  it("never follows a review-unit symlink outside the workspace", async () => {
+    root = await makeProject({ "package.json": "{}" });
+    outside = await makeProject({ "secret.ts": "export const secret = 'do-not-leak';\n" });
+    await symlink(join(outside, "secret.ts"), join(root, "linked.ts"));
+    const db = await getDb(root);
+
+    const context = await buildContext(
+      db,
+      {
+        id: "unit-symlink",
+        paths: ["linked.ts"],
+        languages: ["typescript"],
+        risk: 1,
+        estimatedTokens: 10,
+        reason: "path boundary test",
+      },
+      { projectRoot: root, pluginRoot: root },
+    );
+
+    expect(context.prompt).not.toContain("do-not-leak");
+    expect(context.filesOmitted).toEqual(["linked.ts"]);
+  });
+
   it("runs Windows npm shims through cmd while keeping Python executables direct", () => {
     expect(localToolCommand("C:\\repo\\node_modules\\.bin\\eslint.cmd", true, "win32", "cmd.exe"))
       .toEqual({

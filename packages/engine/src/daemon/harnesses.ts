@@ -8,7 +8,7 @@
 
 import { execFile } from "node:child_process";
 import { constants as fsConstants } from "node:fs";
-import { copyFile, mkdir, readFile, writeFile } from "node:fs/promises";
+import { copyFile, lstat, mkdir, readFile, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { promisify } from "node:util";
@@ -188,20 +188,34 @@ async function writeCodex(block: string | null): Promise<void> {
   const path = codexConfig();
   await mkdir(dirname(path), { recursive: true });
 
+  const existing = await readCodexForWrite(path);
+  await writeFile(path, spliceCodexBlock(existing, block), "utf-8");
+}
+
+/** Read a Codex config and guarantee its pristine backup before mutation. */
+export async function readCodexForWrite(path: string): Promise<string> {
   let existing = "";
   try {
     existing = await readFile(path, "utf-8");
-    // Create-if-absent: the backup's value is being the user's *pristine*
-    // config. Overwriting it on every write means that after
-    // connect-then-disconnect the only backup contains our own edits.
-    await copyFile(path, `${path}.sdlc-backup`, fsConstants.COPYFILE_EXCL).catch((error) => {
-      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-    });
-  } catch {
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
     // No config yet — creating one is fine.
+    return "";
   }
 
-  await writeFile(path, spliceCodexBlock(existing, block), "utf-8");
+  // Create-if-absent: the backup's value is being the user's *pristine*
+  // config. Overwriting it on every write means that after
+  // connect-then-disconnect the only backup contains our own edits.
+  try {
+    await copyFile(path, `${path}.sdlc-backup`, fsConstants.COPYFILE_EXCL);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+    const backup = await lstat(`${path}.sdlc-backup`);
+    if (!backup.isFile()) {
+      throw new Error(`Cannot preserve Codex config: ${path}.sdlc-backup is not a regular file.`);
+    }
+  }
+  return existing;
 }
 
 async function connectCodex(bridge: BridgeCommand): Promise<void> {

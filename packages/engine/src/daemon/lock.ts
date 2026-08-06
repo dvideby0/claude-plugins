@@ -1,7 +1,7 @@
 import { randomBytes } from "node:crypto";
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { uptime } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { daemonLockDir, pidAlive } from "@sdlc/protocol";
 
 interface LockOwner {
@@ -18,6 +18,8 @@ export interface DaemonLock {
 export interface DaemonLockOptions {
   /** Deterministic boot identity for tests; production uses system uptime. */
   bootTimeMs?: () => number;
+  /** Pause after the private candidate is complete, before atomic publication. */
+  beforePublish?: () => void | Promise<void>;
 }
 
 export class DaemonAlreadyRunningError extends Error {
@@ -29,10 +31,6 @@ export class DaemonAlreadyRunningError extends Error {
     );
     this.name = "DaemonAlreadyRunningError";
   }
-}
-
-function pause(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function ownerIsValid(value: unknown): value is LockOwner {
@@ -86,11 +84,31 @@ export async function acquireDaemonLock(
     bootTimeMs: bootTimeMs(),
   };
 
+  // Build the complete lock privately, then rename it into place. Publishing
+  // an empty directory and filling owner.json afterwards leaves a reclaim
+  // window in which two starters can both believe they won.
+  await mkdir(dirname(path), { recursive: true });
+  const candidate = `${path}.candidate-${process.pid}-${token}`;
+  await mkdir(candidate);
+  try {
+    await writeFile(join(candidate, "owner.json"), JSON.stringify(owner, null, 2), {
+      mode: 0o600,
+    });
+    await options.beforePublish?.();
+  } catch (error) {
+    await rm(candidate, { recursive: true, force: true });
+    throw error;
+  }
+
   for (let attempt = 0; attempt < 40; attempt++) {
     try {
-      await mkdir(path);
+      await rename(candidate, path);
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code !== "EEXIST" && code !== "ENOTEMPTY") {
+        await rm(candidate, { recursive: true, force: true });
+        throw error;
+      }
 
       const existing = await readOwner(path);
       const sameBoot =
@@ -101,14 +119,8 @@ export async function acquireDaemonLock(
         // Reclaiming from a live PID would permit two sql.js writers and let a
         // later flush overwrite the other daemon's state. We only reclaim when
         // the PID is gone or the recorded machine boot no longer matches.
+        await rm(candidate, { recursive: true, force: true });
         throw new DaemonAlreadyRunningError(existing.pid);
-      }
-
-      // mkdir may have completed just before its owner file was written. Give
-      // that tiny window time to settle before declaring an empty lock stale.
-      if (!existing && attempt < 10) {
-        await pause(25);
-        continue;
       }
 
       const tombstone = `${path}.stale-${process.pid}-${randomBytes(8).toString("hex")}`;
@@ -120,15 +132,6 @@ export async function acquireDaemonLock(
       }
       await rm(tombstone, { recursive: true, force: true });
       continue;
-    }
-
-    try {
-      await writeFile(join(path, "owner.json"), JSON.stringify(owner, null, 2), {
-        mode: 0o600,
-      });
-    } catch (error) {
-      await rm(path, { recursive: true, force: true });
-      throw error;
     }
 
     let released = false;
@@ -152,5 +155,6 @@ export async function acquireDaemonLock(
     };
   }
 
+  await rm(candidate, { recursive: true, force: true });
   throw new DaemonAlreadyRunningError();
 }

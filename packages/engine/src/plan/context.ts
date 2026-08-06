@@ -10,6 +10,7 @@
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { Db } from "../db/db.js";
+import { readWorkspaceText } from "../lib/workspace-path.js";
 import { loadRules, renderRuleIndex } from "./rules.js";
 import type { WorkUnit } from "./risk.js";
 
@@ -224,7 +225,7 @@ export async function buildContext(
   for (const path of unit.paths) {
     let content: string;
     try {
-      content = await readFile(join(options.projectRoot, path), "utf-8");
+      content = await readWorkspaceText(options.projectRoot, path);
     } catch {
       omitted.push(path);
       continue;
