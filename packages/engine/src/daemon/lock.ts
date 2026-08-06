@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { lstat, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { uptime } from "node:os";
 import { dirname, join } from "node:path";
 import { daemonLockDir, pidAlive } from "@sdlc/protocol";
@@ -25,6 +25,9 @@ export interface DaemonLockOptions {
   beforePublish?: () => void | Promise<void>;
   /** Injectable process identity lookup for deterministic lifecycle tests. */
   processIdentity?: (pid: number) => Promise<string | null>;
+  /** Injectable platform and rename operation for cross-platform lifecycle tests. */
+  platform?: NodeJS.Platform;
+  renamePath?: typeof rename;
 }
 
 export class DaemonAlreadyRunningError extends Error {
@@ -107,6 +110,27 @@ async function readOwner(path: string): Promise<LockOwner | null> {
   }
 }
 
+async function isPublishCollision(
+  error: unknown,
+  path: string,
+  platform: NodeJS.Platform,
+): Promise<boolean> {
+  const code = (error as NodeJS.ErrnoException).code;
+  if (code === "EEXIST" || code === "ENOTEMPTY") return true;
+  if (platform !== "win32" || (code !== "EPERM" && code !== "EACCES")) return false;
+
+  // Windows reports an occupied directory target as an access error. Only
+  // reinterpret it as a collision when the target actually exists; otherwise
+  // a genuine permissions failure must still reach the caller.
+  try {
+    await lstat(path);
+    return true;
+  } catch (probeError) {
+    if ((probeError as NodeJS.ErrnoException).code === "ENOENT") return false;
+    throw probeError;
+  }
+}
+
 /**
  * Acquire machine-wide daemon ownership before opening any shared stores.
  *
@@ -120,6 +144,8 @@ export async function acquireDaemonLock(
 ): Promise<DaemonLock> {
   const bootTimeMs = options.bootTimeMs ?? currentBootTimeMs;
   const identifyProcess = options.processIdentity ?? currentProcessIdentity;
+  const platform = options.platform ?? process.platform;
+  const renamePath = options.renamePath ?? rename;
   const token = randomBytes(16).toString("hex");
   const identity = await identifyProcess(process.pid);
   const owner: LockOwner = {
@@ -148,10 +174,9 @@ export async function acquireDaemonLock(
 
   for (let attempt = 0; attempt < 40; attempt++) {
     try {
-      await rename(candidate, path);
+      await renamePath(candidate, path);
     } catch (error) {
-      const code = (error as NodeJS.ErrnoException).code;
-      if (code !== "EEXIST" && code !== "ENOTEMPTY") {
+      if (!(await isPublishCollision(error, path, platform))) {
         await rm(candidate, { recursive: true, force: true });
         throw error;
       }
@@ -176,7 +201,7 @@ export async function acquireDaemonLock(
 
       const tombstone = `${path}.stale-${process.pid}-${randomBytes(8).toString("hex")}`;
       try {
-        await rename(path, tombstone);
+        await renamePath(path, tombstone);
       } catch (renameError) {
         if ((renameError as NodeJS.ErrnoException).code === "ENOENT") continue;
         throw renameError;
@@ -196,7 +221,7 @@ export async function acquireDaemonLock(
 
         const tombstone = `${path}.released-${token}`;
         try {
-          await rename(path, tombstone);
+          await renamePath(path, tombstone);
         } catch (error) {
           if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
           throw error;

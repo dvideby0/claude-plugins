@@ -170,35 +170,41 @@ export function listMemories(db: Db, kind?: string, limit = 100): Memory[] {
  * ranked LIKE matching returns the same answers without a model in the loop or
  * a vector store to keep in sync.
  */
-export function recall(db: Db, query: string, limit = 20): Memory[] {
+export function recall(db: Db, query: string, limit = 20, kind?: MemoryKind): Memory[] {
   const terms = query
     .toLowerCase()
     .split(/[^a-z0-9_./-]+/i)
     .filter((term) => term.length > 2)
     .slice(0, 8);
 
-  if (terms.length === 0) return listMemories(db, undefined, limit);
+  if (terms.length === 0) return listMemories(db, kind, limit);
 
   const scored = new Map<string, number>();
   for (const term of terms) {
     const like = `%${term}%`;
     for (const row of db.all<{ id: string }>(
-      "SELECT id FROM memories WHERE status = 'active' AND LOWER(title) LIKE ?",
-      [like],
+      `SELECT id FROM memories WHERE status = 'active' AND LOWER(title) LIKE ?${
+        kind ? " AND kind = ?" : ""
+      }`,
+      kind ? [like, kind] : [like],
     )) {
       scored.set(row.id, (scored.get(row.id) ?? 0) + 3);
     }
     for (const row of db.all<{ id: string }>(
-      "SELECT id FROM memories WHERE status = 'active' AND LOWER(body) LIKE ?",
-      [like],
+      `SELECT id FROM memories WHERE status = 'active' AND LOWER(body) LIKE ?${
+        kind ? " AND kind = ?" : ""
+      }`,
+      kind ? [like, kind] : [like],
     )) {
       scored.set(row.id, (scored.get(row.id) ?? 0) + 1);
     }
     for (const row of db.all<{ memory_id: string }>(
       `SELECT a.memory_id FROM memory_anchors a
        JOIN memories m ON m.id = a.memory_id
-       WHERE m.status = 'active' AND (LOWER(a.path) LIKE ? OR LOWER(a.symbol) LIKE ?)`,
-      [like, like],
+       WHERE m.status = 'active' AND (LOWER(a.path) LIKE ? OR LOWER(a.symbol) LIKE ?)${
+         kind ? " AND m.kind = ?" : ""
+       }`,
+      kind ? [like, like, kind] : [like, like],
     )) {
       scored.set(row.memory_id, (scored.get(row.memory_id) ?? 0) + 2);
     }

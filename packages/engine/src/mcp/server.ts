@@ -922,7 +922,7 @@ export function createMcpServer(options: McpServerOptions): McpServer {
     async ({ projectRoot, query, kind, limit }) =>
       wrap(async () => {
         const db = await getDb(resolveRoot(projectRoot));
-        const memories = query ? recall(db, query, limit) : listMemories(db, kind, limit);
+        const memories = query ? recall(db, query, limit, kind) : listMemories(db, kind, limit);
         const stored = db.count("SELECT COUNT(*) AS n FROM memories WHERE status = 'active'");
 
         // No matches and an empty store are very different situations, and a
@@ -974,7 +974,7 @@ export function createMcpServer(options: McpServerOptions): McpServer {
     {
       ...projectRootArg,
       unitIds: z.array(z.string()).optional().describe("Specific units. Defaults to the whole plan."),
-      maxUnits: z.number().optional().describe("Cap the number of units reviewed."),
+      maxUnits: z.number().int().positive().optional().describe("Cap the number of units reviewed."),
       lens: z.enum(["security", "correctness", "testing", "performance"]).optional(),
       verify: z
         .boolean()
@@ -988,7 +988,7 @@ export function createMcpServer(options: McpServerOptions): McpServer {
         const db = await getDb(root);
         const result = await runReview(db, root, {
           ...(unitIds ? { unitIds } : {}),
-          ...(maxUnits ? { maxUnits } : {}),
+          ...(maxUnits !== undefined ? { maxUnits } : {}),
           ...(lens ? { lens } : {}),
           ...(verify !== undefined ? { verify } : {}),
           ...(model ? { model } : {}),

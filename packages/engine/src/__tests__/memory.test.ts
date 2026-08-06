@@ -120,6 +120,9 @@ describe("memory", () => {
     expect(hits.length).toBe(2);
     // A title match outranks a body mention.
     expect(hits[0]?.title).toBe("Retry policy for uploads");
+    expect(recall(db, "retry", 20, "decision").map((memory) => memory.kind)).toEqual([
+      "decision",
+    ]);
 
     expect(recall(db, "nothing-matches-this")).toHaveLength(0);
   });

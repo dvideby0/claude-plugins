@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, rename, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import {
   acquireDaemonLock,
@@ -63,6 +63,37 @@ describe("daemon ownership lock", () => {
     );
 
     const lock = await acquireDaemonLock(path);
+    await lock.release();
+  });
+
+  it("recovers a stale Windows lock when directory publication reports EPERM", async () => {
+    root = await makeProject({});
+    const path = join(root, "daemon.lock");
+    await mkdir(path);
+    await writeFile(
+      join(path, "owner.json"),
+      JSON.stringify({
+        pid: 2_147_483_647,
+        token: "stale",
+        createdAt: "old",
+        bootTimeMs: 1234,
+      }),
+    );
+
+    let simulatedCollision = false;
+    const lock = await acquireDaemonLock(path, {
+      platform: "win32",
+      bootTimeMs: () => 1234,
+      renamePath: async (source, destination) => {
+        if (!simulatedCollision && source.includes(".candidate-") && destination === path) {
+          simulatedCollision = true;
+          throw Object.assign(new Error("Windows target collision"), { code: "EPERM" });
+        }
+        await rename(source, destination);
+      },
+    });
+
+    expect(simulatedCollision).toBe(true);
     await lock.release();
   });
 

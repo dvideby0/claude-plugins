@@ -39,6 +39,8 @@ export interface ReviewOptions {
   onProgress?: (message: string) => void;
   /** Abort all current and future model calls for this review. */
   signal?: AbortSignal;
+  /** Injectable paid-agent boundary for deterministic engine tests. */
+  runAgent?: typeof runClaude;
 }
 
 export interface ReviewSummary {
@@ -113,6 +115,40 @@ interface VerificationVerdict {
   index?: number;
   substantiated?: boolean;
   correctedLine?: number | null;
+}
+
+function verificationVerdicts(
+  parsed: unknown,
+  candidates: VerificationItem[],
+): Map<number, VerificationVerdict> | null {
+  if (!Array.isArray(parsed) || parsed.length !== candidates.length) return null;
+
+  const expected = new Map(candidates.map((candidate) => [candidate.index, candidate.source]));
+  const verdicts = new Map<number, VerificationVerdict>();
+  for (const value of parsed) {
+    if (value === null || typeof value !== "object") return null;
+    const verdict = value as VerificationVerdict;
+    if (
+      !Number.isInteger(verdict.index) ||
+      !expected.has(verdict.index as number) ||
+      verdicts.has(verdict.index as number) ||
+      typeof verdict.substantiated !== "boolean"
+    ) {
+      return null;
+    }
+    const source = expected.get(verdict.index as number) as SourceSlice;
+    if (
+      verdict.correctedLine !== null &&
+      verdict.correctedLine !== undefined &&
+      (!Number.isInteger(verdict.correctedLine) ||
+        verdict.correctedLine < source.firstLine ||
+        verdict.correctedLine > source.lastLine)
+    ) {
+      return null;
+    }
+    verdicts.set(verdict.index as number, verdict);
+  }
+  return verdicts;
 }
 
 /** Model JSON is untrusted: only the boolean literal true confirms a claim. */
@@ -235,7 +271,15 @@ export async function runReview(
   const started = Date.now();
   const note = options.onProgress ?? ((): void => {});
   const verify = options.verify !== false;
+  const runAgent = options.runAgent ?? runClaude;
   options.signal?.throwIfAborted();
+
+  if (
+    options.maxUnits !== undefined &&
+    (!Number.isInteger(options.maxUnits) || options.maxUnits <= 0)
+  ) {
+    throw new Error("maxUnits must be a positive integer.");
+  }
 
   const plan = loadPlan(db);
   if (plan.length === 0) {
@@ -245,7 +289,7 @@ export async function runReview(
   let units: WorkUnit[] = options.unitIds
     ? plan.filter((unit) => options.unitIds?.includes(unit.id))
     : plan;
-  if (options.maxUnits) units = units.slice(0, options.maxUnits);
+  if (options.maxUnits !== undefined) units = units.slice(0, options.maxUnits);
   if (units.length === 0) throw new Error("No matching review units.");
 
   const summary: ReviewSummary = {
@@ -288,7 +332,7 @@ export async function runReview(
       continue;
     }
 
-    const result = await runClaude(`${context.prompt}\n\n${REVIEW_INSTRUCTION}`, {
+    const result = await runAgent(`${context.prompt}\n\n${REVIEW_INSTRUCTION}`, {
       cwd: projectRoot,
       ...(options.signal ? { signal: options.signal } : {}),
       ...(options.model ? { model: options.model } : {}),
@@ -309,6 +353,20 @@ export async function runReview(
     }
 
     const parsed = extractJson<ProposedFinding[]>(result.text);
+    if (
+      !Array.isArray(parsed) ||
+      !parsed.every((value) => value !== null && typeof value === "object" && valid(value))
+    ) {
+      const error = "Review returned malformed findings JSON.";
+      summary.failures.push({ unitId: unit.id, error });
+      db.run(
+        `INSERT INTO review_runs(run_id, unit_id, agent, status, detail, proposed, confirmed, cost_usd, duration_ms, created_at)
+         VALUES(?, ?, 'claude', 'failed', ?, 0, 0, ?, ?, ?)`,
+        [runId, unit.id, error, unitCost, Date.now() - unitStarted, now()],
+      );
+      note(`  failed: ${error}`);
+      continue;
+    }
     const proposals = selectReviewProposals(parsed);
     summary.proposed += proposals.length;
     note(`  proposed ${proposals.length}`);
@@ -335,7 +393,7 @@ export async function runReview(
 
     let verdicts = new Map<number, VerificationVerdict>();
     if (verify && candidates.length > 0) {
-      const check = await runClaude(verificationPrompt(candidates), {
+      const check = await runAgent(verificationPrompt(candidates), {
         cwd: projectRoot,
         timeoutMs: 120_000,
         ...(options.signal ? { signal: options.signal } : {}),
@@ -346,13 +404,29 @@ export async function runReview(
       summary.costUsd += check.costUsd ?? 0;
 
       const parsedVerdicts = check.ok ? extractJson<VerificationVerdict[]>(check.text) : null;
-      if (Array.isArray(parsedVerdicts)) {
-        verdicts = new Map(
-          parsedVerdicts
-            .filter((verdict) => Number.isInteger(verdict.index))
-            .map((verdict) => [verdict.index as number, verdict]),
+      const checkedVerdicts = verificationVerdicts(parsedVerdicts, candidates);
+      if (!check.ok || !checkedVerdicts) {
+        const error = check.ok
+          ? "Verification returned malformed verdict JSON."
+          : `Verification failed: ${check.error ?? "unknown"}`;
+        summary.failures.push({ unitId: unit.id, error });
+        db.run(
+          `INSERT INTO review_runs(run_id, unit_id, agent, status, detail, proposed, confirmed, cost_usd, duration_ms, created_at)
+           VALUES(?, ?, 'claude', 'failed', ?, ?, 0, ?, ?, ?)`,
+          [
+            runId,
+            unit.id,
+            error,
+            proposals.length,
+            unitCost,
+            Date.now() - unitStarted,
+            now(),
+          ],
         );
+        note(`  failed: ${error}`);
+        continue;
       }
+      verdicts = checkedVerdicts;
     }
 
     const confirmed: FindingInput[] = [];
@@ -366,14 +440,6 @@ export async function runReview(
           continue;
         }
         if (verdict.correctedLine !== null && verdict.correctedLine !== undefined) {
-          if (
-            !Number.isInteger(verdict.correctedLine) ||
-            verdict.correctedLine < candidate.source.firstLine ||
-            verdict.correctedLine > candidate.source.lastLine
-          ) {
-            summary.rejected++;
-            continue;
-          }
           proposal.lineStart = verdict.correctedLine;
           if (proposal.lineEnd && proposal.lineEnd < verdict.correctedLine) {
             delete proposal.lineEnd;
