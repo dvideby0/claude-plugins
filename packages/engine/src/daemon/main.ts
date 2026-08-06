@@ -9,7 +9,6 @@
  */
 
 import { randomBytes } from "node:crypto";
-import { createWriteStream, type WriteStream } from "node:fs";
 import { mkdir } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
@@ -19,6 +18,7 @@ import { ENGINE_VERSION } from "../mcp/server.js";
 import type { BridgeCommand } from "./harnesses.js";
 import { createHttpServer } from "./http.js";
 import { writeLauncher } from "./launcher.js";
+import { openDaemonLog, safeStreamWriter } from "./log.js";
 import {
   acquireDaemonLock,
   DaemonAlreadyRunningError,
@@ -30,6 +30,7 @@ import { WorkspaceRegistry } from "./workspaces.js";
 const DEFAULT_PORT = Number(process.env.SDLC_PORT ?? 7420);
 let ownership: DaemonLock | null = null;
 let published = false;
+const writeStderr = safeStreamWriter(process.stderr);
 
 async function relinquishOwnership(): Promise<void> {
   if (!ownership) return;
@@ -41,10 +42,6 @@ async function relinquishOwnership(): Promise<void> {
     await lock.release();
     if (ownership === lock) ownership = null;
   }
-}
-
-function openLog(): WriteStream {
-  return createWriteStream(logFile(), { flags: "a" });
 }
 
 /**
@@ -86,12 +83,12 @@ async function main(): Promise<void> {
   const running = await readDaemon();
   if (running) {
     if (await ping(running, 5000)) {
-      process.stderr.write(
+      writeStderr(
         `An engine is already running (pid ${running.pid}, port ${running.port}).\n`,
       );
       process.exit(3);
     }
-    process.stderr.write(`Found an unresponsive daemon record for pid ${running.pid}.\n`);
+    writeStderr(`Found an unresponsive daemon record for pid ${running.pid}.\n`);
   }
 
   // daemon.json is discovery, not mutual exclusion. Hold an atomic lock for
@@ -104,7 +101,7 @@ async function main(): Promise<void> {
   const legacyRunning = await readDaemon();
   if (legacyRunning) {
     if (await ping(legacyRunning, 5000)) {
-      process.stderr.write(
+      writeStderr(
         `An engine is already running (pid ${legacyRunning.pid}, port ${legacyRunning.port}).\n`,
       );
       await relinquishOwnership();
@@ -114,11 +111,11 @@ async function main(): Promise<void> {
     await clearDaemon();
   }
 
-  const log = openLog();
+  const log = openDaemonLog(logFile());
   const write = (message: string): void => {
     const line = `${new Date().toISOString()} ${message}\n`;
     log.write(line);
-    process.stderr.write(line);
+    writeStderr(line);
   };
 
   const token = randomBytes(32).toString("hex");
@@ -138,7 +135,7 @@ async function main(): Promise<void> {
 
     handle.server.close(() => {
       void relinquishOwnership().finally(() => {
-        log.end();
+        log.close();
         process.exit(exitCode);
       });
     });
@@ -180,7 +177,7 @@ async function main(): Promise<void> {
 }
 
 main().catch(async (error) => {
-  process.stderr.write(`engine failed to start: ${error?.stack ?? error}\n`);
+  writeStderr(`engine failed to start: ${error?.stack ?? error}\n`);
   await relinquishOwnership().catch(() => {});
   process.exit(error instanceof DaemonAlreadyRunningError ? 3 : 1);
 });

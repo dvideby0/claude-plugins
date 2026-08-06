@@ -200,10 +200,10 @@ export function createMcpServer(options: McpServerOptions): McpServer {
       ...projectRootArg,
       offline: z.boolean().optional().describe("Skip the OSV advisory lookup."),
     },
-    async ({ projectRoot, offline }) =>
+    async ({ projectRoot, offline }, extra) =>
       wrap(async () => {
         const root = resolveRoot(projectRoot);
-        const result = await runAnalyzers(root, { offline });
+        const result = await runAnalyzers(root, { offline, signal: extra.signal });
         await workspaceChanged(root, "updated");
         return result;
       }),
@@ -768,7 +768,7 @@ export function createMcpServer(options: McpServerOptions): McpServer {
       root: z.string().optional().describe("Start from one symbol. Omit for every entry point."),
       rootPath: z.string().optional().describe("Repository path that disambiguates root."),
       rootId: z.string().optional().describe("Exact declaration id returned by a previous flow."),
-      depth: z.number().optional().describe("Layers to follow. Default 4, max 8."),
+      depth: z.number().int().min(0).max(8).optional().describe("Layers to follow. Default 3, max 8."),
     },
     async ({ projectRoot, root, rootPath, rootId, depth }) =>
       wrap(async () => {
@@ -777,7 +777,7 @@ export function createMcpServer(options: McpServerOptions): McpServer {
           ...(root ? { root } : {}),
           ...(rootPath ? { rootPath } : {}),
           ...(rootId ? { rootId } : {}),
-          ...(depth ? { depth } : {}),
+          ...(depth !== undefined ? { depth } : {}),
         });
         const symbols = new Map(view.nodes.map((node) => [node.id, node.symbol]));
         // The layered ids are for drawing; a caller reading this wants the shape.

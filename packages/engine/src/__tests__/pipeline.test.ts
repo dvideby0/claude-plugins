@@ -2,7 +2,7 @@ import { readFile, symlink } from "node:fs/promises";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { runAnalyzers } from "../analyze/run.js";
-import { localToolCommand } from "../analyze/tools.js";
+import { localToolCommand, nodeToolCommand } from "../analyze/tools.js";
 import { getDb } from "../db/db.js";
 import { recordFindings } from "../findings/record.js";
 import { buildContext } from "../plan/context.js";
@@ -81,6 +81,21 @@ describe("pipeline", () => {
         platform: "win32",
         comspec: "cmd.exe",
       });
+  });
+
+  it("runs POSIX npm scripts through the daemon runtime instead of env node", () => {
+    expect(
+      nodeToolCommand(
+        "/repo/node_modules/.bin/tsc",
+        "darwin",
+        "/Applications/SDLC.app/Contents/MacOS/SDLC",
+      ),
+    ).toEqual({
+      command: "/Applications/SDLC.app/Contents/MacOS/SDLC",
+      prefixArgs: ["/repo/node_modules/.bin/tsc"],
+      platform: "darwin",
+      comspec: "cmd.exe",
+    });
   });
 
   it("scans, analyses, plans, contextualises, records and exports", async () => {

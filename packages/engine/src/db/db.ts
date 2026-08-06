@@ -16,7 +16,7 @@ export class Db {
     readonly path: string,
   ) {}
 
-  static async open(projectRoot: string): Promise<Db> {
+  static async open(projectRoot: string, createIfMissing = true): Promise<Db> {
     const dbPath = join(projectRoot, "sdlc-audit", "audit.db");
     const SQL = await loadSqlJs();
 
@@ -28,7 +28,7 @@ export class Db {
       // A missing store is the only reason to start a new one. Treating a
       // permission error or corrupt SQLite image as "not found" silently
       // replaces an index the user still needs with an empty database.
-      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT" || !createIfMissing) throw error;
       raw = new SQL.Database();
     }
 
@@ -327,14 +327,28 @@ export async function closeDb(projectRoot: string): Promise<boolean> {
 /** Open a store only when an index already exists on disk. */
 export async function getExistingDb(projectRoot: string): Promise<Db> {
   const canonical = await canonicalWorkspaceRoot(projectRoot);
+  const key = workspaceIdentityKey(canonical);
   const dbPath = join(canonical, "sdlc-audit", "audit.db");
-  // Check before and after consulting the cache. The second check closes the
-  // small deletion race and prevents a cached, never-flushed empty handle from
-  // making an unindexed registered workspace look like a valid empty index.
-  await access(dbPath);
-  const db = await getDb(canonical);
-  await access(dbPath);
-  return db;
+  await closing.get(key);
+
+  const existing = open.get(key);
+  if (existing) {
+    // A cached image is safe to read, but only while its backing workspace is
+    // reachable. Reporting stale cached data for an absent external volume is
+    // less honest than marking that workspace unavailable.
+    await access(dbPath);
+    return existing;
+  }
+
+  // Do not implement this as access() followed by getDb(): the file can vanish
+  // between those calls, causing getDb() to cache a new empty image that a
+  // later flush would publish over the real store when the volume returns.
+  const opening = Db.open(canonical, false);
+  open.set(key, opening);
+  opening.catch(() => {
+    if (open.get(key) === opening) open.delete(key);
+  });
+  return opening;
 }
 
 /** Drop the cached handles — used by tests. */

@@ -50,6 +50,14 @@ afterEach(async () => {
 
 const withNative = loadNative() ? describe : describe.skip;
 
+describe("flow input bounds", () => {
+  it("rejects non-finite depth before touching the graph", () => {
+    const unreadableDb = {} as Parameters<typeof flowView>[0];
+    expect(() => flowView(unreadableDb, { depth: Number.NaN })).toThrow(/depth/i);
+    expect(() => flowView(unreadableDb, { depth: Number.POSITIVE_INFINITY })).toThrow(/depth/i);
+  });
+});
+
 withNative("flow", () => {
   it("finds the entry point and orders the layers by depth", async () => {
     root = await makeProject(PROJECT);

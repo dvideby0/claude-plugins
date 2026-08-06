@@ -1,6 +1,8 @@
+import { EventEmitter } from "node:events";
+import type { FSWatcher } from "node:fs";
 import { describe, expect, it, vi } from "vitest";
 import { hasTypedConfigChange, WatchRefreshQueue } from "../daemon/watch-refresh.js";
-import { isInterestingChange } from "../daemon/watcher.js";
+import { isInterestingChange, WorkspaceWatcher } from "../daemon/watcher.js";
 
 describe("watch refresh queue", () => {
   it("retains changes while a foreground index job is running", async () => {
@@ -124,5 +126,47 @@ describe("watch refresh queue", () => {
       expect(isInterestingChange(`${directory}/generated.ts`)).toBe(false);
       expect(isInterestingChange(`${directory}/nested`, "rename")).toBe(false);
     }
+  });
+});
+
+describe("workspace watcher recovery", () => {
+  it("retries a workspace that was temporarily unavailable", async () => {
+    let attempts = 0;
+    const fake = Object.assign(new EventEmitter(), { close: vi.fn() }) as unknown as FSWatcher;
+    const watcher = new WorkspaceWatcher({
+      retryMs: 5,
+      log: vi.fn(),
+      onChange: vi.fn(),
+      watchPath: () => {
+        attempts++;
+        if (attempts === 1) {
+          throw Object.assign(new Error("volume absent"), { code: "ENOENT" });
+        }
+        return fake;
+      },
+    });
+
+    watcher.sync(["/external/repo"]);
+    await vi.waitFor(() => expect(attempts).toBe(2));
+    expect(watcher.roots).toEqual(["/external/repo"]);
+    watcher.stopAll();
+  });
+
+  it("cancels a pending retry when the workspace is removed", async () => {
+    let attempts = 0;
+    const watcher = new WorkspaceWatcher({
+      retryMs: 20,
+      log: vi.fn(),
+      onChange: vi.fn(),
+      watchPath: () => {
+        attempts++;
+        throw Object.assign(new Error("volume absent"), { code: "ENOENT" });
+      },
+    });
+
+    watcher.sync(["/external/repo"]);
+    watcher.sync([]);
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    expect(attempts).toBe(1);
   });
 });

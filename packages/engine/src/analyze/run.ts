@@ -20,6 +20,8 @@ import { scanUnicode } from "./unicode.js";
 export interface RunAnalyzersOptions {
   /** Skip the network call to the OSV advisory database. */
   offline?: boolean;
+  /** Stop project subprocesses and network work when the caller cancels. */
+  signal?: AbortSignal;
 }
 
 export interface RunAnalyzersResult {
@@ -79,14 +81,17 @@ export async function runAnalyzers(
   projectRoot: string,
   options: RunAnalyzersOptions = {},
 ): Promise<RunAnalyzersResult> {
+  options.signal?.throwIfAborted();
   const db = await getDb(projectRoot);
-  const git = await collectGit(projectRoot);
-  const runId = await startRun(db, "tools", git.sha);
+  const git = await collectGit(projectRoot, "6 months ago", options.signal);
 
   const files = await walk(projectRoot);
+  options.signal?.throwIfAborted();
   const contents = new Map(files.map((file) => [file.path, file.content]));
 
-  const outcomes: AnalyzerOutcome[] = [...(await runProjectTools(projectRoot))];
+  const outcomes: AnalyzerOutcome[] = [
+    ...(await runProjectTools(projectRoot, options.signal)),
+  ];
   const testPaths = new Set(files.filter((file) => file.isTest).map((file) => file.path));
 
   const secretFindings = demoteFixtures(scanSecrets(files), testPaths);
@@ -101,6 +106,7 @@ export async function runAnalyzers(
     await scanSupplyChain(projectRoot, files),
     testPaths,
   );
+  options.signal?.throwIfAborted();
   outcomes.push({
     tool: "supply-chain",
     status: "ok",
@@ -119,7 +125,7 @@ export async function runAnalyzers(
   outcomes.push(
     options.offline
       ? { tool: "deps", status: "skipped", detail: "offline mode", findings: [] }
-      : await auditDependencies(projectRoot),
+      : await auditDependencies(projectRoot, options.signal),
   );
 
   const graphFindings = analyzeGraph(db);
@@ -148,6 +154,11 @@ export async function runAnalyzers(
   let suppressed = 0;
   let closed = 0;
 
+  options.signal?.throwIfAborted();
+  // Do not create a visible run until all cancellable work has completed. A
+  // removed workspace closes and flushes its handle, so inserting this before
+  // the subprocesses would persist a misleading unfinished run on cancel.
+  const runId = await startRun(db, "tools", git.sha);
   db.transaction(() => {
     for (const outcome of outcomes) {
       const summary = recordFindings(db, runId, withSnippets(outcome.findings));

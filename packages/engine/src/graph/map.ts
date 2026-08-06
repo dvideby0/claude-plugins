@@ -613,13 +613,16 @@ export function systemMap(db: Db): SystemMap {
                 step.path,
               ]) > 0
             : true,
+          // A missing baseline is stale, not clean. This happens when a flow
+          // is authored before the referenced file has been indexed; once the
+          // file appears, the claim still needs to be re-read and rewritten.
           drifted: Boolean(
             step.path &&
-              step.content_sha &&
-              step.content_sha !==
-                db.get<{ content_sha: string }>("SELECT content_sha FROM files WHERE path = ?", [
-                  step.path,
-                ])?.content_sha,
+              (!step.content_sha ||
+                step.content_sha !==
+                  db.get<{ content_sha: string }>("SELECT content_sha FROM files WHERE path = ?", [
+                    step.path,
+                  ])?.content_sha),
           ),
         })),
     }));

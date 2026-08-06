@@ -18,7 +18,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { dirname, extname, join, normalize } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { EngineStatus, WorkspaceStatus } from "@sdlc/protocol";
-import { closeDb, getDb } from "../db/db.js";
+import { closeDb, getDb, getExistingDb } from "../db/db.js";
 import { loadPlan } from "../plan/risk.js";
 import { scan } from "../scan/scan.js";
 import { createMcpServer, ENGINE_VERSION } from "../mcp/server.js";
@@ -321,7 +321,10 @@ export function createHttpServer(options: HttpServerOptions): HttpServerHandle {
           jobError: job?.error ?? null,
         };
         try {
-          const db = await getDb(workspace.root);
+          // Status polling is read-only. It must not create and cache an empty
+          // store while an external/network workspace is temporarily absent;
+          // that image could later overwrite the real store when it returns.
+          const db = await getExistingDb(workspace.root);
           const indexedFiles = db.count("SELECT COUNT(*) AS n FROM files WHERE present = 1");
           return {
             ...base,
@@ -582,6 +585,14 @@ export function createHttpServer(options: HttpServerOptions): HttpServerHandle {
         return true;
       }
 
+      if (
+        (sub === "index" || (method === "GET" && sub !== undefined)) &&
+        !isWorkspaceDirectory(workspace.root)
+      ) {
+        sendJson(res, 503, { error: `Workspace is temporarily unavailable: ${workspace.root}` });
+        return true;
+      }
+
       if (sub === "index" && method === "POST") {
         const body = (await readBody(req)) as { draw?: string | null } | undefined;
         const draw = body?.draw ?? null;
@@ -649,6 +660,12 @@ export function createHttpServer(options: HttpServerOptions): HttpServerHandle {
         }
         if (sub === "flow") {
           const root = query.get("root");
+          const rawDepth = query.get("depth");
+          const depth = rawDepth === null ? undefined : Number(rawDepth);
+          if (depth !== undefined && (!Number.isInteger(depth) || depth < 0 || depth > 8)) {
+            sendJson(res, 400, { error: "depth must be an integer between 0 and 8." });
+            return true;
+          }
           sendJson(
             res,
             200,
@@ -656,7 +673,7 @@ export function createHttpServer(options: HttpServerOptions): HttpServerHandle {
               ...(root ? { root } : {}),
               ...(query.get("rootId") ? { rootId: query.get("rootId") as string } : {}),
               ...(query.get("rootPath") ? { rootPath: query.get("rootPath") as string } : {}),
-              ...(query.get("depth") ? { depth: Number(query.get("depth")) } : {}),
+              ...(depth !== undefined ? { depth } : {}),
             }),
           );
           return true;

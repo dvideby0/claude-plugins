@@ -146,7 +146,16 @@ function severityOf(vuln: OsvVuln | undefined): Severity {
   return "high";
 }
 
-export async function auditDependencies(projectRoot: string): Promise<AnalyzerOutcome> {
+function timedSignal(signal: AbortSignal | undefined, timeoutMs: number): AbortSignal {
+  const timeout = AbortSignal.timeout(timeoutMs);
+  return signal ? AbortSignal.any([signal, timeout]) : timeout;
+}
+
+export async function auditDependencies(
+  projectRoot: string,
+  signal?: AbortSignal,
+): Promise<AnalyzerOutcome> {
+  signal?.throwIfAborted();
   const deps = await collectDependencies(projectRoot);
   if (deps.length === 0) {
     return { tool: "deps", status: "skipped", detail: "no lockfile found", findings: [] };
@@ -171,7 +180,7 @@ export async function auditDependencies(projectRoot: string): Promise<AnalyzerOu
             version: dep.version,
           })),
         }),
-        signal: AbortSignal.timeout(20_000),
+        signal: timedSignal(signal, 20_000),
       });
       if (!response.ok) {
         failures.push(`OSV returned ${response.status}`);
@@ -184,6 +193,7 @@ export async function auditDependencies(projectRoot: string): Promise<AnalyzerOu
       // Results align with deps by index; a short reply must not shift them.
       for (let i = 0; i < slice.length; i++) results.push(rows[i] ?? {});
     } catch {
+      signal?.throwIfAborted();
       failures.push("OSV unreachable");
       unchecked += slice.length;
       results.push(...slice.map(() => ({})));
@@ -210,13 +220,14 @@ export async function auditDependencies(projectRoot: string): Promise<AnalyzerOu
   for (const { ids } of affected.slice(0, MAX_DETAIL_LOOKUPS)) {
     try {
       const response = await fetch(`${OSV_VULN_URL}/${ids[0]}`, {
-        signal: AbortSignal.timeout(10_000),
+        signal: timedSignal(signal, 10_000),
       });
       if (response.ok) {
         const vuln = (await response.json()) as OsvVuln;
         details.set(ids[0], vuln);
       }
     } catch {
+      signal?.throwIfAborted();
       // Detail lookup is best-effort.
     }
   }

@@ -1,4 +1,4 @@
-import { writeFile } from "node:fs/promises";
+import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { getDb } from "../db/db.js";
@@ -94,6 +94,26 @@ describe("the drawn map", () => {
     await scan(root, { kind: "incremental" });
 
     expect(systemMap(db).flows[0]?.steps[0]?.resolves).toBe(false);
+  });
+
+  it("keeps a flow stale when a file appears after the flow was authored", async () => {
+    root = await makeProject({ "package.json": "{}" });
+    const db = await getDb(root);
+    describeFlow(db, {
+      name: "Future worker",
+      steps: [{ label: "Run later", path: "src/worker.ts", symbol: "run" }],
+    });
+
+    await mkdir(join(root, "src"), { recursive: true });
+    await writeFile(join(root, "src/worker.ts"), "export function run() { return 1; }\n");
+    await scan(root, { kind: "incremental" });
+
+    expect(mapDrift(db).flows[0]?.steps).toContain("Run later");
+    describeFlow(db, {
+      name: "Future worker",
+      steps: [{ label: "Run later", path: "src/worker.ts", symbol: "run" }],
+    });
+    expect(mapDrift(db).flows).toHaveLength(0);
   });
 
   it("drifts only the box whose files moved", async () => {

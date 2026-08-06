@@ -16,6 +16,7 @@ export interface GitInfo {
 export async function collectGit(
   projectRoot: string,
   since = "6 months ago",
+  signal?: AbortSignal,
 ): Promise<GitInfo> {
   const empty: GitInfo = { available: false, sha: null, churn: new Map() };
 
@@ -28,6 +29,7 @@ export async function collectGit(
   const head = await exec("git", ["rev-parse", "HEAD"], {
     cwd: projectRoot,
     timeout: 10_000,
+    signal,
   });
   if (head.spawnFailed) return empty;
 
@@ -39,7 +41,7 @@ export async function collectGit(
   const log = await exec(
     "git",
     ["-c", "core.quotePath=false", "log", "--format=format:", "--name-only", `--since=${since}`],
-    { cwd: projectRoot, timeout: 30_000 },
+    { cwd: projectRoot, timeout: 30_000, signal },
   );
 
   const churn = new Map<string, number>();

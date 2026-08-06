@@ -28,6 +28,8 @@ export interface ExecOptions {
   timeout?: number;
   maxBuffer?: number;
   env?: NodeJS.ProcessEnv;
+  /** Cancels the process and rejects the call instead of reporting a tool failure. */
+  signal?: AbortSignal;
   /** Set only when arguments were pre-escaped for cmd.exe. */
   windowsVerbatimArguments?: boolean;
 }
@@ -150,8 +152,17 @@ export function exec(
   args: string[],
   options: ExecOptions = {},
 ): Promise<ExecResult> {
-  return new Promise((resolve) => {
-    execFile(
+  options.signal?.throwIfAborted();
+  return new Promise((resolve, reject) => {
+    let child: ChildProcess;
+    const onAbort = (): void => {
+      // AbortSignal kills the direct child. On Windows that child may be
+      // cmd.exe in front of an npm shim, so explicitly terminate its tree.
+      if (process.platform === "win32" && child) terminateProcessTree(child);
+    };
+    const finish = (): void => options.signal?.removeEventListener("abort", onAbort);
+
+    child = execFile(
       command,
       args,
       {
@@ -160,9 +171,15 @@ export function exec(
         maxBuffer: options.maxBuffer ?? DEFAULT_MAX_BUFFER,
         encoding: "utf-8",
         env: options.env,
+        signal: options.signal,
         windowsVerbatimArguments: options.windowsVerbatimArguments,
       },
       (error, stdout, stderr) => {
+        finish();
+        if (options.signal?.aborted) {
+          reject(options.signal.reason ?? error ?? new Error("The operation was aborted."));
+          return;
+        }
         if (!error) {
           resolve({
             stdout,
@@ -212,6 +229,8 @@ export function exec(
         });
       },
     );
+    options.signal?.addEventListener("abort", onAbort, { once: true });
+    if (options.signal?.aborted) onAbort();
   });
 }
 

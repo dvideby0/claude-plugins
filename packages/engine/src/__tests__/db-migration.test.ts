@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, rename, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { getDb } from "../db/db.js";
+import { getDb, getExistingDb, resetDbCache } from "../db/db.js";
 import { loadSqlJs } from "../runtime/assets.js";
 import { cleanup, makeProject } from "./helpers.js";
 
@@ -11,6 +11,24 @@ afterEach(async () => {
 });
 
 describe("database migrations", () => {
+  it("does not cache a blank store while an existing index is unavailable", async () => {
+    root = await makeProject({ "package.json": "{}" });
+    const db = await getDb(root);
+    db.run("INSERT OR REPLACE INTO meta(key, value) VALUES('sentinel', 'kept')");
+    await db.flush();
+    await resetDbCache();
+
+    const path = join(root, "sdlc-audit", "audit.db");
+    const offline = `${path}.offline`;
+    await rename(path, offline);
+    await expect(getExistingDb(root)).rejects.toMatchObject({ code: "ENOENT" });
+    await rename(offline, path);
+
+    const reopened = await getExistingDb(root);
+    expect(reopened.get<{ value: string }>("SELECT value FROM meta WHERE key = 'sentinel'")?.value)
+      .toBe("kept");
+  });
+
   it("rebuilds the legacy refs key with source-column occurrence identity", async () => {
     root = await makeProject({ "package.json": "{}" });
     const SQL = await loadSqlJs();

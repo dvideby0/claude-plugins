@@ -16,6 +16,13 @@ import { classify, isIgnoredDirectorySegment, isNoise } from "../scan/walk.js";
 export interface WatcherOptions {
   /** Quiet period before re-indexing. */
   debounceMs?: number;
+  /** Delay before retrying a temporarily unavailable workspace. */
+  retryMs?: number;
+  /** Test seam for filesystem availability failures. */
+  watchPath?: (
+    root: string,
+    options: { recursive: boolean; persistent: boolean },
+  ) => FSWatcher;
   onChange: (root: string, changed: number, paths: string[]) => void;
   log: (message: string) => void;
 }
@@ -45,10 +52,16 @@ interface Watched {
 
 export class WorkspaceWatcher {
   private readonly watched = new Map<string, Watched>();
+  private readonly wanted = new Set<string>();
+  private readonly retries = new Map<string, NodeJS.Timeout>();
   private readonly debounceMs: number;
+  private readonly retryMs: number;
+  private readonly watchPath: NonNullable<WatcherOptions["watchPath"]>;
 
   constructor(private readonly options: WatcherOptions) {
     this.debounceMs = options.debounceMs ?? 1500;
+    this.retryMs = options.retryMs ?? 30_000;
+    this.watchPath = options.watchPath ?? ((root, watchOptions) => watch(root, watchOptions));
   }
 
   get roots(): string[] {
@@ -61,15 +74,21 @@ export class WorkspaceWatcher {
    * whole repository, which costs more than it saves.
    */
   start(root: string): void {
-    if (this.watched.has(root)) return;
+    this.wanted.add(root);
+    this.tryStart(root);
+  }
+
+  private tryStart(root: string): void {
+    if (!this.wanted.has(root) || this.watched.has(root) || this.retries.has(root)) return;
 
     let watcher: FSWatcher;
     try {
-      watcher = watch(root, { recursive: true, persistent: false });
+      watcher = this.watchPath(root, { recursive: true, persistent: false });
     } catch (error) {
       this.options.log(
         `not watching ${root}: ${error instanceof Error ? error.message : String(error)}`,
       );
+      this.scheduleRetry(root, error);
       return;
     }
 
@@ -77,7 +96,8 @@ export class WorkspaceWatcher {
 
     watcher.on("error", (error) => {
       this.options.log(`watch error on ${root}: ${error.message}`);
-      this.stop(root);
+      this.close(root);
+      this.scheduleRetry(root, error);
     });
 
     watcher.on("change", (event, filename) => {
@@ -100,7 +120,7 @@ export class WorkspaceWatcher {
     this.options.log(`watching ${root}`);
   }
 
-  stop(root: string): void {
+  private close(root: string): void {
     const entry = this.watched.get(root);
     if (!entry) return;
     if (entry.timer) clearTimeout(entry.timer);
@@ -108,17 +128,48 @@ export class WorkspaceWatcher {
     this.watched.delete(root);
   }
 
+  private scheduleRetry(root: string, error: unknown): void {
+    const code = (error as NodeJS.ErrnoException)?.code;
+    // Recursive watching being unsupported is permanent for this platform;
+    // retry only failures that can recover when a volume is mounted, access is
+    // restored, or an OS watcher resource becomes available again.
+    if (
+      !this.wanted.has(root) ||
+      !["ENOENT", "EACCES", "EPERM", "ESTALE", "EIO", "ENXIO", "ENOSPC"].includes(code ?? "") ||
+      this.retries.has(root)
+    ) {
+      return;
+    }
+    const timer = setTimeout(() => {
+      this.retries.delete(root);
+      this.tryStart(root);
+    }, this.retryMs);
+    timer.unref();
+    this.retries.set(root, timer);
+  }
+
+  stop(root: string): void {
+    this.wanted.delete(root);
+    const retry = this.retries.get(root);
+    if (retry) clearTimeout(retry);
+    this.retries.delete(root);
+    this.close(root);
+  }
+
   /** Bring the watch set in line with the registry. */
   sync(roots: string[]): void {
     const wanted = new Set(roots);
-    for (const root of this.watched.keys()) {
+    for (const root of this.wanted) {
       if (!wanted.has(root)) this.stop(root);
     }
-    for (const root of wanted) this.start(root);
+    for (const root of wanted) {
+      this.wanted.add(root);
+      this.tryStart(root);
+    }
   }
 
   stopAll(): void {
-    for (const root of [...this.watched.keys()]) this.stop(root);
+    for (const root of [...this.wanted]) this.stop(root);
   }
 }
 

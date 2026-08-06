@@ -391,6 +391,18 @@ describe("subprocess output bounds", () => {
     expect(result.spawnFailed).toBe(false);
     expect(result.timedOut).toBe(false);
   });
+
+  it("rejects cancellation and stops a long-running child promptly", async () => {
+    const controller = new AbortController();
+    const running = exec(
+      process.execPath,
+      ["-e", "setInterval(() => {}, 1000)"],
+      { signal: controller.signal, timeout: 10_000 },
+    );
+    setTimeout(() => controller.abort(new Error("cancelled by caller")), 25);
+
+    await expect(running).rejects.toThrow(/cancelled by caller/);
+  });
 });
 
 describe("launcher quoting", () => {

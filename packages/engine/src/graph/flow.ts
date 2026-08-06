@@ -140,6 +140,11 @@ export interface FlowOptions {
 }
 
 export function flowView(db: Db, options: FlowOptions = {}): FlowView {
+  const requestedDepth = options.depth ?? 3;
+  if (!Number.isInteger(requestedDepth) || requestedDepth < 0) {
+    throw new RangeError("Flow depth must be a non-negative finite integer.");
+  }
+
   // No references at all means the call graph was never built — an empty
   // result would read as "this code has no entry points", which is wrong.
   if (db.count("SELECT COUNT(*) AS n FROM refs") === 0) {
@@ -155,7 +160,7 @@ export function flowView(db: Db, options: FlowOptions = {}): FlowView {
     };
   }
 
-  const maxDepth = Math.min(options.depth ?? 3, 8);
+  const maxDepth = Math.min(requestedDepth, 8);
   // Deliberately small. This is a diagram someone reads, and past roughly
   // this many boxes it scales down to the point where the labels stop being
   // words. Anything larger belongs in the force graph or in `trace`.

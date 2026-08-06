@@ -8,7 +8,7 @@
 
 import { access, constants, readdir } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative } from "node:path";
-import { exec, platformCommand } from "../lib/exec.js";
+import { exec, platformCommand, spawnEnv } from "../lib/exec.js";
 import type { Category, FindingInput, Severity } from "../findings/types.js";
 
 export interface AnalyzerOutcome {
@@ -20,6 +20,8 @@ export interface AnalyzerOutcome {
 
 export interface LocalToolCommand {
   command: string;
+  /** Arguments that select the tool before its invocation-specific arguments. */
+  prefixArgs?: string[];
   platform: NodeJS.Platform;
   comspec: string;
 }
@@ -47,10 +49,21 @@ export function localToolCommand(
   return { command: path, platform: platform === "win32" && batch ? "win32" : platform, comspec };
 }
 
+/** Run POSIX npm bin scripts through the daemon's known Node/Electron runtime. */
+export function nodeToolCommand(
+  path: string,
+  platform: NodeJS.Platform = process.platform,
+  runtime = process.execPath,
+  comspec = process.env.ComSpec ?? process.env.COMSPEC ?? "cmd.exe",
+): LocalToolCommand {
+  if (platform === "win32") return localToolCommand(path, true, platform, comspec);
+  return { command: runtime, prefixArgs: [path], platform, comspec };
+}
+
 async function nodeBin(projectRoot: string, name: string): Promise<LocalToolCommand | null> {
   const batch = process.platform === "win32";
   const local = join(projectRoot, "node_modules", ".bin", `${name}${batch ? ".cmd" : ""}`);
-  return (await canExec(local)) ? localToolCommand(local, batch) : null;
+  return (await canExec(local)) ? nodeToolCommand(local) : null;
 }
 
 async function pythonBin(projectRoot: string, name: string): Promise<LocalToolCommand | null> {
@@ -67,11 +80,20 @@ async function pythonBin(projectRoot: string, name: string): Promise<LocalToolCo
 function runLocal(
   tool: LocalToolCommand,
   args: string[],
-  options: { cwd: string; timeout: number },
+  options: { cwd: string; timeout: number; signal?: AbortSignal },
 ) {
-  const command = platformCommand(tool.command, args, tool.platform, tool.comspec);
+  const command = platformCommand(
+    tool.command,
+    [...(tool.prefixArgs ?? []), ...args],
+    tool.platform,
+    tool.comspec,
+  );
   return exec(command.command, command.args, {
     ...options,
+    // Project tools may spawn node/npm themselves. Finder-launched macOS apps
+    // inherit a minimal launchd PATH, so give those descendants the same
+    // augmented environment as harness detection.
+    env: spawnEnv(),
     windowsVerbatimArguments: command.windowsVerbatimArguments,
   });
 }
@@ -111,7 +133,7 @@ interface EslintMessage {
   endLine?: number;
 }
 
-async function runEslint(projectRoot: string): Promise<AnalyzerOutcome> {
+async function runEslint(projectRoot: string, signal?: AbortSignal): Promise<AnalyzerOutcome> {
   if (!(await exists(join(projectRoot, "package.json")))) {
     return skipped("eslint", "no package.json");
   }
@@ -121,6 +143,7 @@ async function runEslint(projectRoot: string): Promise<AnalyzerOutcome> {
   const result = await runLocal(bin, [".", "--format", "json", "--no-error-on-unmatched-pattern"], {
     cwd: projectRoot,
     timeout: TIMEOUT,
+    signal,
   });
   if (result.timedOut) return failed("eslint", "timed out");
   if (result.spawnFailed) return failed("eslint", "could not execute");
@@ -244,7 +267,7 @@ export async function findTsConfigs(
   return { roots: roots.slice(0, limit), capped: roots.length > limit };
 }
 
-async function runTsc(projectRoot: string): Promise<AnalyzerOutcome> {
+async function runTsc(projectRoot: string, signal?: AbortSignal): Promise<AnalyzerOutcome> {
   const discovery = await findTsConfigs(projectRoot);
   const { roots } = discovery;
   if (roots.length === 0) {
@@ -264,6 +287,7 @@ async function runTsc(projectRoot: string): Promise<AnalyzerOutcome> {
     const result = await runLocal(bin, ["--noEmit", "--pretty", "false"], {
       cwd: root,
       timeout: TIMEOUT,
+      signal,
     });
     const name = rel(projectRoot, root) || ".";
     if (result.timedOut) {
@@ -347,7 +371,7 @@ function ruffSeverity(code: string): { severity: Severity; category: Category } 
   return { severity: "medium", category: "maintainability" };
 }
 
-async function runRuff(projectRoot: string): Promise<AnalyzerOutcome> {
+async function runRuff(projectRoot: string, signal?: AbortSignal): Promise<AnalyzerOutcome> {
   const hasPython =
     (await exists(join(projectRoot, "pyproject.toml"))) ||
     (await exists(join(projectRoot, "requirements.txt"))) ||
@@ -360,6 +384,7 @@ async function runRuff(projectRoot: string): Promise<AnalyzerOutcome> {
   const result = await runLocal(bin, ["check", ".", "--output-format", "json"], {
     cwd: projectRoot,
     timeout: TIMEOUT,
+    signal,
   });
   if (result.timedOut) return failed("ruff", "timed out");
   if (result.spawnFailed) return failed("ruff", "could not execute");
@@ -402,7 +427,7 @@ async function runRuff(projectRoot: string): Promise<AnalyzerOutcome> {
 
 // --- mypy ------------------------------------------------------------------
 
-async function runMypy(projectRoot: string): Promise<AnalyzerOutcome> {
+async function runMypy(projectRoot: string, signal?: AbortSignal): Promise<AnalyzerOutcome> {
   if (!(await exists(join(projectRoot, "pyproject.toml"))) &&
       !(await exists(join(projectRoot, "mypy.ini")))) {
     return skipped("mypy", "no mypy config");
@@ -413,6 +438,7 @@ async function runMypy(projectRoot: string): Promise<AnalyzerOutcome> {
   const result = await runLocal(bin, [".", "--no-error-summary", "--no-color-output"], {
     cwd: projectRoot,
     timeout: TIMEOUT,
+    signal,
   });
   if (result.timedOut) return failed("mypy", "timed out");
   if (result.spawnFailed) return failed("mypy", "could not execute");
@@ -454,11 +480,15 @@ async function runMypy(projectRoot: string): Promise<AnalyzerOutcome> {
   return { tool: "mypy", status: "ok", detail: `${findings.length} errors`, findings };
 }
 
-export async function runProjectTools(projectRoot: string): Promise<AnalyzerOutcome[]> {
+export async function runProjectTools(
+  projectRoot: string,
+  signal?: AbortSignal,
+): Promise<AnalyzerOutcome[]> {
+  signal?.throwIfAborted();
   return Promise.all([
-    runEslint(projectRoot),
-    runTsc(projectRoot),
-    runRuff(projectRoot),
-    runMypy(projectRoot),
+    runEslint(projectRoot, signal),
+    runTsc(projectRoot, signal),
+    runRuff(projectRoot, signal),
+    runMypy(projectRoot, signal),
   ]);
 }
