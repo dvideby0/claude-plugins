@@ -28,44 +28,62 @@ export class WorkspaceRegistry {
   private async load(): Promise<void> {
     if (this.loaded) return;
     let changed = false;
+    let content: string;
     try {
-      const raw = JSON.parse(await readFile(this.path, "utf-8")) as Workspace[];
-      for (const item of raw) {
-        const root = await canonicalWorkspaceRoot(item.root);
-        const id = idFor(root);
-        const normalized: Workspace = {
-          ...item,
-          id,
-          root,
-          name: basename(root) || root,
-          generation: Number.isFinite(item.generation) ? item.generation : 0,
-        };
-        const existing = this.items.get(id);
-        if (!existing) {
-          this.items.set(id, normalized);
-        } else {
-          // Old registries can contain both a symlink and its target. Preserve
-          // the earliest registration and the newest successful index time.
-          const indexed = [existing.lastIndexedAt, normalized.lastIndexedAt]
-            .filter((value): value is string => Boolean(value))
-            .sort()
-            .at(-1) ?? null;
-          this.items.set(id, {
-            ...existing,
-            addedAt:
-              existing.addedAt < normalized.addedAt ? existing.addedAt : normalized.addedAt,
-            lastIndexedAt: indexed,
-            generation: Math.max(existing.generation, normalized.generation),
-          });
-        }
-        changed ||=
-          item.id !== id ||
-          item.root !== root ||
-          !Number.isFinite(item.generation) ||
-          Boolean(existing);
+      content = await readFile(this.path, "utf-8");
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      // No registry yet — the first successful mutation creates it.
+      this.loaded = true;
+      return;
+    }
+
+    const raw = JSON.parse(content) as unknown;
+    if (!Array.isArray(raw)) {
+      throw new Error(`Workspace registry ${this.path} must contain a JSON array.`);
+    }
+    for (const value of raw) {
+      const item = value as Partial<Workspace>;
+      if (
+        typeof item.root !== "string" ||
+        typeof item.id !== "string" ||
+        typeof item.addedAt !== "string"
+      ) {
+        throw new Error(`Workspace registry ${this.path} contains an invalid entry.`);
       }
-    } catch {
-      // No registry yet — the first touch creates it.
+      const root = await canonicalWorkspaceRoot(item.root);
+      const id = idFor(root);
+      const normalized: Workspace = {
+        id,
+        root,
+        name: basename(root) || root,
+        addedAt: item.addedAt,
+        lastIndexedAt: typeof item.lastIndexedAt === "string" ? item.lastIndexedAt : null,
+        generation: Number.isFinite(item.generation) ? item.generation! : 0,
+      };
+      const existing = this.items.get(id);
+      if (!existing) {
+        this.items.set(id, normalized);
+      } else {
+        // Old registries can contain both a symlink and its target. Preserve
+        // the earliest registration and the newest successful index time.
+        const indexed = [existing.lastIndexedAt, normalized.lastIndexedAt]
+          .filter((value): value is string => Boolean(value))
+          .sort()
+          .at(-1) ?? null;
+        this.items.set(id, {
+          ...existing,
+          addedAt:
+            existing.addedAt < normalized.addedAt ? existing.addedAt : normalized.addedAt,
+          lastIndexedAt: indexed,
+          generation: Math.max(existing.generation, normalized.generation),
+        });
+      }
+      changed ||=
+        item.id !== id ||
+        item.root !== root ||
+        !Number.isFinite(item.generation) ||
+        Boolean(existing);
     }
     this.loaded = true;
     if (changed) await this.save();

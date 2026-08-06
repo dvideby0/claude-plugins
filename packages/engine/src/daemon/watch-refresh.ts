@@ -20,8 +20,14 @@ export class WatchRefreshQueue {
 
   constructor(private readonly options: WatchRefreshOptions) {}
 
-  enqueue(root: string, paths: Iterable<string>): void {
+  /** Re-enable a root only after the registry has explicitly accepted it. */
+  register(root: string): void {
     this.discarded.delete(root);
+    this.kick(root);
+  }
+
+  enqueue(root: string, paths: Iterable<string>): void {
+    if (this.discarded.has(root)) return;
     const batch = this.pending.get(root) ?? new Set<string>();
     for (const path of paths) batch.add(path);
     this.pending.set(root, batch);

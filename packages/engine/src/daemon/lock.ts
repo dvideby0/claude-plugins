@@ -3,12 +3,15 @@ import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { uptime } from "node:os";
 import { dirname, join } from "node:path";
 import { daemonLockDir, pidAlive } from "@sdlc/protocol";
+import { exec } from "../lib/exec.js";
 
 interface LockOwner {
   pid: number;
   token: string;
   createdAt: string;
   bootTimeMs: number;
+  /** OS process-start identity, stable for a process but different after PID reuse. */
+  processIdentity?: string;
 }
 
 export interface DaemonLock {
@@ -20,6 +23,8 @@ export interface DaemonLockOptions {
   bootTimeMs?: () => number;
   /** Pause after the private candidate is complete, before atomic publication. */
   beforePublish?: () => void | Promise<void>;
+  /** Injectable process identity lookup for deterministic lifecycle tests. */
+  processIdentity?: (pid: number) => Promise<string | null>;
 }
 
 export class DaemonAlreadyRunningError extends Error {
@@ -40,8 +45,46 @@ function ownerIsValid(value: unknown): value is LockOwner {
       typeof owner.pid === "number" &&
       typeof owner.token === "string" &&
       typeof owner.createdAt === "string" &&
-      typeof owner.bootTimeMs === "number",
+      typeof owner.bootTimeMs === "number" &&
+      (owner.processIdentity === undefined || typeof owner.processIdentity === "string"),
   );
+}
+
+async function currentProcessIdentity(pid: number): Promise<string | null> {
+  try {
+    if (process.platform === "linux") {
+      const stat = await readFile(`/proc/${pid}/stat`, "utf-8");
+      // The executable name is parenthesized and may contain spaces. Fields
+      // after it begin at #3; process start ticks are field #22.
+      const fields = stat.slice(stat.lastIndexOf(")") + 2).trim().split(/\s+/);
+      return fields[19] ? `linux:${fields[19]}` : null;
+    }
+    if (process.platform === "darwin" || process.platform === "freebsd") {
+      const result = await exec("/bin/ps", ["-o", "lstart=", "-p", String(pid)], {
+        timeout: 2_000,
+      });
+      const started = result.stdout.trim();
+      return result.exitCode === 0 && started ? `${process.platform}:${started}` : null;
+    }
+    if (process.platform === "win32") {
+      const result = await exec(
+        "powershell.exe",
+        [
+          "-NoProfile",
+          "-NonInteractive",
+          "-Command",
+          `(Get-Process -Id ${pid}).StartTime.ToUniversalTime().Ticks`,
+        ],
+        { timeout: 2_000 },
+      );
+      const started = result.stdout.trim();
+      return result.exitCode === 0 && started ? `win32:${started}` : null;
+    }
+  } catch {
+    // Failure to inspect another process must fail safe: liveness still keeps
+    // the lock below, just without the extra PID-reuse distinction.
+  }
+  return null;
 }
 
 function currentBootTimeMs(): number {
@@ -76,12 +119,15 @@ export async function acquireDaemonLock(
   options: DaemonLockOptions = {},
 ): Promise<DaemonLock> {
   const bootTimeMs = options.bootTimeMs ?? currentBootTimeMs;
+  const identifyProcess = options.processIdentity ?? currentProcessIdentity;
   const token = randomBytes(16).toString("hex");
+  const identity = await identifyProcess(process.pid);
   const owner: LockOwner = {
     pid: process.pid,
     token,
     createdAt: new Date().toISOString(),
     bootTimeMs: bootTimeMs(),
+    ...(identity ? { processIdentity: identity } : {}),
   };
 
   // Build the complete lock privately, then rename it into place. Publishing
@@ -113,7 +159,12 @@ export async function acquireDaemonLock(
       const existing = await readOwner(path);
       const sameBoot =
         existing && Math.abs(existing.bootTimeMs - bootTimeMs()) < 60_000;
-      if (existing && sameBoot && pidAlive(existing.pid)) {
+      const alive = Boolean(existing && sameBoot && pidAlive(existing.pid));
+      const liveIdentity =
+        alive && existing?.processIdentity ? await identifyProcess(existing.pid) : null;
+      const sameProcess =
+        !existing?.processIdentity || liveIdentity === null || liveIdentity === existing.processIdentity;
+      if (existing && alive && sameProcess) {
         // A health timeout is not proof that the owner died: indexing and
         // compiler passes can keep the event loop busy beyond the ping window.
         // Reclaiming from a live PID would permit two sql.js writers and let a

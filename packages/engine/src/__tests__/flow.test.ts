@@ -136,4 +136,17 @@ withNative("flow", () => {
     expect(second.nodes.map((node) => node.symbol)).toContain("beta");
     expect(second.nodes.map((node) => node.symbol)).not.toContain("alpha");
   });
+
+  it("returns candidates instead of merging ambiguous named roots", async () => {
+    root = await makeProject(PROJECT);
+    await scan(root, { kind: "full" });
+    const db = await getDb(root);
+    expect(resolveTypes(db, root).ran).toBe(true);
+
+    const ambiguous = flowView(db, { root: "run", depth: 2 });
+    expect(ambiguous.entries).toEqual([]);
+    expect(ambiguous.nodes).toEqual([]);
+    expect(ambiguous.note).toMatch(/ambiguous/i);
+    expect(ambiguous.candidates).toHaveLength(2);
+  });
 });

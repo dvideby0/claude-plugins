@@ -86,4 +86,26 @@ describe("daemon ownership lock", () => {
       }),
     ).rejects.toBeInstanceOf(DaemonAlreadyRunningError);
   });
+
+  it("reclaims a same-boot lock after its pid was reused", async () => {
+    root = await makeProject({});
+    const path = join(root, "daemon.lock");
+    await mkdir(path);
+    await writeFile(
+      join(path, "owner.json"),
+      JSON.stringify({
+        pid: process.pid,
+        token: "owner-from-dead-engine",
+        createdAt: new Date(Date.now() - 60_000).toISOString(),
+        bootTimeMs: 1234,
+        processIdentity: "old-process-start",
+      }),
+    );
+
+    const lock = await acquireDaemonLock(path, {
+      bootTimeMs: () => 1234,
+      processIdentity: async () => "reused-pid-new-process-start",
+    });
+    await lock.release();
+  });
 });

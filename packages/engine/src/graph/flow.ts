@@ -45,6 +45,8 @@ export interface FlowEdge {
 export interface FlowView {
   /** Set when the index has no references at all, which is not the same as none existing. */
   note?: string;
+  /** Exact declarations a caller can use to disambiguate a requested root. */
+  candidates?: Array<{ id: string; symbol: string; path: string; line: number }>;
   /** Entry points, in the order they should be listed. */
   entries: string[];
   nodes: FlowNode[];
@@ -172,6 +174,23 @@ export function flowView(db: Db, options: FlowOptions = {}): FlowView {
         options.rootPath ? [options.root, options.rootPath] : [options.root],
       )
     : entryPoints(db, maxEntries);
+
+  if (options.root && roots.length > 1) {
+    return {
+      note: `Symbol "${options.root}" is ambiguous; retry with rootId or rootPath.`,
+      candidates: roots.map(({ id, symbol, path, line }) => ({ id, symbol, path, line })),
+      entries: [],
+      nodes: [],
+      edges: [],
+      layers: [],
+      commons: [],
+      truncated: false,
+      totalCallable: db.count(
+        `SELECT COUNT(*) AS n FROM symbols s JOIN files f ON f.path = s.path
+         WHERE s.kind IN ${CALLABLE} AND f.present = 1`,
+      ),
+    };
+  }
 
   const nodes = new Map<string, FlowNode>();
   const edges: FlowEdge[] = [];

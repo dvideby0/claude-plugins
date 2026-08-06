@@ -11,14 +11,7 @@
  */
 
 import { watch, type FSWatcher } from "node:fs";
-import { classify, isNoise } from "../scan/walk.js";
-
-/** Directories whose churn is never worth reacting to. */
-const IGNORED_SEGMENTS = new Set([
-  "node_modules", ".git", "dist", "build", "out", "target", "coverage",
-  "__pycache__", ".venv", "venv", ".mypy_cache", ".ruff_cache", ".pytest_cache",
-  "sdlc-audit", ".turbo", ".cache", ".next", ".parcel-cache",
-]);
+import { classify, isIgnoredDirectorySegment, isNoise } from "../scan/walk.js";
 
 export interface WatcherOptions {
   /** Quiet period before re-indexing. */
@@ -30,7 +23,7 @@ export interface WatcherOptions {
 function interesting(relative: string, event: "rename" | "change" = "change"): boolean {
   if (!relative) return false;
   for (const segment of relative.split(/[\\/]/)) {
-    if (IGNORED_SEGMENTS.has(segment)) return false;
+    if (isIgnoredDirectorySegment(segment)) return false;
     // Editor swap and lock files, which change constantly and mean nothing.
     if (segment.startsWith(".#") || segment.endsWith("~")) return false;
   }

@@ -766,20 +766,24 @@ export function createMcpServer(options: McpServerOptions): McpServer {
     {
       ...projectRootArg,
       root: z.string().optional().describe("Start from one symbol. Omit for every entry point."),
+      rootPath: z.string().optional().describe("Repository path that disambiguates root."),
       rootId: z.string().optional().describe("Exact declaration id returned by a previous flow."),
       depth: z.number().optional().describe("Layers to follow. Default 4, max 8."),
     },
-    async ({ projectRoot, root, rootId, depth }) =>
+    async ({ projectRoot, root, rootPath, rootId, depth }) =>
       wrap(async () => {
         const db = await getDb(resolveRoot(projectRoot));
         const view = flowView(db, {
           ...(root ? { root } : {}),
+          ...(rootPath ? { rootPath } : {}),
           ...(rootId ? { rootId } : {}),
           ...(depth ? { depth } : {}),
         });
         const symbols = new Map(view.nodes.map((node) => [node.id, node.symbol]));
         // The layered ids are for drawing; a caller reading this wants the shape.
         return {
+          ...(view.note ? { note: view.note } : {}),
+          ...(view.candidates ? { candidates: view.candidates } : {}),
           entries: view.entries,
           layers: view.layers.map((layer, depthIndex) => ({
             depth: depthIndex,

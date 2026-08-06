@@ -218,7 +218,11 @@ function findConfigs(
   }
   const configs = [...new Set(found)].sort((a, b) => {
     const depth = (path: string) => relative(projectRoot, path).split(/[\\/]/).length;
-    return depth(a) - depth(b) || a.localeCompare(b);
+    // A root config often includes every package while a nested config owns
+    // the same files with package-specific paths/baseUrl settings. The first
+    // program to analyse a file wins below, so closest (deepest) ownership
+    // must precede broad repository defaults.
+    return depth(b) - depth(a) || a.localeCompare(b);
   });
   return { configs, capped };
 }
@@ -357,7 +361,8 @@ export function analyseTypes(projectRoot: string): TypedAnalysis {
       const src = inRepo(sourceFile.fileName);
       if (!src) continue;
       // A file pulled into several programs is analysed under the first
-      // config that owns it, which the walk visits shallowest-first.
+      // config that owns it. Config discovery orders the most-specific
+      // package config before broader repository configs.
       if (analysed.has(sourceFile.fileName)) continue;
       analysed.add(sourceFile.fileName);
       filesAnalysed++;

@@ -260,6 +260,38 @@ export function packageEntry() { return makeStore().add("ok"); }
     ]);
   });
 
+  it("prefers a nested config when a root config also includes the package", async () => {
+    root = await makeProject({
+      "package.json": JSON.stringify({ name: "overlapping-configs", private: true }),
+      "tsconfig.json": JSON.stringify({
+        compilerOptions: { target: "ES2022", module: "ESNext", moduleResolution: "Bundler" },
+        include: ["**/*.ts"],
+      }),
+      "packages/core/tsconfig.json": JSON.stringify({
+        compilerOptions: {
+          target: "ES2022",
+          module: "ESNext",
+          moduleResolution: "Bundler",
+          baseUrl: ".",
+          paths: { "@lib/*": ["src/lib/*"] },
+        },
+        include: ["src/**/*"],
+      }),
+      "packages/core/src/lib/store.ts":
+        "export class Store { add(value: string): string { return value; } }\n",
+      "packages/core/src/app.ts":
+        "import { Store } from '@lib/store';\nexport const run = () => new Store().add('ok');\n",
+    });
+    await scan(root, { kind: "full" });
+    const db = await getDb(root);
+
+    const result = resolveTypes(db, root);
+    expect(result.ran).toBe(true);
+    expect(referencesTo(db, "add").callSites).toEqual([
+      expect.objectContaining({ path: "packages/core/src/app.ts", line: 2 }),
+    ]);
+  });
+
   it("discovers independently configured projects below four directories", async () => {
     root = await makeProject({
       "package.json": JSON.stringify({ name: "deep-package", private: true }),

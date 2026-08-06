@@ -121,6 +121,70 @@ function locate(
   return rows.length === 1 ? rows[0] : null;
 }
 
+/**
+ * Edges whose endpoints belong to the same strongly connected component.
+ *
+ * Discovery parents describe one spanning tree, not the graph: after a
+ * diamond reconverges, a real downstream cycle can cross between branches.
+ * Tarjan's algorithm classifies the complete reachable edge set without
+ * confusing ordinary reconvergence with recursion.
+ */
+function cycleEdges(nodes: Iterable<string>, adjacency: Map<string, Set<string>>): string[] {
+  const known = new Set(nodes);
+  const indices = new Map<string, number>();
+  const low = new Map<string, number>();
+  const stack: string[] = [];
+  const onStack = new Set<string>();
+  const component = new Map<string, number>();
+  const componentSizes: number[] = [];
+  let nextIndex = 0;
+
+  const connect = (node: string): void => {
+    indices.set(node, nextIndex);
+    low.set(node, nextIndex);
+    nextIndex++;
+    stack.push(node);
+    onStack.add(node);
+
+    for (const neighbour of adjacency.get(node) ?? []) {
+      if (!known.has(neighbour)) continue;
+      if (!indices.has(neighbour)) {
+        connect(neighbour);
+        low.set(node, Math.min(low.get(node)!, low.get(neighbour)!));
+      } else if (onStack.has(neighbour)) {
+        low.set(node, Math.min(low.get(node)!, indices.get(neighbour)!));
+      }
+    }
+
+    if (low.get(node) !== indices.get(node)) return;
+    const id = componentSizes.length;
+    let size = 0;
+    while (stack.length > 0) {
+      const member = stack.pop()!;
+      onStack.delete(member);
+      component.set(member, id);
+      size++;
+      if (member === node) break;
+    }
+    componentSizes.push(size);
+  };
+
+  for (const node of known) {
+    if (!indices.has(node)) connect(node);
+  }
+
+  const cyclic: string[] = [];
+  for (const [from, neighbours] of adjacency) {
+    const id = component.get(from);
+    if (id === undefined) continue;
+    for (const to of neighbours) {
+      if (component.get(to) !== id) continue;
+      if ((componentSizes[id] ?? 0) > 1 || from === to) cyclic.push(`${from} → ${to}`);
+    }
+  }
+  return cyclic.sort();
+}
+
 export function trace(
   db: Db,
   symbol: string,
@@ -153,10 +217,10 @@ export function trace(
   }
 
   const seen = new Map<string, TraceNode>();
-  const cycles: string[] = [];
   const leaves: string[] = [];
   let hitNodeCap = false;
   const parents = new Map<string, string>();
+  const adjacency = new Map<string, Set<string>>();
 
   seen.set(root.id, {
     id: root.id,
@@ -193,21 +257,11 @@ export function trace(
 
       for (const neighbour of neighbours) {
         const id = neighbour.id;
+        const outgoing = adjacency.get(current.id) ?? new Set<string>();
+        outgoing.add(id);
+        adjacency.set(current.id, outgoing);
 
-        if (seen.has(id)) {
-          // A cycle is reaching an *ancestor on this chain*. Anything else
-          // already seen is reconvergence — two callers sharing a callee is
-          // the normal shape of a DAG, and reporting a diamond as a cycle
-          // sends someone hunting for recursion that does not exist.
-          const from = current.id;
-          let ancestor: string | undefined = from;
-          while (ancestor && ancestor !== id) ancestor = parents.get(ancestor);
-          if (ancestor === id || id === from) {
-            const label = `${from} → ${id}`;
-            if (!cycles.includes(label)) cycles.push(label);
-          }
-          continue;
-        }
+        if (seen.has(id)) continue;
         if (seen.size >= maxNodes) {
           hitNodeCap = true;
           continue;
@@ -230,6 +284,8 @@ export function trace(
 
     frontier = next;
   }
+
+  const cycles = cycleEdges(seen.keys(), adjacency);
 
   // Render each leaf back to the root, so the output reads as a path rather
   // than a set of nodes someone has to reassemble.

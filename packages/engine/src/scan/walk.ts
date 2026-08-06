@@ -26,6 +26,11 @@ const IGNORED_DIRS = new Set([
   ".idea", ".vscode", "sdlc-audit", ".turbo", ".cache", ".parcel-cache",
 ]);
 
+/** Keep recursive consumers aligned with the scanner's generated/vendor boundary. */
+export function isIgnoredDirectorySegment(segment: string): boolean {
+  return IGNORED_DIRS.has(segment);
+}
+
 const EXT_LANG: Record<string, Lang> = {
   ".ts": "typescript", ".mts": "typescript", ".cts": "typescript", ".tsx": "typescript",
   ".js": "javascript", ".mjs": "javascript", ".cjs": "javascript", ".jsx": "javascript",
@@ -80,7 +85,7 @@ export async function walk(projectRoot: string): Promise<ScannedFile[]> {
       const full = join(dir, entry.name);
 
       if (entry.isDirectory()) {
-        if (IGNORED_DIRS.has(entry.name)) continue;
+        if (isIgnoredDirectorySegment(entry.name)) continue;
         if (entry.name.startsWith(".") && entry.name !== ".github") continue;
         await visit(full);
         continue;

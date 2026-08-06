@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { mkdir, symlink, writeFile } from "node:fs/promises";
+import { mkdir, readFile, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { WorkspaceRegistry } from "../daemon/workspaces.js";
 import { closeDb, getDb } from "../db/db.js";
@@ -89,5 +89,17 @@ describe("workspace identity", () => {
     expect(
       reopened.get<{ value: string }>("SELECT value FROM meta WHERE key = 'eviction-test'")?.value,
     ).toBe("preserved");
+  });
+
+  it("surfaces a corrupt registry without overwriting it", async () => {
+    root = await makeProject({ "package.json": JSON.stringify({ name: "registry-corruption" }) });
+    const path = join(root, "workspaces.json");
+    const corrupt = "{ this is not valid json";
+    await writeFile(path, corrupt);
+    const registry = new WorkspaceRegistry(path);
+
+    await expect(registry.list()).rejects.toThrow();
+    await expect(registry.add(root)).rejects.toThrow();
+    expect(await readFile(path, "utf-8")).toBe(corrupt);
   });
 });

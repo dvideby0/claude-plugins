@@ -35,6 +35,12 @@ export function alpha(): string { return "a"; }
 export function beta(): string { return "b"; }
 export class A { run(): string { return alpha(); } } export class B { run(): string { return beta(); } }
 `,
+  "src/reconverge.ts": `
+export function start(): void { branchA(); branchB(); }
+export function branchA(): void { shared(); }
+export function branchB(): void { shared(); }
+export function shared(): void { branchB(); }
+`,
 };
 
 let root: string;
@@ -162,5 +168,20 @@ withNative("call chains", () => {
 
     // Name + path is still ambiguous; trace refuses to pick one arbitrarily.
     expect(trace(db, "run", { path: "src/duplicates.ts" }).nodes).toHaveLength(0);
+  });
+
+  it("detects a cycle that crosses a reconverged discovery branch", async () => {
+    root = await makeProject(PROJECT);
+    await scan(root, { kind: "full" });
+    const db = await getDb(root);
+    expect(resolveTypes(db, root).ran).toBe(true);
+
+    const result = trace(db, "start", { depth: 10 });
+    const branch = result.nodes.find((node) => node.symbol === "branchB");
+    const shared = result.nodes.find((node) => node.symbol === "shared");
+    expect(branch).toBeDefined();
+    expect(shared).toBeDefined();
+    expect(result.cycles).toContain(`${branch!.id} → ${shared!.id}`);
+    expect(result.cycles).toContain(`${shared!.id} → ${branch!.id}`);
   });
 });

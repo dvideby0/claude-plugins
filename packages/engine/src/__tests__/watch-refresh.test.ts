@@ -75,6 +75,24 @@ describe("watch refresh queue", () => {
     expect(refresh).toHaveBeenCalledOnce();
   });
 
+  it("ignores late events until a discarded root is explicitly registered", async () => {
+    const refresh = vi.fn(async () => {});
+    const queue = new WatchRefreshQueue({
+      blocked: () => false,
+      refresh,
+      onError: vi.fn(),
+    });
+
+    await queue.discard("/repo");
+    queue.enqueue("/repo", ["src/late.ts"]);
+    await Promise.resolve();
+    expect(refresh).not.toHaveBeenCalled();
+
+    queue.register("/repo");
+    queue.enqueue("/repo", ["src/new.ts"]);
+    await vi.waitFor(() => expect(refresh).toHaveBeenCalledWith("/repo", ["src/new.ts"]));
+  });
+
   it("recognizes compiler configuration changes independent of source parsing", () => {
     expect(hasTypedConfigChange(["tsconfig.json"])).toBe(true);
     expect(hasTypedConfigChange(["packages/api/tsconfig.build.json"])).toBe(true);
@@ -99,5 +117,12 @@ describe("watch refresh queue", () => {
     expect(isInterestingChange("src/new", "rename")).toBe(true);
     expect(isInterestingChange("src/old", "change")).toBe(false);
     expect(isInterestingChange("node_modules/pkg", "rename")).toBe(false);
+  });
+
+  it("ignores every generated and vendor directory excluded by scanning", () => {
+    for (const directory of [".nuxt", ".svelte-kit", ".tox", "vendor", ".idea", ".vscode"]) {
+      expect(isInterestingChange(`${directory}/generated.ts`)).toBe(false);
+      expect(isInterestingChange(`${directory}/nested`, "rename")).toBe(false);
+    }
   });
 });

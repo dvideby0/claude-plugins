@@ -30,8 +30,17 @@ async function readIfPresent(path: string): Promise<string | null> {
   }
 }
 
+interface LegacyNpmDependency {
+  version?: string;
+  dependencies?: Record<string, LegacyNpmDependency>;
+}
+
 function parseNpmLock(raw: string): Dependency[] {
-  let parsed: { packages?: Record<string, { version?: string }> };
+  let parsed: {
+    packages?: Record<string, { version?: string }>;
+    /** npm lockfile v1 stores the inventory as a recursive dependency tree. */
+    dependencies?: Record<string, LegacyNpmDependency>;
+  };
   try {
     parsed = JSON.parse(raw);
   } catch {
@@ -47,6 +56,21 @@ function parseNpmLock(raw: string): Dependency[] {
       source: "package-lock.json",
     });
   }
+
+  const visitLegacy = (dependencies: Record<string, LegacyNpmDependency> | undefined): void => {
+    for (const [name, value] of Object.entries(dependencies ?? {})) {
+      if (value.version) {
+        deps.push({
+          name,
+          version: value.version,
+          ecosystem: "npm",
+          source: "package-lock.json",
+        });
+      }
+      visitLegacy(value.dependencies);
+    }
+  };
+  visitLegacy(parsed.dependencies);
   return deps;
 }
 

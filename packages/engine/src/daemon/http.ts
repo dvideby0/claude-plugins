@@ -301,7 +301,11 @@ export function createHttpServer(options: HttpServerOptions): HttpServerHandle {
       watcher.stopAll();
       return;
     }
-    watcher.sync((await registry.list()).map((workspace) => workspace.root));
+    const roots = (await registry.list()).map((workspace) => workspace.root);
+    // `discard` is a lifecycle tombstone. Only registry membership—not a late
+    // filesystem callback—may make the root eligible for refresh again.
+    for (const root of roots) watchRefresh.register(root);
+    watcher.sync(roots);
   }
 
   async function workspaceStatuses(): Promise<WorkspaceStatus[]> {
