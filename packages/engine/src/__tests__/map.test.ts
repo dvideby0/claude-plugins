@@ -118,6 +118,20 @@ describe("the drawn map", () => {
     expect(drift.components[0]?.changedFiles).toEqual(["src/api/auth.py"]);
   });
 
+  it("preserves drift when only component metadata or layout is updated", async () => {
+    root = await makeProject(PROJECT);
+    await scan(root, { kind: "full" });
+    const db = await getDb(root);
+    describeComponent(db, { name: "API", summary: "Request handling.", members: ["src/api/"] });
+
+    await writeFile(join(root, "src/api/auth.py"), "def check():\n    return False  # changed\n");
+    await scan(root, { kind: "incremental" });
+    expect(mapDrift(db).components).toHaveLength(1);
+
+    describeComponent(db, { name: "API", summary: "Public request handling.", ordinal: 2 });
+    expect(mapDrift(db).components[0]?.changedFiles).toEqual(["src/api/auth.py"]);
+  });
+
   it("drifts a box when a file is added to it, not just edited", async () => {
     root = await makeProject(PROJECT);
     await scan(root, { kind: "full" });

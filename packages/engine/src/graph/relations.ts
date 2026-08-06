@@ -147,7 +147,8 @@ function hydrate(rows: Row[]): Relation[] {
     source: row.source,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
-    stale: Boolean(row.content_sha) && row.content_sha !== row.current_sha,
+    // Without a source snapshot the claim was never verifiable as current.
+    stale: row.content_sha === null || row.content_sha !== row.current_sha,
   }));
 }
 

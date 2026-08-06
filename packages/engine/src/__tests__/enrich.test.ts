@@ -60,6 +60,21 @@ describe("enrichment", () => {
     ).toThrow(/Evidence is required/);
   });
 
+  it("treats a relation without an indexed source snapshot as stale", async () => {
+    root = await makeProject(PROJECT);
+    await scan(root, { kind: "full" });
+    const db = await getDb(root);
+
+    relate(db, {
+      kind: "registers",
+      srcPath: "src/missing.py",
+      dstPath: "src/nodes.py",
+      evidence: "configuration names classify_node",
+    });
+
+    expect(relationsFor(db, "src/missing.py")[0]?.stale).toBe(true);
+  });
+
   it("records an edge the parser could not derive, with its citation", async () => {
     root = await makeProject(PROJECT);
     await scan(root, { kind: "full" });

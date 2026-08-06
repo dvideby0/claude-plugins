@@ -167,19 +167,22 @@ export function describeComponent(db: Db, input: ComponentInput): { id: string; 
     }
   }
 
-  // Recorded after members are set, so it reflects what the box now covers.
-  db.run("UPDATE components SET member_digest = ? WHERE id = ?", [memberDigest(db, id), id]);
+  // Only an explicit membership statement acknowledges the current code.
+  // Moving a box or editing its prose must not silently clear existing drift.
+  if (!existing || input.members !== undefined) {
+    db.run("UPDATE components SET member_digest = ? WHERE id = ?", [memberDigest(db, id), id]);
 
-  // Per-file snapshot, so drift can name the files rather than the box.
-  db.run("DELETE FROM component_snapshot WHERE component_id = ?", [id]);
-  for (const path of membersOf(db, id).files) {
-    const sha =
-      db.get<{ content_sha: string }>("SELECT content_sha FROM files WHERE path = ?", [path])
-        ?.content_sha ?? "";
-    db.run(
-      "INSERT OR REPLACE INTO component_snapshot(component_id, path, content_sha) VALUES(?, ?, ?)",
-      [id, path, sha],
-    );
+    // Per-file snapshot, so drift can name the files rather than the box.
+    db.run("DELETE FROM component_snapshot WHERE component_id = ?", [id]);
+    for (const path of membersOf(db, id).files) {
+      const sha =
+        db.get<{ content_sha: string }>("SELECT content_sha FROM files WHERE path = ?", [path])
+          ?.content_sha ?? "";
+      db.run(
+        "INSERT OR REPLACE INTO component_snapshot(component_id, path, content_sha) VALUES(?, ?, ?)",
+        [id, path, sha],
+      );
+    }
   }
 
   return { id, created: !existing };
