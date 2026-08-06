@@ -18,7 +18,7 @@
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { Worker } from "node:worker_threads";
-import { basename, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import ts from "typescript";
 import type { Db } from "../db/db.js";
 
@@ -203,6 +203,41 @@ function readConfig(configPath: string): ts.ParsedCommandLine | undefined {
   } as ts.ParseConfigFileHost);
 }
 
+/** Repository-owned config files reached through `extends`. */
+function extendedConfigPaths(configPath: string): string[] {
+  const found: string[] = [];
+  const visited = new Set<string>();
+  const visit = (path: string): void => {
+    const absolute = resolve(path);
+    if (visited.has(absolute) || !ts.sys.fileExists(absolute)) return;
+    visited.add(absolute);
+
+    const raw = ts.readConfigFile(absolute, ts.sys.readFile).config as
+      | { extends?: string | string[] }
+      | undefined;
+    const extensions = Array.isArray(raw?.extends)
+      ? raw.extends
+      : raw?.extends
+        ? [raw.extends]
+        : [];
+    for (const specifier of extensions) {
+      // Package configs live under node_modules and are deliberately outside
+      // the repository index. Relative/absolute configs are tracked exactly.
+      if (!specifier.startsWith(".") && !isAbsolute(specifier)) continue;
+      const base = isAbsolute(specifier) ? specifier : resolve(dirname(absolute), specifier);
+      const candidates = [base, `${base}.json`, join(base, "tsconfig.json")];
+      const target = candidates.find(ts.sys.fileExists);
+      if (!target) continue;
+      const resolvedTarget = resolve(target);
+      found.push(resolvedTarget);
+      visit(resolvedTarget);
+    }
+  };
+
+  visit(configPath);
+  return [...new Set(found)];
+}
+
 function contentSha(content: string): string {
   return createHash("sha256").update(content).digest("hex").slice(0, 16);
 }
@@ -244,12 +279,14 @@ export function analyseTypes(projectRoot: string): TypedAnalysis {
   let filesAnalysed = 0;
 
   for (const configPath of configs) {
-    const path = inRepo(configPath);
-    if (!path) continue;
-    try {
-      inputs.set(path, contentSha(readFileSync(configPath, "utf-8")));
-    } catch {
-      // readConfig will report the unusable config by producing no files.
+    for (const inputPath of [configPath, ...extendedConfigPaths(configPath)]) {
+      const path = inRepo(inputPath);
+      if (!path) continue;
+      try {
+        inputs.set(path, contentSha(readFileSync(inputPath, "utf-8")));
+      } catch {
+        // readConfig will report the unusable config by producing no files.
+      }
     }
   }
 
@@ -277,7 +314,6 @@ export function analyseTypes(projectRoot: string): TypedAnalysis {
     const checker = program.getTypeChecker();
 
     for (const sourceFile of program.getSourceFiles()) {
-      if (sourceFile.isDeclarationFile) continue;
       const src = inRepo(sourceFile.fileName);
       if (!src) continue;
       // A file pulled into several programs is analysed under the first
@@ -292,7 +328,9 @@ export function analyseTypes(projectRoot: string): TypedAnalysis {
           const declaration = declarationFor(checker, node);
           if (declaration) {
             const declFile = declaration.getSourceFile();
-            const dst = declFile.isDeclarationFile ? null : inRepo(declFile.fileName);
+            // Repository declaration files are real graph destinations. The
+            // inRepo check already rejects lib files and node_modules.
+            const dst = inRepo(declFile.fileName);
             const name = declaredName(declaration);
 
             // Skip the declaration site itself: defining a thing is not using it.
@@ -453,7 +491,12 @@ interface WorkerReply {
 }
 
 /** Run the expensive compiler pass off the event loop, then commit its facts. */
-export function resolveTypesInWorker(db: Db, projectRoot: string): Promise<TypedResult> {
+export function resolveTypesInWorker(
+  db: Db,
+  projectRoot: string,
+  signal?: AbortSignal,
+): Promise<TypedResult> {
+  if (signal?.aborted) return Promise.reject(new Error("Typed resolution cancelled."));
   return new Promise((resolveResult, reject) => {
     const worker = new Worker(new URL("./typed-worker.js", import.meta.url), {
       workerData: { projectRoot },
@@ -462,14 +505,24 @@ export function resolveTypesInWorker(db: Db, projectRoot: string): Promise<Typed
       execArgv: process.execArgv.filter((arg) => !arg.startsWith("--input-type")),
     });
     let settled = false;
+    const cleanup = (): void => signal?.removeEventListener("abort", abort);
     const fail = (error: Error): void => {
       if (settled) return;
       settled = true;
+      cleanup();
       reject(error);
+    };
+    const abort = (): void => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      void worker.terminate();
+      reject(new Error("Typed resolution cancelled."));
     };
     worker.once("message", (reply: WorkerReply) => {
       if (settled) return;
       settled = true;
+      cleanup();
       if (reply.error) reject(new Error(reply.error));
       else if (!reply.analysis) reject(new Error("Typed worker returned no analysis."));
       else {
@@ -484,5 +537,7 @@ export function resolveTypesInWorker(db: Db, projectRoot: string): Promise<Typed
     worker.once("exit", (code) => {
       if (code !== 0) fail(new Error(`Typed worker exited with code ${code}.`));
     });
+    signal?.addEventListener("abort", abort, { once: true });
+    if (signal?.aborted) abort();
   });
 }

@@ -1,10 +1,13 @@
 import { describe, expect, it, afterEach } from "vitest";
+import { writeFile } from "node:fs/promises";
+import { join } from "node:path";
 import { getDb } from "../db/db.js";
 import { impactOf, referencesTo } from "../graph/refs.js";
 import { buildBrief } from "../graph/brief.js";
 import { parseFile } from "../scan/parse.js";
-import { scan } from "../scan/scan.js";
+import { EXTRACTION_VERSION, scan } from "../scan/scan.js";
 import { loadNative } from "../scan/source.js";
+import { resolveTypes } from "../graph/typed.js";
 import { cleanup, makeProject } from "./helpers.js";
 
 const PROJECT = {
@@ -88,6 +91,24 @@ const native = loadNative();
 const withNative = native ? describe : describe.skip;
 
 withNative("symbol references", () => {
+  it("backfills references when a current fallback index gains native support", async () => {
+    root = await makeProject(PROJECT);
+    await scan(root, { kind: "full" });
+    const db = await getDb(root);
+
+    db.run("DELETE FROM refs");
+    db.run("UPDATE files SET ref_coverage = 'none'");
+    db.run("INSERT OR REPLACE INTO meta(key, value) VALUES('extraction_version', ?)", [
+      String(EXTRACTION_VERSION),
+    ]);
+    db.run("INSERT OR REPLACE INTO meta(key, value) VALUES('extraction_engine', 'typescript')");
+
+    const result = await scan(root, { kind: "incremental" });
+    expect(result.upgraded).toBe(true);
+    expect(result.filesParsed).toBeGreaterThan(0);
+    expect(referencesTo(db, "query").total).toBe(4);
+  });
+
   it("resolves uses of imported names, including aliases", async () => {
     root = await makeProject(PROJECT);
     await scan(root, { kind: "full" });
@@ -239,5 +260,56 @@ describe("reference coverage", () => {
     expect(brief).toContain("Test coverage is unknown");
     expect(brief).not.toContain("Nothing references it");
     expect(brief).not.toContain("No test covers it");
+  });
+
+  it("derives incoming coverage from importers rather than the declaration file", async () => {
+    root = await makeProject({
+      "package.json": JSON.stringify({ name: "coverage", type: "module" }),
+      "tsconfig.json": JSON.stringify({
+        compilerOptions: { target: "ES2022", module: "ESNext", moduleResolution: "Bundler" },
+        include: ["src/**/*"],
+      }),
+      "src/api.ts": "export function run() { return 1; }\n",
+      "src/app.ts": "import { run } from './api.js';\nexport const result = run();\n",
+    });
+    await scan(root, { kind: "full" });
+    const db = await getDb(root);
+    resolveTypes(db, root);
+    expect(referencesTo(db, "run").referenceCoverage).toBe("typed");
+
+    await writeFile(
+      join(root, "src/app.ts"),
+      "import { run } from './api.js';\nexport const result = run() + 1;\n",
+    );
+    await scan(root, { kind: "incremental" });
+
+    // The native rescan provides import-level facts for the changed source;
+    // it must not inherit the untouched declaration's stronger typed label.
+    expect(referencesTo(db, "run").referenceCoverage).toBe("import");
+    expect(impactOf(db, "src/api.ts").referenceCoverage).toBe("import");
+
+    // On the TypeScript fallback the same source has no reference extraction.
+    db.run("UPDATE files SET ref_coverage = 'none' WHERE path = 'src/app.ts'");
+    expect(referencesTo(db, "run").referenceCoverage).toBe("none");
+    expect(impactOf(db, "src/api.ts").referenceCoverage).toBe("none");
+  });
+
+  it("treats typed zeroes for methods as real results", async () => {
+    root = await makeProject({
+      "package.json": JSON.stringify({ name: "typed-zero", type: "module" }),
+      "tsconfig.json": JSON.stringify({
+        compilerOptions: { target: "ES2022", module: "ESNext", moduleResolution: "Bundler" },
+        include: ["src/**/*"],
+      }),
+      "src/store.ts": "export class Store { unused(): void {} }\n",
+    });
+    await scan(root, { kind: "full" });
+    const db = await getDb(root);
+    resolveTypes(db, root);
+
+    const brief = buildBrief(db, "src/store.ts").text;
+    expect(brief).toContain("`unused` (method");
+    expect(brief).toContain("unused elsewhere");
+    expect(brief).not.toContain("uses not tracked");
   });
 });

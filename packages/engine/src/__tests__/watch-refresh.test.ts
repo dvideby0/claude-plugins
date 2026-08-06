@@ -51,6 +51,8 @@ describe("watch refresh queue", () => {
     expect(hasTypedConfigChange(["tsconfig.json"])).toBe(true);
     expect(hasTypedConfigChange(["packages/api/tsconfig.build.json"])).toBe(true);
     expect(hasTypedConfigChange(["jsconfig.json"])).toBe(true);
-    expect(hasTypedConfigChange(["src/app.ts", "package.json"])).toBe(false);
+    expect(hasTypedConfigChange(["config/base.json"])).toBe(true);
+    expect(hasTypedConfigChange(["package.json"])).toBe(true);
+    expect(hasTypedConfigChange(["src/app.ts", "README.md"])).toBe(false);
   });
 });

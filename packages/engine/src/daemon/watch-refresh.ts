@@ -65,11 +65,14 @@ export class WatchRefreshQueue {
   }
 }
 
-/** Compiler configuration changes can invalidate every typed destination. */
+/**
+ * JSON can participate in TypeScript resolution directly (tsconfig/jsconfig),
+ * through an arbitrary `extends` filename, or through package metadata.
+ */
 export function hasTypedConfigChange(paths: Iterable<string>): boolean {
   for (const path of paths) {
     const name = path.split(/[\\/]/).pop() ?? "";
-    if (/^(?:tsconfig|jsconfig)(?:\.[^.]+)*\.json$/i.test(name)) return true;
+    if (/\.json$/i.test(name)) return true;
   }
   return false;
 }

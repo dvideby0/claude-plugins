@@ -191,6 +191,7 @@ export function neighbourhood(db: Db, target: string, limit = 40): Neighbourhood
       : null,
     symbols: db
       .all<{
+        id: string;
         kind: string;
         name: string;
         start_line: number;
@@ -198,10 +199,13 @@ export function neighbourhood(db: Db, target: string, limit = 40): Neighbourhood
         ref_count: number;
         signature: string | null;
       }>(
-        `SELECT s.kind, s.name, s.start_line, s.exported, s.signature,
+        `SELECT s.id, s.kind, s.name, s.start_line, s.exported, s.signature,
                 (SELECT COUNT(*) FROM refs r
-                 WHERE r.dst_path = s.path AND r.name = s.name
-                   AND r.src_path != s.path) AS ref_count
+                 WHERE r.src_path != s.path AND
+                   (r.dst_symbol_id = s.id OR
+                    (r.dst_symbol_id IS NULL AND r.dst_path = s.path AND r.name = s.name AND
+                     (SELECT COUNT(*) FROM symbols same
+                       WHERE same.path = s.path AND same.name = s.name) = 1))) AS ref_count
          FROM symbols s WHERE s.path = ? ORDER BY ref_count DESC, s.start_line LIMIT ?`,
         [path, limit * 2],
       )

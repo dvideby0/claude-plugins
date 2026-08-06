@@ -191,18 +191,33 @@ fn search_sync(
     cap: usize,
     text_filter: Option<&str>,
 ) -> Vec<NativeMatch> {
+    if cap == 0 {
+        return Vec::new();
+    }
     let files = walk::walk(Path::new(root));
     let needle = text_filter.map(str::to_lowercase);
-    let matches: Vec<NativeMatch> = files
+    // Each file and the shared aggregate are capped. A broad query must never
+    // allocate one result per identifier only to truncate after collection.
+    const ORDER: fn(&NativeMatch, &NativeMatch) -> std::cmp::Ordering = |a, b| {
+        a.path
+            .cmp(&b.path)
+            .then(a.line.cmp(&b.line))
+            .then(a.end_line.cmp(&b.end_line))
+            .then(a.capture.cmp(&b.capture))
+            .then(a.text.cmp(&b.text))
+    };
+    let matches = std::sync::Mutex::new(Vec::<NativeMatch>::with_capacity(cap));
+    files
         .par_iter()
         .filter(|file| wanted.iter().any(|lang| lang == file.lang) && !walk::is_noise(&file.path))
-        .flat_map_iter(|file| {
-            parse::search(
+        .for_each(|file| {
+            let hits = parse::search(
                 &file.path,
                 file.lang,
                 &file.content,
                 query,
                 needle.as_deref(),
+                cap,
             )
             .into_iter()
             .map(|hit| NativeMatch {
@@ -212,13 +227,18 @@ fn search_sync(
                 text: hit.text,
                 capture: hit.capture,
             })
-            .collect::<Vec<_>>()
-        })
-        .collect();
+            .collect::<Vec<_>>();
+            if hits.is_empty() {
+                return;
+            }
+            let mut bounded = matches.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            bounded.extend(hits);
+            bounded.sort_by(ORDER);
+            bounded.truncate(cap);
+        });
 
-    let mut out = matches;
-    out.sort_by(|a, b| a.path.cmp(&b.path).then(a.line.cmp(&b.line)));
-    out.truncate(cap);
+    let mut out = matches.into_inner().unwrap_or_else(|poisoned| poisoned.into_inner());
+    out.sort_by(ORDER);
     out
 }
 

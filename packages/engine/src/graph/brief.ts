@@ -52,7 +52,9 @@ function usage(
     return `${symbol.references} use${symbol.references === 1 ? "" : "s"}`;
   }
   if (referenceCoverage === "none") return "uses unknown — reference analysis unavailable";
-  return UNTRACKED_KINDS.has(symbol.kind) ? "uses not tracked" : "unused elsewhere";
+  return referenceCoverage === "import" && UNTRACKED_KINDS.has(symbol.kind)
+    ? "uses not tracked"
+    : "unused elsewhere";
 }
 
 function UNRESOLVED_NOTE(
@@ -62,7 +64,8 @@ function UNRESOLVED_NOTE(
   if (referenceCoverage === "none") {
     return "\n_Reference analysis was unavailable for this file. Treat every zero as unknown; do not infer that code is unused or untested._";
   }
-  return symbols.some((symbol) => UNTRACKED_KINDS.has(symbol.kind))
+  return referenceCoverage === "import" &&
+    symbols.some((symbol) => UNTRACKED_KINDS.has(symbol.kind))
     ? "\n_Method calls and type positions are not resolved; treat “uses not tracked” as unknown, not zero._"
     : "";
 }
@@ -158,7 +161,7 @@ export function buildBrief(db: Db, target: string, options: BriefOptions = {}): 
         ...exported.slice(0, 20).map((symbol) => {
           const line = `- \`${symbol.name}\` (${symbol.kind}, line ${symbol.startLine}) — ${usage(
             symbol,
-            file?.referenceCoverage ?? "none",
+            impact.referenceCoverage,
           )}`;
           const withNotes = symbol.notes > 0 ? `${line} · ${symbol.notes} note(s) recorded` : line;
           // The declaration of an exported constant carries the allowed values.
@@ -168,7 +171,7 @@ export function buildBrief(db: Db, target: string, options: BriefOptions = {}): 
             ? `${withNotes}\n    \`${symbol.signature}\``
             : withNotes;
         }),
-        UNRESOLVED_NOTE(exported, file?.referenceCoverage ?? "none"),
+        UNRESOLVED_NOTE(exported, impact.referenceCoverage),
       ]
         .filter(Boolean)
         .join("\n"),

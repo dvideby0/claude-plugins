@@ -203,6 +203,9 @@ export class Db {
       `UPDATE refs SET dst_symbol_id = (
          SELECT s.id FROM symbols s
          WHERE s.path = refs.dst_path AND s.name = refs.name
+           AND (refs.dst_line IS NOT NULL OR
+                (SELECT COUNT(*) FROM symbols same
+                  WHERE same.path = refs.dst_path AND same.name = refs.name) = 1)
            AND (refs.dst_line IS NULL OR
                 ((s.start_line < refs.dst_line OR
                   (s.start_line = refs.dst_line AND s.start_column <= refs.dst_column))

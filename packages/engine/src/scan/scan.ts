@@ -98,10 +98,16 @@ async function doScan(projectRoot: string, options: ScanOptions = {}): Promise<S
   const storedVersion = Number(
     db.get<{ value: string }>("SELECT value FROM meta WHERE key = 'extraction_version'")?.value ?? 0,
   );
-  const stale = storedVersion < EXTRACTION_VERSION;
-  const full = options.full || stale;
-
   const { files, engine } = await collectFiles(projectRoot);
+  const storedEngine =
+    db.get<{ value: string }>("SELECT value FROM meta WHERE key = 'extraction_engine'")?.value ??
+    "unknown";
+  // A fallback scan can produce the current symbol/import schema but cannot
+  // produce native imported-name references. When the native binary becomes
+  // available later, that capability transition must backfill unchanged files.
+  const stale =
+    storedVersion < EXTRACTION_VERSION || (engine === "native" && storedEngine !== "native");
+  const full = options.full || stale;
   const aliases = await loadAliases(projectRoot);
 
   const previous = new Map(
@@ -295,6 +301,7 @@ async function doScan(projectRoot: string, options: ScanOptions = {}): Promise<S
   db.run("INSERT OR REPLACE INTO meta(key, value) VALUES('extraction_version', ?)", [
     String(EXTRACTION_VERSION),
   ]);
+  db.run("INSERT OR REPLACE INTO meta(key, value) VALUES('extraction_engine', ?)", [engine]);
 
   db.run(
     "UPDATE runs SET finished_at = ?, files_total = ?, files_changed = ? WHERE id = ?",

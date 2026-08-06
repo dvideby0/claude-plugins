@@ -880,7 +880,7 @@ fn collect_refs(
                             } else {
                                 binding.exported.clone()
                             };
-                            if seen.insert((name.clone(), binding.module.clone(), line)) {
+                            if seen.insert((name.clone(), binding.module.clone(), line, column)) {
                                 refs.push(Reference {
                                     name,
                                     module: binding.module.clone(),
@@ -977,7 +977,11 @@ pub fn search(
     source: &str,
     query_source: &str,
     text_filter: Option<&str>,
+    cap: usize,
 ) -> Vec<Hit> {
+    if cap == 0 {
+        return Vec::new();
+    }
     let Some(grammar) = grammar_for(path, lang) else {
         return Vec::new();
     };
@@ -1018,6 +1022,9 @@ pub fn search(
             },
             capture: names[capture.index as usize].to_string(),
         });
+        if hits.len() >= cap {
+            break;
+        }
     }
     hits
 }
@@ -1249,5 +1256,36 @@ mod tests {
             "import { query } from './db';\nfunction run(query: () => void) { query(); }",
         );
         assert!(parsed.refs.is_empty());
+    }
+
+    #[test]
+    fn keeps_repeated_import_uses_on_the_same_line() {
+        let mut engines = Engines::new();
+        let parsed = parse(
+            &mut engines,
+            "user.ts",
+            "typescript",
+            "import { foo } from './lib';\nfoo(); foo();",
+        );
+        let foo: Vec<&Reference> = parsed
+            .refs
+            .iter()
+            .filter(|reference| reference.name == "foo")
+            .collect();
+        assert_eq!(foo.len(), 2);
+        assert_ne!(foo[0].column, foo[1].column);
+    }
+
+    #[test]
+    fn structural_search_stops_at_the_requested_cap() {
+        let hits = search(
+            "many.ts",
+            "typescript",
+            "const a = 1; const b = 2; const c = 3; const d = 4;",
+            "(identifier) @id",
+            None,
+            2,
+        );
+        assert_eq!(hits.len(), 2);
     }
 }

@@ -62,7 +62,11 @@ export async function crossQuery(
       } else if (kind === "symbol") {
         rows = db.all(
           `SELECT s.name, s.kind, s.path, s.start_line,
-                  (SELECT COUNT(*) FROM refs r WHERE r.dst_path = s.path AND r.name = s.name) AS ref_count
+                  (SELECT COUNT(*) FROM refs r
+                    WHERE r.dst_symbol_id = s.id OR
+                      (r.dst_symbol_id IS NULL AND r.dst_path = s.path AND r.name = s.name AND
+                       (SELECT COUNT(*) FROM symbols same
+                         WHERE same.path = s.path AND same.name = s.name) = 1)) AS ref_count
            FROM symbols s WHERE s.name = ? OR LOWER(s.name) LIKE LOWER(?)
            ORDER BY ref_count DESC LIMIT ?`,
           [query, like, limit],

@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { getDb } from "../db/db.js";
 import { referencesTo } from "../graph/refs.js";
-import { resolveTypes } from "../graph/typed.js";
+import { analyseTypes, resolveTypes, resolveTypesInWorker } from "../graph/typed.js";
+import { neighbourhood } from "../memory/context.js";
 import { scan } from "../scan/scan.js";
 import { loadNative } from "../scan/source.js";
 import { cleanup, makeProject } from "./helpers.js";
@@ -102,6 +103,42 @@ describe("typed resolution", () => {
     expect(store.total).toBeGreaterThan(0);
   });
 
+  it("keeps destinations declared in repository-owned declaration files", async () => {
+    root = await makeProject({
+      "package.json": JSON.stringify({ name: "declarations", type: "module" }),
+      "tsconfig.json": JSON.stringify({
+        compilerOptions: { target: "ES2022", module: "ESNext", moduleResolution: "Bundler" },
+        include: ["src/**/*"],
+      }),
+      "src/types.d.ts": "export interface User { id: string }\n",
+      "src/app.ts": "import type { User } from './types.js';\nexport const id = (user: User) => user.id;\n",
+    });
+    await scan(root, { kind: "full" });
+    const db = await getDb(root);
+    resolveTypes(db, root);
+
+    expect(referencesTo(db, "User").definedIn).toBe("src/types.d.ts");
+    expect(referencesTo(db, "User").files).toEqual(["src/app.ts"]);
+  });
+
+  it("tracks arbitrary repository configs reached through extends", async () => {
+    root = await makeProject({
+      "package.json": JSON.stringify({ name: "extended-config", type: "module" }),
+      "config/base.json": JSON.stringify({
+        compilerOptions: { target: "ES2022", module: "ESNext", moduleResolution: "Bundler" },
+      }),
+      "tsconfig.json": JSON.stringify({ extends: "./config/base.json", include: ["src/**/*"] }),
+      "src/app.ts": "export const value = 1;\n",
+    });
+    await scan(root, { kind: "full" });
+    const db = await getDb(root);
+    const analysis = analyseTypes(root);
+    const result = resolveTypes(db, root);
+
+    expect(result.ran).toBe(true);
+    expect(analysis.inputs.map((input) => input.path)).toContain("config/base.json");
+  });
+
   it("survives a later scan", async () => {
     root = await makeProject(PROJECT);
     await scan(root, { kind: "full" });
@@ -140,6 +177,16 @@ describe("typed resolution", () => {
     expect(result.ran).toBe(false);
     expect(result.reason).toMatch(/tsconfig/i);
     expect(result.resolved).toBe(0);
+  });
+
+  it("does not start typed work after its workspace lifecycle was cancelled", async () => {
+    root = await makeProject(PROJECT);
+    await scan(root, { kind: "full" });
+    const db = await getDb(root);
+    const controller = new AbortController();
+    controller.abort();
+
+    await expect(resolveTypesInWorker(db, root, controller.signal)).rejects.toThrow(/cancelled/i);
   });
 
   it("analyses referenced packages when the root config also owns files", async () => {
@@ -244,5 +291,10 @@ export function packageEntry() { return makeStore().add("ok"); }
     const first = ambiguous.candidates?.[0];
     expect(first).toBeDefined();
     expect(referencesTo(db, "run", 100, { symbolId: first!.symbolId }).total).toBe(1);
+
+    const context = neighbourhood(db, "src/models.ts");
+    expect(
+      context.symbols.filter((symbol) => symbol.name === "run").map((symbol) => symbol.references),
+    ).toEqual([1, 1]);
   });
 });

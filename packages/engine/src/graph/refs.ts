@@ -61,6 +61,22 @@ export interface SymbolReferences {
   candidates?: ReferenceCandidate[];
 }
 
+/**
+ * Incoming references are produced by their source files. A declaration file
+ * remaining typed says nothing about an importer that was just re-parsed and
+ * temporarily downgraded, so coverage is the weakest source-file coverage in
+ * the repository rather than the destination's own outgoing coverage.
+ */
+export function incomingReferenceCoverage(db: Db): "none" | "import" | "typed" {
+  const rows = db.all<{ ref_coverage: "none" | "import" | "typed" }>(
+    `SELECT ref_coverage FROM files
+      WHERE present = 1 AND lang IN ('typescript','javascript','python')`,
+  );
+  if (rows.length === 0 || rows.some((row) => row.ref_coverage === "none")) return "none";
+  if (rows.some((row) => row.ref_coverage === "import")) return "import";
+  return "typed";
+}
+
 export function referencesTo(
   db: Db,
   name: string,
@@ -73,11 +89,10 @@ export function referencesTo(
     kind: string;
     start_line: number;
     exported: number;
-    ref_coverage: "none" | "import" | "typed";
   }
 
   const definitions = db.all<Definition>(
-    `SELECT s.id, s.path, s.kind, s.start_line, s.exported, f.ref_coverage
+    `SELECT s.id, s.path, s.kind, s.start_line, s.exported
        FROM symbols s JOIN files f ON f.path = s.path
       WHERE s.name = ? AND f.present = 1
       ORDER BY s.exported DESC, s.path, s.start_line, s.start_column`,
@@ -172,7 +187,7 @@ export function referencesTo(
       ),
     ],
     notes: memoriesForSymbolName(db, name),
-    referenceCoverage: definition?.ref_coverage ?? "none",
+    referenceCoverage: definition ? incomingReferenceCoverage(db) : "none",
     ...(definitions.length > 1
       ? {
           candidates: definitions.map((candidate) => ({
@@ -222,8 +237,8 @@ export function impactOf(db: Db, target: string, limit = 200): Impact {
   // Escaped: an unescaped suffix match can resolve the impact question
   // against the wrong file entirely.
   const escaped = likeEscape(target);
-  const file = db.get<{ path: string; ref_coverage: "none" | "import" | "typed" }>(
-    "SELECT path, ref_coverage FROM files WHERE (path = ? OR path LIKE ? ESCAPE '\\') AND present = 1 ORDER BY LENGTH(path) LIMIT 1",
+  const file = db.get<{ path: string }>(
+    "SELECT path FROM files WHERE (path = ? OR path LIKE ? ESCAPE '\\') AND present = 1 ORDER BY LENGTH(path) LIMIT 1",
     [target, `%/${escaped}`],
   );
 
@@ -299,6 +314,6 @@ export function impactOf(db: Db, target: string, limit = 200): Impact {
       "SELECT COUNT(*) AS n FROM refs WHERE dst_path = ? AND src_path = ?",
       [file.path, file.path],
     ),
-    referenceCoverage: file.ref_coverage,
+    referenceCoverage: incomingReferenceCoverage(db),
   };
 }

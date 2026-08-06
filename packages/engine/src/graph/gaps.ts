@@ -134,7 +134,13 @@ export function findGaps(db: Db, limit = 25): GapsResult {
      JOIN files f ON f.path = s.path
      WHERE s.kind IN ('function','class') AND s.exported = 1
        AND f.present = 1 AND f.is_test = 0
-       AND NOT EXISTS (SELECT 1 FROM refs r WHERE r.name = s.name AND r.dst_path = s.path)
+       AND NOT EXISTS (
+         SELECT 1 FROM refs r
+         WHERE r.dst_symbol_id = s.id OR
+           (r.dst_symbol_id IS NULL AND r.name = s.name AND r.dst_path = s.path AND
+            (SELECT COUNT(*) FROM symbols same
+              WHERE same.path = s.path AND same.name = s.name) = 1)
+       )
        AND NOT EXISTS (
          SELECT 1 FROM relations rel
          JOIN files source ON source.path = rel.src_path AND source.present = 1
