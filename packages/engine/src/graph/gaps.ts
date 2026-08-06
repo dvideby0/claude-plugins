@@ -135,7 +135,12 @@ export function findGaps(db: Db, limit = 25): GapsResult {
      WHERE s.kind IN ('function','class') AND s.exported = 1
        AND f.present = 1 AND f.is_test = 0
        AND NOT EXISTS (SELECT 1 FROM refs r WHERE r.name = s.name AND r.dst_path = s.path)
-       AND NOT EXISTS (SELECT 1 FROM relations rel WHERE rel.dst_symbol = s.name AND rel.dst_path = s.path)
+       AND NOT EXISTS (
+         SELECT 1 FROM relations rel
+         JOIN files source ON source.path = rel.src_path AND source.present = 1
+         WHERE rel.dst_symbol = s.name AND rel.dst_path = s.path
+           AND rel.content_sha IS NOT NULL AND rel.content_sha = source.content_sha
+       )
      LIMIT 400`,
   );
   const orphansByFile = new Map<string, string[]>();

@@ -116,6 +116,34 @@ describe("enrichment", () => {
     expect(relationsFor(db, "src/graph.py")[0]?.stale).toBe(true);
   });
 
+  it("reopens orphan gaps when the relations that explained them go stale", async () => {
+    root = await makeProject(PROJECT);
+    await scan(root, { kind: "full" });
+    const db = await getDb(root);
+
+    for (const name of ["classify_node", "research_node"]) {
+      relate(db, {
+        kind: "registers",
+        srcPath: "src/graph.py",
+        dstPath: "src/nodes.py",
+        dstSymbol: name,
+        evidence: `b.add_node("${name}", ${name})`,
+      });
+    }
+    expect(findGaps(db).gaps.some((gap) => gap.path === "src/nodes.py")).toBe(false);
+
+    const { writeFile } = await import("node:fs/promises");
+    const { join } = await import("node:path");
+    await writeFile(join(root, "src/graph.py"), "def build(b):\n    return b\n");
+    await scan(root, { kind: "incremental" });
+
+    expect(findGaps(db).gaps).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ kind: "orphan-entry", path: "src/nodes.py" }),
+      ]),
+    );
+  });
+
   it("flags relations and notes whose source file was deleted", async () => {
     root = await makeProject(PROJECT);
     await scan(root, { kind: "full" });
