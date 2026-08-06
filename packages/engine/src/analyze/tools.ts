@@ -7,7 +7,7 @@
  */
 
 import { access, constants, readdir } from "node:fs/promises";
-import { join, relative, isAbsolute } from "node:path";
+import { dirname, isAbsolute, join, relative } from "node:path";
 import { exec, platformCommand } from "../lib/exec.js";
 import type { Category, FindingInput, Severity } from "../findings/types.js";
 
@@ -176,46 +176,77 @@ async function tsConfigHasFiles(dir: string): Promise<boolean> {
   }
 }
 
+const TSC_DISCOVERY_SKIP = new Set([
+  ".git",
+  ".next",
+  ".nuxt",
+  ".svelte-kit",
+  ".turbo",
+  "build",
+  "coverage",
+  "dist",
+  "node_modules",
+  "out",
+  "target",
+  "vendor",
+]);
+
+export interface TsConfigDiscovery {
+  /** Directories containing configs that actually own source files. */
+  roots: string[];
+  /** More projects exist than the checker can safely run in one pass. */
+  capped: boolean;
+}
+
 /**
- * Project configs, root first and then one level of workspace packages.
- *
- * A monorepo has no tsconfig.json at its root — each package carries its own.
- * Looking only at the root meant type checking silently skipped on exactly the
- * repositories where it matters most, and reported that as "no tsconfig.json"
- * rather than as a gap. A root config that exists but names no files — the
- * solution-style `{"files": [], "references": [...]}` shape — is the same
- * trap: tsc exits 0 there having checked nothing, so the packages are what
- * must be checked.
+ * Find every real TypeScript project, including nested and nonstandard
+ * workspace layouts. A root config may cover only the app shell while child
+ * configs own packages, so finding one never short-circuits discovery.
  */
-async function findTsConfigs(projectRoot: string, limit = 12): Promise<string[]> {
-  if (
-    (await exists(join(projectRoot, "tsconfig.json"))) &&
-    (await tsConfigHasFiles(projectRoot))
-  ) {
-    return [projectRoot];
+export async function findTsConfigs(
+  projectRoot: string,
+  limit = 64,
+): Promise<TsConfigDiscovery> {
+  const configs: string[] = [];
+
+  async function visit(dir: string): Promise<void> {
+    let entries;
+    try {
+      entries = await readdir(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+
+    entries.sort((a, b) => a.name.localeCompare(b.name));
+    for (const entry of entries) {
+      if (entry.isFile() && entry.name === "tsconfig.json") {
+        configs.push(join(dir, entry.name));
+      } else if (entry.isDirectory() && !TSC_DISCOVERY_SKIP.has(entry.name)) {
+        await visit(join(dir, entry.name));
+      }
+    }
   }
 
-  const found: string[] = [];
-  for (const group of ["packages", "apps", "libs", "services"]) {
-    const base = join(projectRoot, group);
-    if (!(await exists(base))) continue;
-    let entries: string[];
-    try {
-      entries = await readdir(base);
-    } catch {
-      continue;
-    }
-    for (const entry of entries) {
-      if (found.length >= limit) break;
-      const dir = join(base, entry);
-      if (await exists(join(dir, "tsconfig.json"))) found.push(dir);
-    }
+  await visit(projectRoot);
+  const roots: string[] = [];
+  for (const config of configs) {
+    const dir = dirname(config);
+    // Solution-style configs with only references check no files themselves;
+    // their referenced child configs are discovered independently above.
+    if (await tsConfigHasFiles(dir)) roots.push(dir);
   }
-  return found;
+
+  roots.sort((a, b) => {
+    if (a === projectRoot) return -1;
+    if (b === projectRoot) return 1;
+    return a.localeCompare(b);
+  });
+  return { roots: roots.slice(0, limit), capped: roots.length > limit };
 }
 
 async function runTsc(projectRoot: string): Promise<AnalyzerOutcome> {
-  const roots = await findTsConfigs(projectRoot);
+  const discovery = await findTsConfigs(projectRoot);
+  const { roots } = discovery;
   if (roots.length === 0) {
     return skipped("tsc", "no tsconfig.json at the root or in packages/apps");
   }
@@ -225,6 +256,9 @@ async function runTsc(projectRoot: string): Promise<AnalyzerOutcome> {
   const findings: FindingInput[] = [];
   const line = /^(.+?)\((\d+),(\d+)\): error (TS\d+): (.+)$/;
   const failures: string[] = [];
+  if (discovery.capped) {
+    failures.push(`project discovery exceeded the ${roots.length}-config safety cap`);
+  }
 
   for (const root of roots) {
     const result = await runLocal(bin, ["--noEmit", "--pretty", "false"], {

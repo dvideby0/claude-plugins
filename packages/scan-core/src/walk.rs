@@ -95,6 +95,10 @@ pub fn walk(root: &Path) -> Vec<Scanned> {
     let mut builder = WalkBuilder::new(root);
     builder
         .hidden(false) // our own rule below is more permissive (.github)
+        // `.ignore` is a ripgrep convention, not part of SDLC's deterministic
+        // repository policy. The TypeScript fallback does not read it, so the
+        // native walker must not silently produce a different file set.
+        .ignore(false)
         .git_ignore(false)
         .git_global(false)
         .git_exclude(false)
@@ -180,4 +184,32 @@ pub fn walk(root: &Path) -> Vec<Scanned> {
     let mut files: Vec<Scanned> = receiver.into_iter().collect();
     files.sort_by(|a, b| a.path.cmp(&b.path));
     files
+}
+
+#[cfg(test)]
+mod tests {
+    use super::walk;
+    use std::fs;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn dot_ignore_does_not_change_the_repository_map() {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock before epoch")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "sdlc-walk-ignore-{}-{nonce}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&root).expect("create fixture");
+        fs::write(root.join(".ignore"), "ignored.ts\n").expect("write ignore file");
+        fs::write(root.join("ignored.ts"), "export const kept = true;\n")
+            .expect("write source");
+
+        let paths: Vec<String> = walk(&root).into_iter().map(|file| file.path).collect();
+        assert!(paths.contains(&"ignored.ts".to_string()));
+
+        fs::remove_dir_all(root).expect("remove fixture");
+    }
 }
