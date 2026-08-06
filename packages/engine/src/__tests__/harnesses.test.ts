@@ -18,6 +18,7 @@ import {
   codexMcpOverride,
   drawInvocationArgs,
   MAP_MCP_TOOLS,
+  mapCompletionAdvanced,
   supportedHarnesses,
 } from "../daemon/draw.js";
 import { posixShellQuote, windowsLauncherCommand } from "../daemon/launcher.js";
@@ -148,6 +149,49 @@ model = "gpt-5.6-sol"
     expect(result).toContain('model = "gpt-5.6-sol"');
   });
 
+  it("expands a root inline MCP table before replacing SDLC", () => {
+    const inline = `model = "gpt-5.6-sol"
+mcp_servers = { other = { command = "other" }, sdlc = { command = "old", args = [] } }
+`;
+
+    expect(hasCodexServer(inline)).toBe(true);
+    const result = spliceCodexBlock(inline, OURS);
+
+    expect(result).toContain("[mcp_servers]");
+    expect(result).toContain('other = { command = "other" }');
+    expect(result).not.toContain("mcp_servers = {");
+    expect(result).not.toContain('command = "old"');
+    expect(result.match(/^\[mcp_servers\.sdlc\]$/gm)).toHaveLength(1);
+
+    const removed = spliceCodexBlock(result, null);
+    expect(removed).toContain('other = { command = "other" }');
+    expect(removed).not.toContain("mcp_servers.sdlc");
+  });
+
+  it("removes multiline and parent-relative inline SDLC entries", () => {
+    const rootInline = `mcp_servers = {
+  other = { command = "other", args = ["one", "two"] },
+  "sdlc" = { command = "old", args = [] },
+}
+`;
+    const expanded = spliceCodexBlock(rootInline, OURS);
+    expect(expanded).toContain('other = { command = "other", args = ["one", "two"] }');
+    expect(expanded).not.toContain('"sdlc" =');
+    expect(expanded.match(/^\[mcp_servers\.sdlc\]$/gm)).toHaveLength(1);
+
+    const relative = `[mcp_servers]
+other = { command = "other" }
+sdlc = {
+  command = "old"
+}
+`;
+    expect(hasCodexServer(relative)).toBe(true);
+    const replaced = spliceCodexBlock(relative, OURS);
+    expect(replaced).toContain('other = { command = "other" }');
+    expect(replaced).not.toContain('command = "old"');
+    expect(replaced.match(/^\[mcp_servers\.sdlc\]$/gm)).toHaveLength(1);
+  });
+
   it("publishes config updates atomically and keeps the pristine backup", async () => {
     root = await makeProject({ "config.toml": EXISTING });
     const path = join(root, "config.toml");
@@ -243,6 +287,13 @@ describe("draw harness ids", () => {
   it("uses the same Claude id returned by harness detection", () => {
     expect(supportedHarnesses()).toContain("claude-code");
     expect(supportedHarnesses()).not.toContain("claude");
+  });
+
+  it("requires this drawing to advance the finalization marker", () => {
+    expect(mapCompletionAdvanced(null, null)).toBe(false);
+    expect(mapCompletionAdvanced("old", "old")).toBe(false);
+    expect(mapCompletionAdvanced(null, "first")).toBe(true);
+    expect(mapCompletionAdvanced("old", "new")).toBe(true);
   });
 
   it("limits unattended Claude and Codex runs to map tools", () => {
@@ -402,6 +453,16 @@ describe("subprocess output bounds", () => {
     setTimeout(() => controller.abort(new Error("cancelled by caller")), 25);
 
     await expect(running).rejects.toThrow(/cancelled by caller/);
+  });
+
+  it("reports a process-tree timeout distinctly", async () => {
+    const result = await exec(
+      process.execPath,
+      ["-e", "setInterval(() => {}, 1000)"],
+      { timeout: 25 },
+    );
+    expect(result.timedOut).toBe(true);
+    expect(result.spawnFailed).toBe(false);
   });
 });
 

@@ -35,6 +35,7 @@ import { terminateProcessTree } from "../lib/exec.js";
 import { WorkspaceWatcher } from "./watcher.js";
 import { hasTypedConfigChange, WatchRefreshQueue } from "./watch-refresh.js";
 import { WorkspaceRegistry } from "./workspaces.js";
+import { canonicalWorkspaceRoot, workspaceIdentityKey } from "../lib/workspace-path.js";
 
 export interface HttpServerOptions {
   token: string;
@@ -62,6 +63,19 @@ export function requestPath(target: string | undefined): string | null {
   } catch {
     return null;
   }
+}
+
+/** Match lexical aliases to the canonical workspace a desktop action names. */
+export async function rootsIncludeWorkspace(
+  roots: Iterable<string>,
+  workspaceRoot: string,
+): Promise<boolean> {
+  const target = workspaceIdentityKey(await canonicalWorkspaceRoot(workspaceRoot));
+  for (const root of roots) {
+    const candidate = workspaceIdentityKey(await canonicalWorkspaceRoot(root));
+    if (candidate === target) return true;
+  }
+  return false;
 }
 
 /** Indexing runs in the background; the UI polls for the result. */
@@ -626,9 +640,16 @@ export function createHttpServer(options: HttpServerOptions): HttpServerHandle {
         // A tool request can hold the same sql.js image independently of the
         // desktop's index jobs. Stop only sessions that touched this workspace,
         // then wait for their handlers to release the handle before eviction.
-        const workspaceSessions = [...new Set(mcpSessions.values())].filter((session) =>
-          session.roots.has(workspace.root),
-        );
+        const workspaceSessions: ActiveMcpSession[] = [];
+        for (const session of new Set(mcpSessions.values())) {
+          // A touch records the lexical root immediately and canonicalizes it
+          // asynchronously through registry.add. Match the lexical aliases
+          // here too, or a symlinked session can finish registration after the
+          // deletion and resurrect the workspace.
+          if (await rootsIncludeWorkspace(session.roots, workspace.root)) {
+            workspaceSessions.push(session);
+          }
+        }
         for (const session of workspaceSessions) session.close();
         if (job) requestIndexStop(job);
         await cancelTypedPasses(workspace.root);

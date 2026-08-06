@@ -89,6 +89,23 @@ function toPosix(path: string): string {
 }
 
 /**
+ * Tree-sitter stores columns as UTF-8 byte offsets. TypeScript exposes UTF-16
+ * code-unit columns, so every non-BMP character before a use otherwise shifts
+ * the reference outside its enclosing declaration in the database.
+ */
+function utf8Position(
+  sourceFile: ts.SourceFile,
+  position: number,
+): { line: number; column: number } {
+  const point = sourceFile.getLineAndCharacterOfPosition(position);
+  const lineStart = sourceFile.getPositionOfLineAndCharacter(point.line, 0);
+  return {
+    line: point.line + 1,
+    column: Buffer.byteLength(sourceFile.text.slice(lineStart, position), "utf8"),
+  };
+}
+
+/**
  * Walk into the declaration an identifier actually refers to.
  *
  * Imports produce alias symbols that point at the import statement rather than
@@ -386,19 +403,20 @@ export function analyseTypes(projectRoot: string): TypedAnalysis {
               (declaration as ts.NamedDeclaration).name === node;
 
             if (dst && name && !isSelf) {
-              const sourcePosition = sourceFile.getLineAndCharacterOfPosition(node.getStart());
+              const sourcePosition = utf8Position(sourceFile, node.getStart());
               const declaredNode = (declaration as ts.NamedDeclaration).name;
-              const destinationPosition = declFile.getLineAndCharacterOfPosition(
+              const destinationPosition = utf8Position(
+                declFile,
                 declaredNode?.getStart() ?? declaration.getStart(),
               );
               found.push({
                 src,
-                line: sourcePosition.line + 1,
-                column: sourcePosition.character,
+                line: sourcePosition.line,
+                column: sourcePosition.column,
                 name,
                 dst,
-                dstLine: destinationPosition.line + 1,
-                dstColumn: destinationPosition.character,
+                dstLine: destinationPosition.line,
+                dstColumn: destinationPosition.column,
               });
             }
           }

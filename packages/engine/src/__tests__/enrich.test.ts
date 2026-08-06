@@ -190,6 +190,28 @@ describe("enrichment", () => {
     );
   });
 
+  it("queues a memory recorded before its anchor was indexed for validation", async () => {
+    root = await makeProject(PROJECT);
+    await scan(root, { kind: "full" });
+    const db = await getDb(root);
+    remember(db, {
+      kind: "gotcha",
+      title: "Future worker has a hidden constraint",
+      anchors: [{ path: "src/future.py" }],
+    });
+
+    const { writeFile } = await import("node:fs/promises");
+    const { join } = await import("node:path");
+    await writeFile(join(root, "src/future.py"), "def work():\n    return 1\n");
+    await scan(root, { kind: "incremental" });
+
+    expect(findGaps(db).gaps).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ kind: "stale-note", path: "src/future.py" }),
+      ]),
+    );
+  });
+
   it("counts exploration only while the file is unchanged", async () => {
     root = await makeProject(PROJECT);
     await scan(root, { kind: "full" });

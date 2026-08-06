@@ -91,6 +91,33 @@ describe("workspace identity", () => {
     ).toBe("preserved");
   });
 
+  it("does not open a second image when acquisition races eviction", async () => {
+    root = await makeProject({
+      "project/package.json": JSON.stringify({ name: "close-race" }),
+    });
+    const project = join(root, "project");
+    const first = await getDb(project);
+    first.run("INSERT OR REPLACE INTO meta(key, value) VALUES('close-race', 'preserved')");
+
+    // Acquisition starts first. An unconditional `await undefined` in getDb
+    // used to let the close evict `first` before the cache lookup resumed,
+    // creating a second live sql.js image over the same audit.db.
+    const acquiring = getDb(project);
+    const closing = closeDb(project);
+    const acquired = await acquiring;
+    expect(await closing).toBe(true);
+
+    // Canonicalization may order the close first, in which case `acquired` is
+    // the safely reopened image. If acquisition wins it is the old (now
+    // closed) handle. Either ordering is valid; the live image must contain
+    // the state eviction flushed before any replacement was opened.
+    const live = acquired === first ? await getDb(project) : acquired;
+    expect(
+      live.get<{ value: string }>("SELECT value FROM meta WHERE key = 'close-race'")?.value,
+    ).toBe("preserved");
+    expect(await getDb(project)).toBe(live);
+  });
+
   it("surfaces a corrupt registry without overwriting it", async () => {
     root = await makeProject({ "package.json": JSON.stringify({ name: "registry-corruption" }) });
     const path = join(root, "workspaces.json");

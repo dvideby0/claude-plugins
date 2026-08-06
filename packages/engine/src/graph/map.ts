@@ -16,7 +16,7 @@
  * nobody has explained yet.
  */
 
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import type { Db } from "../db/db.js";
 import { likeEscape } from "../lib/sql.js";
 
@@ -253,7 +253,12 @@ export function finalizeMap(
     );
   }
 
-  db.run("INSERT OR REPLACE INTO meta(key, value) VALUES('map_complete', ?)", [now]);
+  // Each drawing must advance the marker. A timestamp alone can collide when
+  // a fast retry finalizes in the same millisecond, and the draw supervisor
+  // uses this value to distinguish new completion from an inherited old flag.
+  db.run("INSERT OR REPLACE INTO meta(key, value) VALUES('map_complete', ?)", [
+    `${now}:${randomUUID()}`,
+  ]);
   return { complete: true, unassigned: unassignedFiles(db).length };
 }
 

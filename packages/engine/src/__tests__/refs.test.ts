@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { getDb } from "../db/db.js";
 import { impactOf, referencesTo } from "../graph/refs.js";
 import { buildBrief } from "../graph/brief.js";
+import { neighbourhood } from "../memory/context.js";
 import { parseFile } from "../scan/parse.js";
 import { EXTRACTION_VERSION, scan } from "../scan/scan.js";
 import { loadNative } from "../scan/source.js";
@@ -319,6 +320,35 @@ describe("reference coverage", () => {
     });
   });
 
+  it("stores fallback parser columns as UTF-8 byte offsets", async () => {
+    const source = "/*😀*/ export function run() { return 1; }";
+    const parsed = await parseFile("src/unicode.ts", "typescript", source);
+    const symbol = parsed.symbols.find((candidate) => candidate.name === "run");
+    const start = source.indexOf("function");
+    expect(symbol?.startColumn).toBe(Buffer.byteLength(source.slice(0, start), "utf8"));
+    expect(symbol?.endColumn).toBe(Buffer.byteLength(source, "utf8"));
+  });
+
+  it("finds covering tests outside the affected-file display page", async () => {
+    root = await makeProject({
+      "package.json": JSON.stringify({ name: "coverage-page", type: "module" }),
+      "tsconfig.json": JSON.stringify({
+        compilerOptions: { target: "ES2022", module: "ESNext", moduleResolution: "Bundler" },
+        include: ["src/**/*"],
+      }),
+      "src/api.ts": "export function run() { return 1; }\n",
+      "src/a.ts": "import { run } from './api.js';\nexport const value = run();\n",
+      "src/z.test.ts": "import { run } from './api.js';\nrun();\n",
+    });
+    await scan(root, { kind: "full" });
+    const db = await getDb(root);
+    resolveTypes(db, root);
+
+    const impact = impactOf(db, "src/api.ts", 1);
+    expect(impact.affectedFiles).toEqual(["src/a.ts"]);
+    expect(impact.coveringTests).toEqual(["src/z.test.ts"]);
+  });
+
   it("reports unavailable reference analysis as unknown rather than empty", async () => {
     root = await makeProject(PROJECT);
     await scan(root, { kind: "full" });
@@ -365,11 +395,13 @@ describe("reference coverage", () => {
     const rescannedCoverage = native ? "import" : "none";
     expect(referencesTo(db, "run").referenceCoverage).toBe(rescannedCoverage);
     expect(impactOf(db, "src/api.ts").referenceCoverage).toBe(rescannedCoverage);
+    expect(neighbourhood(db, "src/api.ts").file?.referenceCoverage).toBe(rescannedCoverage);
 
     // On the TypeScript fallback the same source has no reference extraction.
     db.run("UPDATE files SET ref_coverage = 'none' WHERE path = 'src/app.ts'");
     expect(referencesTo(db, "run").referenceCoverage).toBe("none");
     expect(impactOf(db, "src/api.ts").referenceCoverage).toBe("none");
+    expect(neighbourhood(db, "src/api.ts").file?.referenceCoverage).toBe("none");
   });
 
   it("treats typed zeroes for methods as real results", async () => {

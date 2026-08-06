@@ -1,7 +1,7 @@
 import type { IncomingMessage } from "node:http";
 import { afterEach, describe, expect, it } from "vitest";
 import { checkUiBootstrap } from "../daemon/auth.js";
-import { isWorkspaceDirectory, requestPath } from "../daemon/http.js";
+import { isWorkspaceDirectory, requestPath, rootsIncludeWorkspace } from "../daemon/http.js";
 import { cleanup, makeProject } from "./helpers.js";
 import { join } from "node:path";
 
@@ -41,5 +41,15 @@ describe("workspace registration", () => {
     expect(isWorkspaceDirectory(join(root, "not-a-directory.txt"))).toBe(false);
     expect(isWorkspaceDirectory(root)).toBe(true);
     expect(isWorkspaceDirectory(join(root, "missing"))).toBe(false);
+  });
+
+  it("matches an MCP session's symlink alias to the canonical workspace", async () => {
+    root = await makeProject({ "real/package.json": "{}" });
+    const real = join(root, "real");
+    const alias = join(root, "alias");
+    const { symlink } = await import("node:fs/promises");
+    await symlink(real, alias, "dir");
+
+    expect(await rootsIncludeWorkspace(new Set([alias]), real)).toBe(true);
   });
 });

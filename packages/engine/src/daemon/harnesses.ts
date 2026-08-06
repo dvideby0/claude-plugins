@@ -44,12 +44,31 @@ const CODEX_SERVER_DOTTED_KEY = new RegExp(
   `^\\s*${tomlExactKey("mcp_servers")}\\s*\\.\\s*${tomlExactKey(SERVER_NAME)}` +
     `(?:\\s*\\.\\s*(?:[A-Za-z0-9_-]+|"(?:\\\\.|[^"\\\\])*"|'[^']*'))*\\s*=`,
 );
+const CODEX_PARENT_HEADER = new RegExp(
+  `^\\s*\\[\\s*${tomlExactKey("mcp_servers")}\\s*\\]\\s*(?:#.*)?$`,
+);
+const CODEX_SERVER_RELATIVE_KEY = new RegExp(
+  `^\\s*${tomlExactKey(SERVER_NAME)}` +
+    `(?:\\s*\\.\\s*(?:[A-Za-z0-9_-]+|"(?:\\\\.|[^"\\\\])*"|'[^']*'))*\\s*=`,
+);
+const CODEX_ROOT_PARENT_KEY = new RegExp(
+  `^\\s*${tomlExactKey("mcp_servers")}\\s*=\\s*(.*)$`,
+);
 
 export function hasCodexServer(toml: string): boolean {
-  return (
-    CODEX_SERVER_HEADER.test(toml) ||
-    toml.split("\n").some((line) => CODEX_SERVER_DOTTED_KEY.test(line))
-  );
+  const inline = rewriteRootInlineCodexParent(toml);
+  if (inline.foundServer || CODEX_SERVER_HEADER.test(inline.toml)) return true;
+
+  let inParent = false;
+  for (const line of inline.toml.split("\n")) {
+    if (/^\s*\[/.test(line)) {
+      inParent = CODEX_PARENT_HEADER.test(line);
+      continue;
+    }
+    if (inParent && CODEX_SERVER_RELATIVE_KEY.test(line)) return true;
+    if (CODEX_SERVER_DOTTED_KEY.test(line)) return true;
+  }
+  return false;
 }
 
 async function version(bin: string): Promise<string | null> {
@@ -192,16 +211,25 @@ function tomlString(value: string): string {
  * the user's config untouched. A .bak copy is taken before every write.
  */
 function spliceCodexBlock(toml: string, block: string | null): string {
+  // An inline parent table is immutable in TOML: retaining
+  // `mcp_servers = { ... }` and appending `[mcp_servers.sdlc]` invalidates the
+  // complete file. Expand its other entries under an ordinary parent table
+  // first, while dropping any existing SDLC entry.
+  const inline = rewriteRootInlineCodexParent(toml);
   // Whitespace and quote tolerant: `[mcp_servers."sdlc"]` names the same
   // table as `[mcp_servers.sdlc]`; retaining both invalidates the whole file.
-  const lines = toml.split("\n");
+  const lines = inline.toml.split("\n");
   const kept: string[] = [];
 
   let skipping = false;
   let skippingDottedValue: string | null = null;
+  let inParent = false;
   for (const line of lines) {
     const isSectionHeader = /^\s*\[/.test(line);
-    if (isSectionHeader) skipping = CODEX_SERVER_HEADER.test(line);
+    if (isSectionHeader) {
+      skipping = CODEX_SERVER_HEADER.test(line);
+      inParent = !skipping && CODEX_PARENT_HEADER.test(line);
+    }
     if (skipping) continue;
 
     // A table can be written entirely with dotted assignments instead of a
@@ -209,7 +237,10 @@ function spliceCodexBlock(toml: string, block: string | null): string {
     // the complete config invalid TOML because the same table is declared
     // twice. Continuation lines belong to the assignment until brackets,
     // braces and quotes balance again.
-    if (skippingDottedValue === null && CODEX_SERVER_DOTTED_KEY.test(line)) {
+    const serverAssignment =
+      CODEX_SERVER_DOTTED_KEY.test(line) ||
+      (inParent && CODEX_SERVER_RELATIVE_KEY.test(line));
+    if (skippingDottedValue === null && serverAssignment) {
       const value = line.slice(line.indexOf("=") + 1);
       skippingDottedValue = tomlValueComplete(value) ? null : value;
       continue;
@@ -230,13 +261,141 @@ function spliceCodexBlock(toml: string, block: string | null): string {
   return result;
 }
 
+function stripTomlComment(line: string): string {
+  let quote: "'" | '"' | null = null;
+  let escaped = false;
+  for (let index = 0; index < line.length; index++) {
+    const char = line[index];
+    if (quote === '"' && escaped) {
+      escaped = false;
+      continue;
+    }
+    if (quote === '"' && char === "\\") {
+      escaped = true;
+      continue;
+    }
+    if (char === "'" || char === '"') {
+      quote = quote === char ? null : quote ?? char;
+      continue;
+    }
+    if (char === "#" && quote === null) return line.slice(0, index);
+  }
+  return line;
+}
+
+/** Split one inline table at commas that belong to its outermost level. */
+function inlineTableEntries(value: string): string[] | null {
+  const start = value.indexOf("{");
+  if (start === -1 || value.slice(0, start).trim()) return null;
+
+  const entries: string[] = [];
+  let entryStart = start + 1;
+  let quote: "'" | '"' | null = null;
+  let escaped = false;
+  let comment = false;
+  let square = 0;
+  let curly = 0;
+  let end = -1;
+
+  for (let index = start + 1; index < value.length; index++) {
+    const char = value[index];
+    if (comment) {
+      if (char === "\n") comment = false;
+      continue;
+    }
+    if (quote === '"' && escaped) {
+      escaped = false;
+      continue;
+    }
+    if (quote === '"' && char === "\\") {
+      escaped = true;
+      continue;
+    }
+    if (char === "'" || char === '"') {
+      quote = quote === char ? null : quote ?? char;
+      continue;
+    }
+    if (quote) continue;
+    if (char === "#") {
+      comment = true;
+      continue;
+    }
+    if (char === "[") square++;
+    else if (char === "]") square--;
+    else if (char === "{") curly++;
+    else if (char === "}") {
+      if (curly === 0 && square === 0) {
+        entries.push(value.slice(entryStart, index));
+        end = index;
+        break;
+      }
+      curly--;
+    } else if (char === "," && square === 0 && curly === 0) {
+      entries.push(value.slice(entryStart, index));
+      entryStart = index + 1;
+    }
+  }
+
+  if (end === -1) return null;
+  const suffix = value.slice(end + 1).trim();
+  if (suffix && !suffix.startsWith("#")) return null;
+  return entries.map((entry) => entry.trim()).filter(Boolean);
+}
+
+function isInlineServerEntry(entry: string): boolean {
+  const withoutComments = entry
+    .split("\n")
+    .map(stripTomlComment)
+    .join("\n")
+    .trim();
+  return CODEX_SERVER_RELATIVE_KEY.test(withoutComments);
+}
+
+/**
+ * Expand a root inline `mcp_servers` table so an SDLC sub-table can be safely
+ * replaced or appended. Other servers remain byte-for-byte within each entry.
+ */
+function rewriteRootInlineCodexParent(toml: string): { toml: string; foundServer: boolean } {
+  const lines = toml.split("\n");
+  for (let index = 0; index < lines.length; index++) {
+    const line = lines[index] as string;
+    // TOML cannot return to the root after a table header.
+    if (/^\s*\[/.test(line)) break;
+    const match = CODEX_ROOT_PARENT_KEY.exec(line);
+    if (!match) continue;
+
+    let value = match[1] as string;
+    let end = index;
+    while (!tomlValueComplete(value) && end + 1 < lines.length) {
+      end++;
+      value += `\n${lines[end] as string}`;
+    }
+    const entries = inlineTableEntries(value);
+    if (!entries) continue;
+
+    const foundServer = entries.some(isInlineServerEntry);
+    const remaining = entries.filter((entry) => !isInlineServerEntry(entry));
+    const replacement = remaining.length
+      ? [`[mcp_servers]`, ...remaining].join("\n")
+      : "";
+    lines.splice(index, end - index + 1, replacement);
+    return { toml: lines.join("\n"), foundServer };
+  }
+  return { toml, foundServer: false };
+}
+
 /** Whether a TOML value has closed every quote, array and inline table. */
 function tomlValueComplete(value: string): boolean {
   let quote: "'" | '"' | null = null;
   let escaped = false;
   let square = 0;
   let curly = 0;
+  let comment = false;
   for (const char of value) {
+    if (comment) {
+      if (char === "\n") comment = false;
+      continue;
+    }
     if (quote === '"' && escaped) {
       escaped = false;
       continue;
@@ -252,7 +411,10 @@ function tomlValueComplete(value: string): boolean {
     if (quote) continue;
     // TOML comments end the value. Delimiters inside them are prose, not
     // continuation syntax (`args = [] # [legacy` is already complete).
-    if (char === "#") break;
+    if (char === "#") {
+      comment = true;
+      continue;
+    }
     if (char === "[") square++;
     else if (char === "]") square--;
     else if (char === "{") curly++;

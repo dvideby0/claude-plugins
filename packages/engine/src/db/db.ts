@@ -276,22 +276,49 @@ export class Db {
 // second flush would silently overwrite everything the first one wrote.
 const open = new Map<string, Promise<Db>>();
 const closing = new Map<string, Promise<boolean>>();
+const lifecycle = new Map<string, Promise<unknown>>();
+
+/**
+ * Serialize every cache transition for one workspace.
+ *
+ * Waiting only for a known close is not sufficient: getDb() and closeDb()
+ * both canonicalize their paths asynchronously, so either call can otherwise
+ * reach the cache between another call's lookup, eviction, and replacement.
+ * Holding this queue through open/flush/close guarantees there is never more
+ * than one live sql.js image for a workspace.
+ */
+function serializeLifecycle<T>(key: string, action: () => Promise<T>): Promise<T> {
+  const previous = lifecycle.get(key) ?? Promise.resolve();
+  const current = previous.catch(() => undefined).then(action);
+  lifecycle.set(key, current);
+  void current.then(
+    () => {
+      if (lifecycle.get(key) === current) lifecycle.delete(key);
+    },
+    () => {
+      if (lifecycle.get(key) === current) lifecycle.delete(key);
+    },
+  );
+  return current;
+}
 
 /** Open (or reuse) the store for a project. */
 export async function getDb(projectRoot: string): Promise<Db> {
   const canonical = await canonicalWorkspaceRoot(projectRoot);
   const key = workspaceIdentityKey(canonical);
-  // A workspace removed from the desktop may be flushing and closing its old
-  // in-memory image. Do not open a second writer until that publication is
-  // complete, or their later flushes could overwrite one another.
-  await closing.get(key);
-  const existing = open.get(key);
-  if (existing) return existing;
-  const opening = Db.open(canonical);
-  open.set(key, opening);
-  // A failed open must not poison the cache for every later call.
-  opening.catch(() => open.delete(key));
-  return opening;
+  return serializeLifecycle(key, async () => {
+    const existing = open.get(key);
+    if (existing) return existing;
+    const opening = Db.open(canonical);
+    open.set(key, opening);
+    try {
+      return await opening;
+    } catch (error) {
+      // A failed open must not poison the cache for every later call.
+      if (open.get(key) === opening) open.delete(key);
+      throw error;
+    }
+  });
 }
 
 /** Persist, evict and close one workspace store without disturbing others. */
@@ -301,13 +328,13 @@ export async function closeDb(projectRoot: string): Promise<boolean> {
   const alreadyClosing = closing.get(key);
   if (alreadyClosing) return alreadyClosing;
 
-  const pending = open.get(key);
-  if (!pending) return false;
-  // Block a new open immediately. Callers that already hold this handle must
-  // be stopped by the daemon before it invokes closeDb.
-  if (open.get(key) === pending) open.delete(key);
+  const task = serializeLifecycle(key, async (): Promise<boolean> => {
+    const pending = open.get(key);
+    if (!pending) return false;
+    // Block a new open for the next queued transition. Callers that already
+    // hold this handle must be stopped by the daemon before it invokes closeDb.
+    if (open.get(key) === pending) open.delete(key);
 
-  const task = (async (): Promise<boolean> => {
     const db = await pending;
     try {
       await db.flush();
@@ -315,7 +342,7 @@ export async function closeDb(projectRoot: string): Promise<boolean> {
       db.close();
     }
     return true;
-  })();
+  });
   closing.set(key, task);
   try {
     return await task;
@@ -329,31 +356,35 @@ export async function getExistingDb(projectRoot: string): Promise<Db> {
   const canonical = await canonicalWorkspaceRoot(projectRoot);
   const key = workspaceIdentityKey(canonical);
   const dbPath = join(canonical, "sdlc-audit", "audit.db");
-  await closing.get(key);
+  return serializeLifecycle(key, async () => {
+    const existing = open.get(key);
+    if (existing) {
+      // A cached image is safe to read, but only while its backing workspace is
+      // reachable. Reporting stale cached data for an absent external volume is
+      // less honest than marking that workspace unavailable.
+      await access(dbPath);
+      return existing;
+    }
 
-  const existing = open.get(key);
-  if (existing) {
-    // A cached image is safe to read, but only while its backing workspace is
-    // reachable. Reporting stale cached data for an absent external volume is
-    // less honest than marking that workspace unavailable.
-    await access(dbPath);
-    return existing;
-  }
-
-  // Do not implement this as access() followed by getDb(): the file can vanish
-  // between those calls, causing getDb() to cache a new empty image that a
-  // later flush would publish over the real store when the volume returns.
-  const opening = Db.open(canonical, false);
-  open.set(key, opening);
-  opening.catch(() => {
-    if (open.get(key) === opening) open.delete(key);
+    // Do not implement this as access() followed by getDb(): the file can vanish
+    // between those calls, causing getDb() to cache a new empty image that a
+    // later flush would publish over the real store when the volume returns.
+    const opening = Db.open(canonical, false);
+    open.set(key, opening);
+    try {
+      return await opening;
+    } catch (error) {
+      if (open.get(key) === opening) open.delete(key);
+      throw error;
+    }
   });
-  return opening;
 }
 
 /** Drop the cached handles — used by tests. */
 export async function resetDbCache(): Promise<void> {
-  await Promise.allSettled(closing.values());
+  while (lifecycle.size > 0) {
+    await Promise.allSettled([...lifecycle.values()]);
+  }
   const pending = [...open.values()];
   open.clear();
   for (const db of await Promise.allSettled(pending)) {

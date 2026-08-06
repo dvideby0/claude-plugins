@@ -306,10 +306,18 @@ export function impactOf(db: Db, target: string, limit = 200): Impact {
     )
     .map((row) => row.src_path);
 
-  const tests = affected.filter(
-    (path) =>
-      db.get<{ is_test: number }>("SELECT is_test FROM files WHERE path = ?", [path])?.is_test === 1,
-  );
+  // Test coverage is a fact about the complete incoming reference set, not
+  // the display page above. A test that sorts after `limit` must still prevent
+  // briefs from claiming that no tracked test covers this target.
+  const tests = db
+    .all<{ src_path: string }>(
+      `SELECT DISTINCT r.src_path FROM refs r
+       JOIN files f ON f.path = r.src_path
+       WHERE r.dst_path = ? AND r.src_path != ? AND f.present = 1 AND f.is_test = 1
+       ORDER BY r.src_path`,
+      [file.path, file.path],
+    )
+    .map((row) => row.src_path);
 
   return {
     target,

@@ -314,6 +314,15 @@ describe("the drawn map", () => {
 
     finalizeMap(db);
     expect(mapDrift(db)).toMatchObject({ complete: true, clean: true });
+
+    const first = db.get<{ value: string }>(
+      "SELECT value FROM meta WHERE key = 'map_complete'",
+    )?.value;
+    finalizeMap(db);
+    const second = db.get<{ value: string }>(
+      "SELECT value FROM meta WHERE key = 'map_complete'",
+    )?.value;
+    expect(second).not.toBe(first);
   });
 
   it("refuses to finalize while unexplained files remain unacknowledged", async () => {

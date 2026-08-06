@@ -15,6 +15,7 @@
 
 import { spawn, type ChildProcess } from "node:child_process";
 import { readContent } from "../content.js";
+import { getExistingDb } from "../db/db.js";
 import { platformCommand, spawnEnv } from "../lib/exec.js";
 import type { BridgeCommand } from "./harnesses.js";
 
@@ -181,6 +182,19 @@ export interface DrawHandle {
   finished: Promise<{ ok: boolean; summary: string }>;
 }
 
+/** A successful child must finalize this drawing, not inherit an old marker. */
+export function mapCompletionAdvanced(
+  previous: string | null,
+  current: string | null,
+): boolean {
+  return current !== null && current !== previous;
+}
+
+async function mapCompletion(root: string): Promise<string | null> {
+  const db = await getExistingDb(root);
+  return db.get<{ value: string }>("SELECT value FROM meta WHERE key = 'map_complete'")?.value ?? null;
+}
+
 /**
  * Pull a human-readable line out of Claude's stream-json.
  *
@@ -245,6 +259,7 @@ export async function drawMap(options: DrawOptions): Promise<DrawHandle> {
   }
 
   const prompt = await readContent("prompts/map.md");
+  const previousCompletion = await mapCompletion(options.root);
   const rawArgs = drawInvocationArgs(options.harness, prompt, options.bridge);
   const command = platformCommand(invocation.bin, rawArgs);
   const child = spawn(command.command, command.args, {
@@ -288,7 +303,25 @@ export async function drawMap(options: DrawOptions): Promise<DrawHandle> {
     });
     child.on("close", (code) => {
       if (code === 0) {
-        resolve({ ok: true, summary: "Map drawn." });
+        void mapCompletion(options.root).then(
+          (currentCompletion) => {
+            resolve(
+              mapCompletionAdvanced(previousCompletion, currentCompletion)
+                ? { ok: true, summary: "Map drawn." }
+                : {
+                    ok: false,
+                    summary:
+                      "The agent exited before finalize_map completed. Its partial map was kept so the next build can resume.",
+                  },
+            );
+          },
+          (error: unknown) => {
+            resolve({
+              ok: false,
+              summary: `Could not verify map finalization: ${error instanceof Error ? error.message : String(error)}`,
+            });
+          },
+        );
         return;
       }
       resolve({

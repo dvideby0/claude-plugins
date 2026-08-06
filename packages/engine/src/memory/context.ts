@@ -8,6 +8,7 @@
  */
 
 import type { Db } from "../db/db.js";
+import { incomingReferenceCoverage } from "../graph/refs.js";
 import { annotatedSymbols, memoriesForPath, memoriesForSymbolName, type Memory } from "./store.js";
 import { likeEscape } from "../lib/sql.js";
 
@@ -186,7 +187,11 @@ export function neighbourhood(db: Db, target: string, limit = 40): Neighbourhood
           loc: file.loc,
           churn: file.churn,
           isTest: file.is_test === 1,
-          referenceCoverage: file.ref_coverage,
+          // The counts below are incoming uses, produced by source files
+          // across the repository. The declaration file's own outgoing
+          // coverage can remain typed while a changed importer is temporarily
+          // downgraded, so it cannot justify a negative reference result.
+          referenceCoverage: incomingReferenceCoverage(db),
         }
       : null,
     symbols: db

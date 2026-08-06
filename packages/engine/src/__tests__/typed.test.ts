@@ -405,6 +405,34 @@ export function packageEntry() { return makeStore().add("ok"); }
     expect(new Set(refs.callSites.map((site) => site.column)).size).toBe(2);
   });
 
+  it("links source and destination identities after non-BMP Unicode", async () => {
+    root = await makeProject({
+      "package.json": JSON.stringify({ name: "unicode-columns", type: "module" }),
+      "tsconfig.json": JSON.stringify({
+        compilerOptions: { target: "ES2022", module: "ESNext", moduleResolution: "Bundler" },
+        include: ["src/**/*"],
+      }),
+      "src/api.ts": "/*😀😀*/ export function foo() { return 1; }\n",
+      "src/app.ts":
+        "import { foo } from './api.js';\n/*😀😀*/ export function bar() { return foo(); }\n",
+    });
+    await scan(root, { kind: "full" });
+    const db = await getDb(root);
+    resolveTypes(db, root);
+
+    const reference = db.get<{ src_symbol_id: string | null; dst_symbol_id: string | null }>(
+      "SELECT src_symbol_id, dst_symbol_id FROM refs WHERE src_path = 'src/app.ts' AND name = 'foo'",
+    );
+    const source = db.get<{ id: string }>(
+      "SELECT id FROM symbols WHERE path = 'src/app.ts' AND name = 'bar'",
+    );
+    const destination = db.get<{ id: string }>(
+      "SELECT id FROM symbols WHERE path = 'src/api.ts' AND name = 'foo'",
+    );
+    expect(reference?.src_symbol_id).toBe(source?.id);
+    expect(reference?.dst_symbol_id).toBe(destination?.id);
+  });
+
   it("requires declaration identity when one file has duplicate method names", async () => {
     root = await makeProject({
       "package.json": JSON.stringify({ name: "ambiguous-members", type: "module" }),

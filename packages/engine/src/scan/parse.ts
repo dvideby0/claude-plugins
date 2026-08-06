@@ -137,6 +137,11 @@ function pythonKind(node: TsNode): "function" | "method" {
   return anchor.parent?.parent?.type === "class_definition" ? "method" : "function";
 }
 
+/** Web tree-sitter reports UTF-16 columns; the native core reports UTF-8 bytes. */
+function utf8Column(lines: string[], row: number, column: number): number {
+  return Buffer.byteLength((lines[row] ?? "").slice(0, column), "utf8");
+}
+
 /** Parse one file. Returns empty results for unsupported languages. */
 export async function parseFile(
   path: string,
@@ -163,6 +168,7 @@ export async function parseFile(
 
   const symbols: ParsedSymbol[] = [];
   const imports = new Set<string>();
+  const lines = source.split("\n");
 
   const captures = (query as { captures(n: TsNode): Array<{ name: string; node: TsNode }> }).captures(
     tree.rootNode,
@@ -221,9 +227,9 @@ export async function parseFile(
         kind: callable ? (valueType === "class" ? "class" : "function") : "constant",
         name,
         startLine: node.startPosition.row + 1,
-        startColumn: node.startPosition.column,
+        startColumn: utf8Column(lines, node.startPosition.row, node.startPosition.column),
         endLine: node.endPosition.row + 1,
-        endColumn: node.endPosition.column,
+        endColumn: utf8Column(lines, node.endPosition.row, node.endPosition.column),
         exported,
         defaultExport,
         signature: callable ? firstLine(node) : flattened(node),
@@ -241,9 +247,9 @@ export async function parseFile(
       kind,
       name,
       startLine: node.startPosition.row + 1,
-      startColumn: node.startPosition.column,
+      startColumn: utf8Column(lines, node.startPosition.row, node.startPosition.column),
       endLine: node.endPosition.row + 1,
-      endColumn: node.endPosition.column,
+      endColumn: utf8Column(lines, node.endPosition.row, node.endPosition.column),
       exported: grammar === "python" ? !name.startsWith("_") : isExportedTs(node) || defaultExport,
       defaultExport,
       signature: firstLine(node),

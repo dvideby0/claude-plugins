@@ -155,19 +155,27 @@ export function exec(
   options.signal?.throwIfAborted();
   return new Promise((resolve, reject) => {
     let child: ChildProcess;
+    let timedOut = false;
+    let timeout: NodeJS.Timeout | null = null;
     const onAbort = (): void => {
       // AbortSignal kills the direct child. On Windows that child may be
       // cmd.exe in front of an npm shim, so explicitly terminate its tree.
       if (process.platform === "win32" && child) terminateProcessTree(child);
     };
-    const finish = (): void => options.signal?.removeEventListener("abort", onAbort);
+    const finish = (): void => {
+      if (timeout) clearTimeout(timeout);
+      options.signal?.removeEventListener("abort", onAbort);
+    };
 
     child = execFile(
       command,
       args,
       {
         cwd: options.cwd,
-        timeout: options.timeout ?? DEFAULT_TIMEOUT,
+        // A private timer below kills the complete process tree. Node's
+        // built-in timeout only kills cmd.exe on Windows and leaves the npm
+        // shim's actual analyzer running behind it.
+        timeout: 0,
         maxBuffer: options.maxBuffer ?? DEFAULT_MAX_BUFFER,
         encoding: "utf-8",
         env: options.env,
@@ -180,13 +188,24 @@ export function exec(
           reject(options.signal.reason ?? error ?? new Error("The operation was aborted."));
           return;
         }
-        if (!error) {
+        if (!error && !timedOut) {
           resolve({
             stdout,
             stderr,
             exitCode: 0,
             spawnFailed: false,
             timedOut: false,
+            truncated: false,
+          });
+          return;
+        }
+        if (!error) {
+          resolve({
+            stdout: stdout ?? "",
+            stderr: stderr ?? "",
+            exitCode: null,
+            spawnFailed: false,
+            timedOut: true,
             truncated: false,
           });
           return;
@@ -205,7 +224,8 @@ export function exec(
         const overflowed = err.code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER";
         const spawnFailed = typeof err.code === "string" && !overflowed;
         // A timeout kill arrives as killed + signal with no numeric exit code.
-        const timedOut = err.killed === true && err.signal != null && !overflowed;
+        const wasTimedOut =
+          timedOut || (err.killed === true && err.signal != null && !overflowed);
 
         if (overflowed) {
           resolve({
@@ -224,11 +244,19 @@ export function exec(
           stderr: stderr ?? "",
           exitCode: typeof err.code === "number" ? err.code : null,
           spawnFailed,
-          timedOut,
+          timedOut: wasTimedOut,
           truncated: false,
         });
       },
     );
+    const timeoutMs = options.timeout ?? DEFAULT_TIMEOUT;
+    if (timeoutMs > 0) {
+      timeout = setTimeout(() => {
+        timedOut = true;
+        terminateProcessTree(child, true);
+      }, timeoutMs);
+      timeout.unref();
+    }
     options.signal?.addEventListener("abort", onAbort, { once: true });
     if (options.signal?.aborted) onAbort();
   });
