@@ -14,10 +14,12 @@ You are running unattended. Do not ask questions; make the call and record it.
 
 Call `map_drift` first.
 
-- **`clean: true` and the map is empty** → first drawing. Do the whole of §2–§5.
-- **`clean: false`** → a drawing exists and the code moved under it. Do **only**
+- **`complete: false`** → the first drawing is new or was interrupted. Do the
+  whole of §2–§5, preserving any useful boxes or flows already present.
+- **`complete: true` and `clean: false`** → a drawing exists and the code moved
+  under it. Do **only**
   §6, then stop. Redrawing what has not changed wastes the work that produced it.
-- **`clean: true` and a map exists** → nothing to do. Say so and stop.
+- **`complete: true` and `clean: true`** → nothing to do. Say so and stop.
 
 ## 2. Look before naming
 
@@ -78,6 +80,9 @@ flows. Leave everything else alone.
 
 Call `map` and check `coverage`. Files in no component are the parts nobody has
 explained — either draw them in or state plainly that they are unexplained.
+Then call `finalize_map`, passing any deliberately unexplained paths in
+`acknowledgeUnassigned`. This explicit final step is what makes an interrupted
+first drawing resumable instead of mistaking one saved box for a complete map.
 
 Then report, briefly: the components you drew, the flows you drew, coverage,
 and anything you could not account for. An honest gap is more useful than a box

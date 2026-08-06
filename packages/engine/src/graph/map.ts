@@ -128,7 +128,6 @@ export function describeComponent(db: Db, input: ComponentInput): { id: string; 
   const now = new Date().toISOString();
   const parentSpecified = Object.prototype.hasOwnProperty.call(input, "parent");
   const parentId = input.parent ? slug(input.parent) : null;
-  const firstComponent = db.count("SELECT COUNT(*) AS n FROM components") === 0;
 
   if (parentId === id) throw new Error("A component cannot contain itself.");
   if (parentId) {
@@ -216,15 +215,46 @@ export function describeComponent(db: Db, input: ComponentInput): { id: string; 
     }
   }
 
-  // The first drawing establishes a per-file baseline. Later metadata/layout
-  // changes do not move it; newly unassigned files remain visible until they
-  // are mapped or explicitly acknowledged.
-  if (firstComponent) acknowledgeMapFiles(db, allMappedFiles(db), now);
   if (input.acknowledgeUnassigned) {
     acknowledgeMapFiles(db, input.acknowledgeUnassigned, now);
   }
 
   return { id, created: !existing };
+}
+
+/**
+ * Commit an authored map only after the drawing pass reaches its explicit end.
+ *
+ * Creating the first component is not completion: an interrupted agent may
+ * still owe the rest of the boxes, every flow and all cross-cutting tags. The
+ * marker keeps the next pass in resume mode until the agent calls this tool.
+ */
+export function finalizeMap(
+  db: Db,
+  input: { acknowledgeUnassigned?: string[] } = {},
+): { complete: true; unassigned: number } {
+  if (db.count("SELECT COUNT(*) AS n FROM components") === 0) {
+    throw new Error("Cannot finalize an empty map; draw at least one component first.");
+  }
+
+  const now = new Date().toISOString();
+  if (input.acknowledgeUnassigned) {
+    acknowledgeMapFiles(db, input.acknowledgeUnassigned, now);
+  }
+
+  const acknowledged = new Set(
+    db.all<{ path: string }>("SELECT path FROM map_file_ack").map((row) => row.path),
+  );
+  const unexplained = unassignedFiles(db).filter((path) => !acknowledged.has(path));
+  if (unexplained.length > 0) {
+    throw new Error(
+      `Map still has ${unexplained.length} unexplained file(s): ${unexplained.slice(0, 10).join(", ")}. ` +
+        "Assign them to components or explicitly acknowledge them when finalizing.",
+    );
+  }
+
+  db.run("INSERT OR REPLACE INTO meta(key, value) VALUES('map_complete', ?)", [now]);
+  return { complete: true, unassigned: unassignedFiles(db).length };
 }
 
 export interface FlowStepInput {
@@ -358,6 +388,8 @@ export interface SystemMap {
 }
 
 export interface MapDrift {
+  /** False until the first drawing explicitly reaches its final step. */
+  complete: boolean;
   components: Array<{ id: string; name: string; changedFiles: string[] }>;
   flows: Array<{ id: string; name: string; steps: string[] }>;
   /** Files belonging to no box — usually code added since the last drawing. */
@@ -426,11 +458,17 @@ export function mapDrift(db: Db): MapDrift {
     .filter((path) => !acknowledged.has(path))
     .slice(0, 20);
 
+  const complete = Boolean(db.get("SELECT value FROM meta WHERE key = 'map_complete'"));
   return {
+    complete,
     components,
     flows,
     newlyUnassigned,
-    clean: components.length === 0 && flows.length === 0 && newlyUnassigned.length === 0,
+    clean:
+      complete &&
+      components.length === 0 &&
+      flows.length === 0 &&
+      newlyUnassigned.length === 0,
   };
 }
 

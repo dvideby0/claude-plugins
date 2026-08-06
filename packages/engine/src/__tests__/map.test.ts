@@ -7,6 +7,7 @@ import {
   componentOf,
   describeComponent,
   describeFlow,
+  finalizeMap,
   mapDrift,
   systemMap,
   tagNode,
@@ -102,6 +103,7 @@ describe("the drawn map", () => {
 
     describeComponent(db, { name: "API", members: ["src/api/"] });
     describeComponent(db, { name: "Core", members: ["src/core/"] });
+    finalizeMap(db, { acknowledgeUnassigned: ["src/loose.py"] });
     expect(mapDrift(db).clean).toBe(true);
 
     const { writeFile } = await import("node:fs/promises");
@@ -138,6 +140,9 @@ describe("the drawn map", () => {
     const db = await getDb(root);
 
     describeComponent(db, { name: "Core", members: ["src/core/"] });
+    finalizeMap(db, {
+      acknowledgeUnassigned: ["src/api/routes.py", "src/api/auth.py", "src/loose.py"],
+    });
     expect(mapDrift(db).clean).toBe(true);
 
     const { writeFile } = await import("node:fs/promises");
@@ -251,6 +256,7 @@ describe("the drawn map", () => {
     await scan(root, { kind: "full" });
     const db = await getDb(root);
     describeComponent(db, { name: "Core", members: ["src/core/"] });
+    finalizeMap(db, { acknowledgeUnassigned: Object.keys(files) });
 
     await writeFile(join(root, "src/zzz-new.py"), "value = 99\n");
     await scan(root, { kind: "incremental" });
@@ -265,6 +271,7 @@ describe("the drawn map", () => {
     await scan(root, { kind: "full" });
     const db = await getDb(root);
     describeComponent(db, { name: "API", members: ["src/api/"] });
+    finalizeMap(db, { acknowledgeUnassigned: ["src/core/db.py", "src/loose.py"] });
 
     await writeFile(join(root, "src/new-worker.py"), "def work():\n    return 1\n");
     await scan(root, { kind: "incremental" });
@@ -275,6 +282,28 @@ describe("the drawn map", () => {
 
     describeComponent(db, { name: "API", acknowledgeUnassigned: ["src/new-worker.py"] });
     expect(mapDrift(db).newlyUnassigned).not.toContain("src/new-worker.py");
+  });
+
+  it("keeps an interrupted first drawing resumable until explicitly finalized", async () => {
+    root = await makeProject(PROJECT);
+    await scan(root, { kind: "full" });
+    const db = await getDb(root);
+
+    describeComponent(db, { name: "App", kind: "system", members: ["src/"] });
+    expect(mapDrift(db)).toMatchObject({ complete: false, clean: false });
+
+    finalizeMap(db);
+    expect(mapDrift(db)).toMatchObject({ complete: true, clean: true });
+  });
+
+  it("refuses to finalize while unexplained files remain unacknowledged", async () => {
+    root = await makeProject(PROJECT);
+    await scan(root, { kind: "full" });
+    const db = await getDb(root);
+    describeComponent(db, { name: "API", members: ["src/api/"] });
+
+    expect(() => finalizeMap(db)).toThrow(/unexplained file/);
+    expect(mapDrift(db).complete).toBe(false);
   });
 });
 

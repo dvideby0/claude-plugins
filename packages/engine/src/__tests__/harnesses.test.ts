@@ -205,7 +205,7 @@ describe("draw harness ids", () => {
       mcpServers: { sdlc: { command: string } };
     };
     expect(config.mcpServers.sdlc.command).toBe("/app/sdlc-bridge");
-    const override = codex[codex.indexOf("-c") + 1]!;
+    const override = codex.find((value) => value.startsWith("mcp_servers ="))!;
     expect(override).toBe(
       codexMcpOverride({
         command: "/app/sdlc-bridge",
@@ -219,6 +219,22 @@ describe("draw harness ids", () => {
     expect(codex).toContain("--ignore-user-config");
     expect(codex).toContain("--ignore-rules");
     expect(codex).toContain("--ephemeral");
+    for (const feature of [
+      "shell_tool",
+      "unified_exec",
+      "multi_agent",
+      "apps",
+      "plugins",
+      "browser_use",
+      "in_app_browser",
+    ]) {
+      const disabledAt = codex.findIndex(
+        (value, index) => value === feature && codex[index - 1] === "--disable",
+      );
+      expect(disabledAt).toBeGreaterThan(0);
+    }
+    expect(codex).toContain("tools.web_search=false");
+    expect(codex).toContain("tools.view_image=false");
     expect(codex.join(" ")).not.toContain("audit_run_tools");
   });
 

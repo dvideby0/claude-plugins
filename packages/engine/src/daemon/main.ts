@@ -127,7 +127,7 @@ async function main(): Promise<void> {
 
   let shuttingDown = false;
   let handle: ReturnType<typeof createHttpServer>;
-  const shutdown = (signal: string): void => {
+  const shutdown = (signal: string, exitCode = 0): void => {
     if (shuttingDown) return;
     shuttingDown = true;
     write(`received ${signal}, shutting down`);
@@ -139,13 +139,13 @@ async function main(): Promise<void> {
     handle.server.close(() => {
       void relinquishOwnership().finally(() => {
         log.end();
-        process.exit(0);
+        process.exit(exitCode);
       });
     });
 
     // Do not hang forever on a client holding a connection open.
     setTimeout(() => {
-      void relinquishOwnership().finally(() => process.exit(0));
+      void relinquishOwnership().finally(() => process.exit(exitCode));
     }, 3000).unref();
   };
 
@@ -173,8 +173,9 @@ async function main(): Promise<void> {
 
   process.on("SIGINT", () => shutdown("SIGINT"));
   process.on("SIGTERM", () => shutdown("SIGTERM"));
-  process.on("uncaughtException", (error) => {
+  process.once("uncaughtException", (error) => {
     write(`uncaught exception: ${error.stack ?? error.message}`);
+    shutdown("uncaught exception", 1);
   });
 }
 

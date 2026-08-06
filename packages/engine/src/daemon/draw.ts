@@ -36,6 +36,7 @@ export const MAP_MCP_TOOLS = [
   "map_drift",
   "describe_component",
   "describe_flow",
+  "finalize_map",
   "tag",
   "gaps",
   "flow",
@@ -94,6 +95,29 @@ const INVOCATIONS: Record<string, HarnessInvocation> = {
       "--ignore-user-config",
       "--ignore-rules",
       "--ephemeral",
+      // The map pass has one read surface: the SDLC MCP, whose read_file tool
+      // rejects paths outside this workspace. Codex's read-only sandbox still
+      // allows shell reads from the rest of the user's account, so remove the
+      // command tools rather than treating read-only as a confidentiality
+      // boundary. Disable other optional tool surfaces for the same reason.
+      "--disable",
+      "shell_tool",
+      "--disable",
+      "unified_exec",
+      "--disable",
+      "multi_agent",
+      "--disable",
+      "apps",
+      "--disable",
+      "plugins",
+      "--disable",
+      "browser_use",
+      "--disable",
+      "in_app_browser",
+      "-c",
+      "tools.web_search=false",
+      "-c",
+      "tools.view_image=false",
       "--sandbox",
       "read-only",
       "-c",

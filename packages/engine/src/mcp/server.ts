@@ -22,7 +22,15 @@ import { CROSS_KINDS, crossQuery, type CrossKind, type WorkspaceRef } from "../g
 import { impactOf, referencesTo } from "../graph/refs.js";
 import { flowView } from "../graph/flow.js";
 import { findGaps } from "../graph/gaps.js";
-import { COMPONENT_KINDS, describeComponent, describeFlow, mapDrift, systemMap, tagNode } from "../graph/map.js";
+import {
+  COMPONENT_KINDS,
+  describeComponent,
+  describeFlow,
+  finalizeMap,
+  mapDrift,
+  systemMap,
+  tagNode,
+} from "../graph/map.js";
 import { listRelations, markExplored, relate, relationsFor, RELATION_KINDS } from "../graph/relations.js";
 import { PATTERNS, structuralSearch } from "../graph/structural.js";
 import { trace } from "../graph/trace.js";
@@ -569,6 +577,31 @@ export function createMcpServer(options: McpServerOptions): McpServer {
         const root = resolveRoot(projectRoot);
         const db = await getDb(root);
         const result = describeFlow(db, input);
+        await db.flush();
+        await workspaceChanged(root, "updated");
+        return result;
+      }),
+  );
+
+  // --- finalize_map -------------------------------------------------------
+
+  server.tool(
+    "finalize_map",
+    "Mark the initial authored map complete. Call this only after drawing all components, flows and tags. Every unassigned file must either be mapped or explicitly acknowledged here, so an interrupted first draw remains resumable.",
+    {
+      ...projectRootArg,
+      acknowledgeUnassigned: z
+        .array(z.string())
+        .optional()
+        .describe(
+          "Existing paths deliberately left outside every component after the full drawing pass.",
+        ),
+    },
+    async ({ projectRoot, ...input }) =>
+      wrap(async () => {
+        const root = resolveRoot(projectRoot);
+        const db = await getDb(root);
+        const result = finalizeMap(db, input);
         await db.flush();
         await workspaceChanged(root, "updated");
         return result;
