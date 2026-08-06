@@ -40,7 +40,7 @@ describe("daemon ownership lock", () => {
     await lock.release();
   });
 
-  it("reclaims an old live PID when daemon discovery disproves its identity", async () => {
+  it("keeps an old live lock when a health check would time out", async () => {
     root = await makeProject({});
     const path = join(root, "daemon.lock");
     await mkdir(path);
@@ -54,11 +54,10 @@ describe("daemon ownership lock", () => {
       }),
     );
 
-    const lock = await acquireDaemonLock(path, {
-      startupGraceMs: 0,
-      bootTimeMs: () => 1234,
-      ownerResponding: async () => false,
-    });
-    await lock.release();
+    await expect(
+      acquireDaemonLock(path, {
+        bootTimeMs: () => 1234,
+      }),
+    ).rejects.toBeInstanceOf(DaemonAlreadyRunningError);
   });
 });

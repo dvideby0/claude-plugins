@@ -124,6 +124,7 @@ async function runEslint(projectRoot: string): Promise<AnalyzerOutcome> {
   });
   if (result.timedOut) return failed("eslint", "timed out");
   if (result.spawnFailed) return failed("eslint", "could not execute");
+  if (result.truncated) return failed("eslint", result.stderr);
   if (!result.stdout.trim()) {
     return result.exitCode === 0
       ? { tool: "eslint", status: "ok", detail: "no output", findings: [] }
@@ -239,6 +240,10 @@ async function runTsc(projectRoot: string): Promise<AnalyzerOutcome> {
       failures.push(`${name}: could not execute`);
       continue;
     }
+    if (result.truncated) {
+      failures.push(`${name}: ${result.stderr}`);
+      continue;
+    }
 
     const before = findings.length;
     for (const raw of `${result.stdout}\n${result.stderr}`.split("\n")) {
@@ -324,6 +329,7 @@ async function runRuff(projectRoot: string): Promise<AnalyzerOutcome> {
   });
   if (result.timedOut) return failed("ruff", "timed out");
   if (result.spawnFailed) return failed("ruff", "could not execute");
+  if (result.truncated) return failed("ruff", result.stderr);
   if (!result.stdout.trim()) {
     // ruff exits 0 on clean, 1 with findings; anything else (2 = broken
     // config, bad CLI args) means it never checked the code.
@@ -376,6 +382,7 @@ async function runMypy(projectRoot: string): Promise<AnalyzerOutcome> {
   });
   if (result.timedOut) return failed("mypy", "timed out");
   if (result.spawnFailed) return failed("mypy", "could not execute");
+  if (result.truncated) return failed("mypy", result.stderr);
 
   const findings: FindingInput[] = [];
   const line = /^(.+?):(\d+): error: (.+?)(?:\s+\[([\w-]+)\])?$/;

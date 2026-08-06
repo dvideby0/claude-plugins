@@ -47,6 +47,11 @@ export interface McpServerOptions {
   defaultRoot: string | null;
   /** Called with every project root a tool touches, so the registry can learn it. */
   onWorkspaceTouched?: (root: string) => void;
+  /** Publish successful MCP writes to desktop clients sharing the registry. */
+  onWorkspaceChanged?: (
+    root: string,
+    kind: "indexed" | "updated",
+  ) => void | Promise<void>;
   /**
    * Every repository the engine knows. Only the daemon can supply this, which
    * is why cross-repository search is unavailable over stdio.
@@ -105,6 +110,10 @@ export function createMcpServer(options: McpServerOptions): McpServer {
     const absolute = resolve(root);
     options.onWorkspaceTouched?.(absolute);
     return absolute;
+  }
+
+  async function workspaceChanged(root: string, kind: "indexed" | "updated"): Promise<void> {
+    await options.onWorkspaceChanged?.(root, kind);
   }
 
   // --- audit_status --------------------------------------------------------
@@ -166,7 +175,12 @@ export function createMcpServer(options: McpServerOptions): McpServer {
       full: z.boolean().optional().describe("Re-parse every file, ignoring content hashes."),
     },
     async ({ projectRoot, full }) =>
-      wrap(() => scan(resolveRoot(projectRoot), { full, kind: full ? "full" : "incremental" })),
+      wrap(async () => {
+        const root = resolveRoot(projectRoot);
+        const result = await scan(root, { full, kind: full ? "full" : "incremental" });
+        await workspaceChanged(root, "indexed");
+        return result;
+      }),
   );
 
   // --- audit_run_tools -----------------------------------------------------
@@ -179,7 +193,12 @@ export function createMcpServer(options: McpServerOptions): McpServer {
       offline: z.boolean().optional().describe("Skip the OSV advisory lookup."),
     },
     async ({ projectRoot, offline }) =>
-      wrap(() => runAnalyzers(resolveRoot(projectRoot), { offline })),
+      wrap(async () => {
+        const root = resolveRoot(projectRoot);
+        const result = await runAnalyzers(root, { offline });
+        await workspaceChanged(root, "updated");
+        return result;
+      }),
   );
 
   // --- audit_plan ----------------------------------------------------------
@@ -194,10 +213,12 @@ export function createMcpServer(options: McpServerOptions): McpServer {
     },
     async ({ projectRoot, tokenBudget, maxUnits }) =>
       wrap(async () => {
-        const db = await getDb(resolveRoot(projectRoot));
+        const root = resolveRoot(projectRoot);
+        const db = await getDb(root);
         const units = planUnits(db, { tokenBudget, maxUnits });
         savePlan(db, units);
         await db.flush();
+        await workspaceChanged(root, "updated");
         return { units, totalUnits: units.length };
       }),
   );
@@ -288,6 +309,7 @@ export function createMcpServer(options: McpServerOptions): McpServer {
 
         const summary = recordFindings(db, runId, enriched);
         await db.flush();
+        await workspaceChanged(root, "updated");
         return summary;
       }),
   );
@@ -335,9 +357,11 @@ export function createMcpServer(options: McpServerOptions): McpServer {
     async ({ projectRoot, findingId, ruleId, pathPrefix, reason, disposition }) =>
       wrap(async () => {
         if (!findingId && !ruleId) throw new Error("Provide findingId or ruleId.");
-        const db = await getDb(resolveRoot(projectRoot));
+        const root = resolveRoot(projectRoot);
+        const db = await getDb(root);
         suppress(db, { findingId, ruleId, pathPrefix, reason, disposition });
         await db.flush();
+        await workspaceChanged(root, "updated");
         return { suppressed: findingId ?? `${ruleId}${pathPrefix ? ` under ${pathPrefix}` : ""}` };
       }),
   );
@@ -380,9 +404,18 @@ export function createMcpServer(options: McpServerOptions): McpServer {
       ...projectRootArg,
       name: z.string().describe("Symbol name, e.g. 'getDb'."),
       limit: z.number().optional(),
+      path: z.string().optional().describe("Declaration path when the name is ambiguous."),
+      line: z.number().int().positive().optional().describe("Declaration line within path."),
+      symbolId: z.string().optional().describe("Exact declaration id returned in candidates."),
     },
-    async ({ projectRoot, name, limit }) =>
-      wrap(async () => referencesTo(await getDb(resolveRoot(projectRoot)), name, limit)),
+    async ({ projectRoot, name, limit, path, line, symbolId }) =>
+      wrap(async () =>
+        referencesTo(await getDb(resolveRoot(projectRoot)), name, limit, {
+          ...(path ? { path } : {}),
+          ...(line ? { line } : {}),
+          ...(symbolId ? { symbolId } : {}),
+        }),
+      ),
   );
 
   // --- trace ---------------------------------------------------------------
@@ -493,9 +526,11 @@ export function createMcpServer(options: McpServerOptions): McpServer {
     },
     async ({ projectRoot, ...input }) =>
       wrap(async () => {
-        const db = await getDb(resolveRoot(projectRoot));
+        const root = resolveRoot(projectRoot);
+        const db = await getDb(root);
         const result = describeComponent(db, input);
         await db.flush();
+        await workspaceChanged(root, "updated");
         return result;
       }),
   );
@@ -523,9 +558,11 @@ export function createMcpServer(options: McpServerOptions): McpServer {
     },
     async ({ projectRoot, ...input }) =>
       wrap(async () => {
-        const db = await getDb(resolveRoot(projectRoot));
+        const root = resolveRoot(projectRoot);
+        const db = await getDb(root);
         const result = describeFlow(db, input);
         await db.flush();
+        await workspaceChanged(root, "updated");
         return result;
       }),
   );
@@ -545,9 +582,11 @@ export function createMcpServer(options: McpServerOptions): McpServer {
     },
     async ({ projectRoot, ...input }) =>
       wrap(async () => {
-        const db = await getDb(resolveRoot(projectRoot));
+        const root = resolveRoot(projectRoot);
+        const db = await getDb(root);
         const result = tagNode(db, input);
         await db.flush();
+        await workspaceChanged(root, "updated");
         return result;
       }),
   );
@@ -584,9 +623,11 @@ export function createMcpServer(options: McpServerOptions): McpServer {
     },
     async ({ projectRoot, ...input }) =>
       wrap(async () => {
-        const db = await getDb(resolveRoot(projectRoot));
+        const root = resolveRoot(projectRoot);
+        const db = await getDb(root);
         const result = relate(db, input);
         await db.flush();
+        await workspaceChanged(root, "updated");
         return result;
       }),
   );
@@ -604,9 +645,11 @@ export function createMcpServer(options: McpServerOptions): McpServer {
     },
     async ({ projectRoot, path, found, note }) =>
       wrap(async () => {
-        const db = await getDb(resolveRoot(projectRoot));
+        const root = resolveRoot(projectRoot);
+        const db = await getDb(root);
         markExplored(db, path, found, note);
         await db.flush();
+        await workspaceChanged(root, "updated");
         return { path, found };
       }),
   );
@@ -734,6 +777,7 @@ export function createMcpServer(options: McpServerOptions): McpServer {
         const db = await getDb(root);
         const result = await resolveTypesInWorker(db, root);
         await db.flush();
+        await workspaceChanged(root, "indexed");
         return result;
       }),
   );
@@ -805,7 +849,8 @@ export function createMcpServer(options: McpServerOptions): McpServer {
     },
     async ({ projectRoot, kind, title, body, anchors }) =>
       wrap(async () => {
-        const db = await getDb(resolveRoot(projectRoot));
+        const root = resolveRoot(projectRoot);
+        const db = await getDb(root);
         const result = remember(db, {
           kind,
           title,
@@ -813,6 +858,7 @@ export function createMcpServer(options: McpServerOptions): McpServer {
           ...(anchors ? { anchors } : {}),
         });
         await db.flush();
+        await workspaceChanged(root, "updated");
         return result;
       }),
   );
@@ -865,10 +911,12 @@ export function createMcpServer(options: McpServerOptions): McpServer {
     },
     async ({ projectRoot, id, supersededBy }) =>
       wrap(async () => {
-        const db = await getDb(resolveRoot(projectRoot));
+        const root = resolveRoot(projectRoot);
+        const db = await getDb(root);
         const ok = forget(db, id, supersededBy);
-        await db.flush();
         if (!ok) throw new Error(`No memory with id "${id}".`);
+        await db.flush();
+        await workspaceChanged(root, "updated");
         return { forgotten: id };
       }),
   );
@@ -893,13 +941,15 @@ export function createMcpServer(options: McpServerOptions): McpServer {
       wrap(async () => {
         const root = resolveRoot(projectRoot);
         const db = await getDb(root);
-        return runReview(db, root, {
+        const result = await runReview(db, root, {
           ...(unitIds ? { unitIds } : {}),
           ...(maxUnits ? { maxUnits } : {}),
           ...(lens ? { lens } : {}),
           ...(verify !== undefined ? { verify } : {}),
           ...(model ? { model } : {}),
         });
+        await workspaceChanged(root, "updated");
+        return result;
       }),
   );
 

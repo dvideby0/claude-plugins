@@ -13,7 +13,7 @@ import {
   supportedHarnesses,
 } from "../daemon/draw.js";
 import { posixShellQuote, windowsLauncherCommand } from "../daemon/launcher.js";
-import { platformCommand, processTreeTerminationCommand } from "../lib/exec.js";
+import { exec, platformCommand, processTreeTerminationCommand } from "../lib/exec.js";
 import { reviewInvocationArgs } from "../review/agent.js";
 
 const OURS = `[mcp_servers.sdlc]\ncommand = "node"\nargs = ["/path/bridge.js"]\n`;
@@ -197,6 +197,17 @@ describe("Windows bridge launcher", () => {
       "/f",
     ]);
     expect(processTreeTerminationCommand(412, true, "darwin")).toBeNull();
+  });
+});
+
+describe("subprocess output bounds", () => {
+  it("reports max-buffer truncation distinctly from spawn and timeout failures", async () => {
+    const result = await exec(process.execPath, ["-e", "process.stdout.write('x'.repeat(1000))"], {
+      maxBuffer: 100,
+    });
+    expect(result.truncated).toBe(true);
+    expect(result.spawnFailed).toBe(false);
+    expect(result.timedOut).toBe(false);
   });
 });
 

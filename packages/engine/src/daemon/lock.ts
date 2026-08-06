@@ -16,10 +16,6 @@ export interface DaemonLock {
 }
 
 export interface DaemonLockOptions {
-  /** Prove an older live PID is still the engine, not an unrelated reused PID. */
-  ownerResponding?: (pid: number) => Promise<boolean>;
-  /** Protect the gap between mkdir(owner) and publishing daemon.json. */
-  startupGraceMs?: number;
   /** Deterministic boot identity for tests; production uses system uptime. */
   bootTimeMs?: () => number;
 }
@@ -100,25 +96,12 @@ export async function acquireDaemonLock(
       const sameBoot =
         existing && Math.abs(existing.bootTimeMs - bootTimeMs()) < 60_000;
       if (existing && sameBoot && pidAlive(existing.pid)) {
-        const created = Date.parse(existing.createdAt);
-        const age = Number.isFinite(created) ? Date.now() - created : Number.POSITIVE_INFINITY;
-        const withinStartupGrace = age < (options.startupGraceMs ?? 15_000);
-
-        // A newly-created lock may not have published daemon.json yet. Once
-        // that window has passed, a live PID alone is insufficient: operating
-        // systems reuse PIDs, and an unrelated process must not strand the
-        // engine forever after an unclean exit.
-        if (withinStartupGrace || !options.ownerResponding) {
-          throw new DaemonAlreadyRunningError(existing.pid);
-        }
-        let responding = true;
-        try {
-          responding = await options.ownerResponding(existing.pid);
-        } catch {
-          // A failed identity check is not permission to start a second writer.
-          responding = true;
-        }
-        if (responding) throw new DaemonAlreadyRunningError(existing.pid);
+        // A health timeout is not proof that the owner died: indexing and
+        // compiler passes can keep the event loop busy beyond the ping window.
+        // Reclaiming from a live PID would permit two sql.js writers and let a
+        // later flush overwrite the other daemon's state. We only reclaim when
+        // the PID is gone or the recorded machine boot no longer matches.
+        throw new DaemonAlreadyRunningError(existing.pid);
       }
 
       // mkdir may have completed just before its owner file was written. Give

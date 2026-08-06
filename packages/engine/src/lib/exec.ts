@@ -18,6 +18,8 @@ export interface ExecResult {
   spawnFailed: boolean;
   /** True when the process was killed for exceeding its timeout. */
   timedOut: boolean;
+  /** True when stdout or stderr exceeded the configured buffer. */
+  truncated: boolean;
 }
 
 export interface ExecOptions {
@@ -167,6 +169,7 @@ export function exec(
             exitCode: 0,
             spawnFailed: false,
             timedOut: false,
+            truncated: false,
           });
           return;
         }
@@ -193,6 +196,7 @@ export function exec(
             exitCode: null,
             spawnFailed: false,
             timedOut: false,
+            truncated: true,
           });
           return;
         }
@@ -203,6 +207,7 @@ export function exec(
           exitCode: typeof err.code === "number" ? err.code : null,
           spawnFailed,
           timedOut,
+          truncated: false,
         });
       },
     );

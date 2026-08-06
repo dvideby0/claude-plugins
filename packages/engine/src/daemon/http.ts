@@ -10,7 +10,7 @@
 import type { ChildProcess } from "node:child_process";
 import { drawMap, supportedHarnesses, type DrawEvent, type DrawPhase } from "./draw.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
-import { existsSync } from "node:fs";
+import { existsSync, statSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { dirname, extname, join, normalize } from "node:path";
@@ -418,7 +418,13 @@ export function createHttpServer(options: HttpServerOptions): HttpServerHandle {
         sendJson(res, 400, { error: "Provide a root path." });
         return true;
       }
-      if (!existsSync(body.root)) {
+      let isDirectory = false;
+      try {
+        isDirectory = statSync(body.root).isDirectory();
+      } catch {
+        // The same client-facing error covers a missing or unreadable path.
+      }
+      if (!isDirectory) {
         sendJson(res, 400, { error: `No such directory: ${body.root}` });
         return true;
       }
@@ -715,6 +721,15 @@ export function createHttpServer(options: HttpServerOptions): HttpServerHandle {
           .add(root)
           .then(() => syncWatchers())
           .catch(() => {});
+      },
+      onWorkspaceChanged: async (root, kind) => {
+        // Registration and publication are one awaited operation here. The
+        // touch callback is intentionally fire-and-forget and may still be in
+        // flight when a fast MCP write completes.
+        await registry.add(root);
+        if (kind === "indexed") await registry.markIndexed(root);
+        else await registry.markUpdated(root);
+        await syncWatchers();
       },
       listWorkspaces: async () =>
         (await registry.list()).map((workspace) => ({

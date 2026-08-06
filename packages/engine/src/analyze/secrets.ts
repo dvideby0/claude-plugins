@@ -71,7 +71,6 @@ export function scanSecrets(files: ScannedFile[]): FindingInput[] {
 
     for (let i = 0; i < lines.length; i++) {
       const line = lines[i];
-      if (line.length > 500) continue;
 
       for (const rule of RULES) {
         const match = rule.pattern.exec(line);

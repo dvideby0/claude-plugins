@@ -175,6 +175,14 @@ describe("secret scanning", () => {
     ]);
     expect(findings[0].severity).toBe("medium");
   });
+
+  it("scans credentials on long one-line configuration", () => {
+    const padding = "x".repeat(800);
+    const findings = scanSecrets([
+      file(`{"padding":"${padding}","token":"ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"}`),
+    ]);
+    expect(findings.map((finding) => finding.ruleId)).toContain("secrets/github-token");
+  });
 });
 
 describe("graph analysis", () => {

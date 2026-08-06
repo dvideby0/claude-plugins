@@ -37,7 +37,7 @@ const AGENT_CONFIG_FILES = [
   ".cursor/environment.json",
   ".vscode/tasks.json",
   ".opencode/config.json",
-  ".codex/config.json",
+  ".codex/config.toml",
 ];
 
 /** Permission grants broad enough that any later review is meaningless. */
@@ -51,6 +51,7 @@ const INSTALL_HOOKS = ["preinstall", "install", "postinstall", "prepare", "prepu
 interface JsonLeaf {
   path: string[];
   value: string;
+  line?: number;
 }
 
 /** Walk a parsed JSON document and yield every string leaf with its key path. */
@@ -65,6 +66,120 @@ function stringLeaves(value: unknown, path: string[] = [], out: JsonLeaf[] = [])
     }
   }
   return out;
+}
+
+/** Remove a TOML comment without treating a # inside a quoted value as one. */
+function stripTomlComment(line: string): string {
+  let quote: "'" | '"' | null = null;
+  let escaped = false;
+  for (let index = 0; index < line.length; index++) {
+    const char = line[index];
+    if (quote === '"' && escaped) {
+      escaped = false;
+      continue;
+    }
+    if (quote === '"' && char === "\\") {
+      escaped = true;
+      continue;
+    }
+    if (char === "'" || char === '"') {
+      quote = quote === char ? null : quote ?? char;
+      continue;
+    }
+    if (char === "#" && quote === null) return line.slice(0, index);
+  }
+  return line;
+}
+
+function tomlValueComplete(value: string): boolean {
+  let quote: "'" | '"' | null = null;
+  let escaped = false;
+  let square = 0;
+  let curly = 0;
+  for (const char of value) {
+    if (quote === '"' && escaped) {
+      escaped = false;
+      continue;
+    }
+    if (quote === '"' && char === "\\") {
+      escaped = true;
+      continue;
+    }
+    if (char === "'" || char === '"') {
+      quote = quote === char ? null : quote ?? char;
+      continue;
+    }
+    if (quote) continue;
+    if (char === "[") square++;
+    else if (char === "]") square--;
+    else if (char === "{") curly++;
+    else if (char === "}") curly--;
+  }
+  return quote === null && square <= 0 && curly <= 0;
+}
+
+/**
+ * Extract string values from the TOML subset Codex uses for MCP servers.
+ * Tables and dotted keys become the same key path JSON traversal produces;
+ * arrays and inline tables may span lines. We do not need to interpret
+ * numbers or dates because only executable string values are security inputs.
+ */
+function tomlStringLeaves(content: string): JsonLeaf[] {
+  const leaves: JsonLeaf[] = [];
+  const lines = content.split("\n");
+  let section: string[] = [];
+  let pending: { path: string[]; value: string; line: number } | null = null;
+
+  const emit = (path: string[], value: string, line: number): void => {
+    const pattern = /"(?:\\.|[^"\\])*"|'[^']*'/g;
+    let match: RegExpExecArray | null;
+    let index = 0;
+    while ((match = pattern.exec(value)) !== null) {
+      const literal = match[0];
+      let decoded = literal.slice(1, -1);
+      if (literal.startsWith('"')) {
+        try {
+          decoded = JSON.parse(literal) as string;
+        } catch {
+          // Keep the raw string body; dangerous command tokens remain visible.
+        }
+      }
+      const lineOffset = value.slice(0, match.index).split("\n").length - 1;
+      leaves.push({ path: [...path, String(index++)], value: decoded, line: line + lineOffset });
+    }
+  };
+
+  for (let index = 0; index < lines.length; index++) {
+    const clean = stripTomlComment(lines[index] as string).trim();
+    if (!clean) continue;
+
+    if (pending) {
+      pending.value += `\n${clean}`;
+      if (tomlValueComplete(pending.value)) {
+        emit(pending.path, pending.value, pending.line);
+        pending = null;
+      }
+      continue;
+    }
+
+    const table = /^\[\[?([^\]]+)\]\]?$/.exec(clean);
+    if (table) {
+      section = (table[1] as string)
+        .split(".")
+        .map((part) => part.trim().replace(/^["']|["']$/g, ""));
+      continue;
+    }
+
+    const assignment = /^([A-Za-z0-9_.-]+)\s*=\s*(.*)$/.exec(clean);
+    if (!assignment) continue;
+    const path = [...section, ...(assignment[1] as string).split(".")];
+    const value = assignment[2] as string;
+    if (tomlValueComplete(value)) emit(path, value, index + 1);
+    else pending = { path, value, line: index + 1 };
+  }
+
+  if (pending) emit(pending.path, pending.value, pending.line);
+  return leaves;
 }
 
 /**
@@ -285,14 +400,18 @@ async function checkAgentConfigs(projectRoot: string): Promise<FindingInput[]> {
       continue;
     }
 
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(content);
-    } catch {
-      continue;
+    let leaves: JsonLeaf[];
+    if (relative.endsWith(".toml")) {
+      leaves = tomlStringLeaves(content);
+    } else {
+      try {
+        leaves = stringLeaves(JSON.parse(content));
+      } catch {
+        continue;
+      }
     }
 
-    for (const leaf of stringLeaves(parsed)) {
+    for (const leaf of leaves) {
       if (isDenyContext(leaf.path)) continue;
 
       const key = leaf.path.join(".");
@@ -308,7 +427,7 @@ async function checkAgentConfigs(projectRoot: string): Promise<FindingInput[]> {
           description: `${relative} pre-approves \`${leaf.value}\` for anyone who opens this repository, removing the prompt that would otherwise gate it.`,
           suggestion: "Narrow the grant to the specific commands the project actually needs.",
           path: relative,
-          lineStart: lineOf(content, leaf.value),
+          lineStart: leaf.line ?? lineOf(content, leaf.value),
           snippet: leaf.value.slice(0, 200),
           symbol: key,
         });
@@ -331,7 +450,7 @@ async function checkAgentConfigs(projectRoot: string): Promise<FindingInput[]> {
         description: `${relative} (${key}) ${reason}: ${leaf.value.slice(0, 200)}. Agent configuration runs when the repository is opened, before any review of the code.`,
         suggestion: "Remove the command, or replace it with a checked-in script that can be reviewed in a diff.",
         path: relative,
-        lineStart: lineOf(content, leaf.value),
+        lineStart: leaf.line ?? lineOf(content, leaf.value),
         snippet: leaf.value.slice(0, 200),
         symbol: key,
       });

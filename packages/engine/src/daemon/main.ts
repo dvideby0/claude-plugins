@@ -97,12 +97,7 @@ async function main(): Promise<void> {
   // daemon.json is discovery, not mutual exclusion. Hold an atomic lock for
   // the whole process lifetime so two simultaneous starts cannot both open
   // and mutate the same sql.js stores.
-  ownership = await acquireDaemonLock(undefined, {
-    ownerResponding: async (pid) => {
-      const info = await readDaemon();
-      return Boolean(info && info.pid === pid && (await ping(info, 5000)));
-    },
-  });
+  ownership = await acquireDaemonLock();
 
   // A daemon from an older release may not own a lock. Check again after
   // acquiring so we remain compatible without reviving the start race.
