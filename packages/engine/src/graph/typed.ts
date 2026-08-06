@@ -445,7 +445,14 @@ export function applyTypedAnalysis(db: Db, analysis: TypedAnalysis): TypedResult
       )
       .map((row) => [row.path, row.content_sha]),
   );
-  const changed = analysis.inputs.find((input) => current.get(input.path) !== input.contentSha);
+  // The TypeScript project can intentionally include sources the scanner does
+  // not index (vendor trees, oversized files, generated declarations). Those
+  // are compiler inputs, but their absence from `files` is not generation
+  // drift. The workspace digest above still detects additions/removals among
+  // indexed paths; this check catches content changes within that set.
+  const changed = analysis.inputs.find(
+    (input) => current.has(input.path) && current.get(input.path) !== input.contentSha,
+  );
   if (changed) {
     return {
       ran: false,
@@ -458,8 +465,14 @@ export function applyTypedAnalysis(db: Db, analysis: TypedAnalysis): TypedResult
   }
 
   const refsBySrc = new Map<string, TypedReference[]>();
-  for (const src of analysis.analysedFiles) refsBySrc.set(src, []);
+  for (const src of analysis.analysedFiles) {
+    if (current.has(src)) refsBySrc.set(src, []);
+  }
   for (const reference of analysis.references) {
+    // Keep the graph closed over the deterministic index. A compiler project
+    // may include excluded vendor/generated sources, but they must not create
+    // reference rows for files the rest of the product cannot inspect.
+    if (!current.has(reference.src) || !current.has(reference.dst)) continue;
     const list = refsBySrc.get(reference.src);
     if (list) list.push(reference);
     else refsBySrc.set(reference.src, [reference]);

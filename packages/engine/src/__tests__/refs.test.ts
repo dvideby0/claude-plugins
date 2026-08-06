@@ -283,10 +283,12 @@ describe("reference coverage", () => {
     );
     await scan(root, { kind: "incremental" });
 
-    // The native rescan provides import-level facts for the changed source;
-    // it must not inherit the untouched declaration's stronger typed label.
-    expect(referencesTo(db, "run").referenceCoverage).toBe("import");
-    expect(impactOf(db, "src/api.ts").referenceCoverage).toBe("import");
+    // A native rescan provides import-level facts for the changed source; the
+    // supported TypeScript fallback has no reference extractor. Neither path
+    // may inherit the untouched declaration's stronger typed label.
+    const rescannedCoverage = native ? "import" : "none";
+    expect(referencesTo(db, "run").referenceCoverage).toBe(rescannedCoverage);
+    expect(impactOf(db, "src/api.ts").referenceCoverage).toBe(rescannedCoverage);
 
     // On the TypeScript fallback the same source has no reference extraction.
     db.run("UPDATE files SET ref_coverage = 'none' WHERE path = 'src/app.ts'");

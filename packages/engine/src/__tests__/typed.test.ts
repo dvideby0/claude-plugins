@@ -286,6 +286,28 @@ export function packageEntry() { return makeStore().add("ok"); }
     expect(result.reason).toMatch(/workspace inputs changed/i);
   });
 
+  it("ignores compiler inputs that are intentionally outside the index", async () => {
+    root = await makeProject({
+      "package.json": JSON.stringify({ name: "excluded-typed-input", type: "module" }),
+      "tsconfig.json": JSON.stringify({
+        compilerOptions: { target: "ES2022", module: "ESNext", moduleResolution: "Bundler" },
+        include: ["src/**/*", "vendor/**/*"],
+      }),
+      "src/api.ts": "export function run(): number { return 1; }\n",
+      "src/app.ts": "import { run } from './api.js';\nexport const value = run();\n",
+      "vendor/generated.ts": "export const generated = 1;\n",
+    });
+    await scan(root, { kind: "full" });
+    const db = await getDb(root);
+
+    expect(db.get("SELECT path FROM files WHERE path = 'vendor/generated.ts'")).toBeNull();
+    const result = resolveTypes(db, root);
+
+    expect(result.ran).toBe(true);
+    expect(referencesTo(db, "run").total).toBe(1);
+    expect(db.count("SELECT COUNT(*) AS n FROM refs WHERE src_path LIKE 'vendor/%'")).toBe(0);
+  });
+
   it("keeps same-line same-name references when they resolve to different destinations", async () => {
     root = await makeProject({
       "package.json": JSON.stringify({ name: "same-line-members", type: "module" }),
