@@ -541,22 +541,62 @@ fn namespace_member(node: Node, binding: &Binding, bytes: &[u8]) -> Option<Strin
     chain.get(1).cloned()
 }
 
-fn pattern_binds(node: Node, name: &str, bytes: &[u8]) -> bool {
-    if node.kind() == "identifier" {
-        return node.utf8_text(bytes).is_ok_and(|value| value == name);
-    }
-    // Assigning `object.name` or `items[name]` does not create a lexical name.
+fn binding_pattern_any(
+    node: Node,
+    predicate: &mut impl FnMut(Node) -> bool,
+) -> bool {
     if matches!(
         node.kind(),
-        "attribute" | "subscript" | "member_expression" | "subscript_expression"
+        "identifier" | "type_identifier" | "shorthand_property_identifier_pattern"
+    ) {
+        return predicate(node);
+    }
+
+    // These nodes are evaluated to locate a store or select a property; names
+    // inside them are reads, not declarations. Computed object-pattern keys
+    // follow the same rule.
+    if matches!(
+        node.kind(),
+        "attribute"
+            | "subscript"
+            | "member_expression"
+            | "subscript_expression"
+            | "computed_property_name"
     ) {
         return false;
     }
+
+    // Defaults and object keys can contain arbitrary expressions. Descend only
+    // through the part of each construct that is actually a binding pattern.
+    let binding_field = match node.kind() {
+        "assignment_pattern" | "object_assignment_pattern" => Some("left"),
+        "pair_pattern" => Some("value"),
+        "default_parameter" | "typed_default_parameter" => Some("name"),
+        _ => None,
+    };
+    if let Some(field) = binding_field {
+        return node
+            .child_by_field_name(field)
+            .is_some_and(|child| binding_pattern_any(child, predicate));
+    }
+
     let mut cursor = node.walk();
     let found = node
         .named_children(&mut cursor)
-        .any(|child| pattern_binds(child, name, bytes));
+        .any(|child| binding_pattern_any(child, predicate));
     found
+}
+
+fn pattern_binds(node: Node, name: &str, bytes: &[u8]) -> bool {
+    binding_pattern_any(node, &mut |candidate| {
+        candidate
+            .utf8_text(bytes)
+            .is_ok_and(|value| value == name)
+    })
+}
+
+fn pattern_binds_node(pattern: Node, node: Node) -> bool {
+    binding_pattern_any(pattern, &mut |candidate| candidate.id() == node.id())
 }
 
 fn field_binds(node: Node, field: &str, name: &str, bytes: &[u8]) -> bool {
@@ -564,8 +604,85 @@ fn field_binds(node: Node, field: &str, name: &str, bytes: &[u8]) -> bool {
         .is_some_and(|target| pattern_binds(target, name, bytes))
 }
 
+fn field_binds_node(node: Node, field: &str, candidate: Node) -> bool {
+    node.child_by_field_name(field)
+        .is_some_and(|target| pattern_binds_node(target, candidate))
+}
+
 fn within(node: Node, container: Node) -> bool {
     container.start_byte() <= node.start_byte() && node.end_byte() <= container.end_byte()
+}
+
+fn python_comprehension(node: Node) -> bool {
+    matches!(
+        node.kind(),
+        "list_comprehension"
+            | "set_comprehension"
+            | "dictionary_comprehension"
+            | "generator_expression"
+    )
+}
+
+/** The first iterable is evaluated by the surrounding scope, not the comprehension scope. */
+fn python_first_comprehension_iterable(scope: Node) -> Option<Node> {
+    let mut cursor = scope.walk();
+    let iterable = scope
+        .named_children(&mut cursor)
+        .find(|child| child.kind() == "for_in_clause")
+        .and_then(|clause| clause.child_by_field_name("right"));
+    iterable
+}
+
+fn python_comprehension_binds(scope: Node, name: &str, bytes: &[u8]) -> bool {
+    let mut cursor = scope.walk();
+    let binds = scope
+        .named_children(&mut cursor)
+        .filter(|child| child.kind() == "for_in_clause")
+        .any(|clause| field_binds(clause, "left", name, bytes));
+    binds
+}
+
+/** Whether this node executes inside a nested Python scope rather than its parent. */
+fn python_scope_owns_node(scope: Node, node: Node) -> bool {
+    if python_comprehension(scope) {
+        return !python_first_comprehension_iterable(scope)
+            .is_some_and(|right| within(node, right));
+    }
+    scope
+        .child_by_field_name("body")
+        .is_some_and(|body| within(node, body))
+}
+
+/**
+ * Class namespaces are not closure scopes. A method, nested class, or
+ * comprehension body cannot resolve a bare name through the containing class.
+ * An expression can still see an enclosing class namespace when it executes
+ * outside a nested body. A class's own header executes before its namespace
+ * exists, so only its body can resolve through its local bindings.
+ */
+fn python_class_binding_visible(node: Node, class_scope: Node) -> bool {
+    if !class_scope
+        .child_by_field_name("body")
+        .is_some_and(|body| within(node, body))
+    {
+        return false;
+    }
+    let mut current = node.parent();
+    while let Some(scope) = current {
+        if scope.id() == class_scope.id() {
+            return true;
+        }
+        if (matches!(
+            scope.kind(),
+            "function_definition" | "lambda" | "class_definition"
+        ) || python_comprehension(scope))
+            && python_scope_owns_node(scope, node)
+        {
+            return false;
+        }
+        current = scope.parent();
+    }
+    false
 }
 
 /** A binding site is a declaration, not a use of an imported value. */
@@ -581,7 +698,9 @@ fn python_binding_occurrence(node: Node) -> bool {
             "parameters" | "lambda_parameters" => return true,
             "default_parameter" | "typed_default_parameter" => return in_field("name"),
             "typed_parameter" => return !in_field("type"),
-            "assignment" | "augmented_assignment" | "for_statement" => return in_field("left"),
+            "assignment" | "augmented_assignment" | "for_statement" | "for_in_clause" => {
+                return field_binds_node(parent, "left", node)
+            }
             "named_expression" | "function_definition" | "class_definition" => {
                 return in_field("name")
             }
@@ -696,6 +815,15 @@ fn scope_binds(scope: Node, name: &str, bytes: &[u8]) -> bool {
 fn python_shadowed(node: Node, binding: &Binding, bytes: &[u8]) -> bool {
     let mut current = node.parent();
     while let Some(scope) = current {
+        if python_comprehension(scope) {
+            if python_scope_owns_node(scope, node)
+                && python_comprehension_binds(scope, &binding.local, bytes)
+            {
+                return true;
+            }
+            current = scope.parent();
+            continue;
+        }
         if matches!(
             scope.kind(),
             "function_definition" | "lambda" | "class_definition" | "module"
@@ -704,13 +832,15 @@ fn python_shadowed(node: Node, binding: &Binding, bytes: &[u8]) -> bool {
                 return false;
             }
 
-            // Defaults and annotations execute outside the new function scope.
-            let inside_parameters = scope
-                .child_by_field_name("parameters")
-                .is_some_and(|params| {
-                    params.start_byte() <= node.start_byte() && node.end_byte() <= params.end_byte()
-                });
-            if !inside_parameters
+            // Defaults, annotations and bases execute in the parent scope.
+            // Class locals additionally do not close over nested executable
+            // scopes (methods and comprehension bodies).
+            let binding_visible = match scope.kind() {
+                "function_definition" | "lambda" => python_scope_owns_node(scope, node),
+                "class_definition" => python_class_binding_visible(node, scope),
+                _ => true,
+            };
+            if binding_visible
                 && !scope_declares_global(scope, &binding.local, bytes)
                 && scope_binds(scope, &binding.local, bytes)
             {
@@ -722,6 +852,14 @@ fn python_shadowed(node: Node, binding: &Binding, bytes: &[u8]) -> bool {
     false
 }
 
+fn typescript_for_binding(node: Node, kind: &str, name: &str, bytes: &[u8]) -> bool {
+    node.kind() == "for_in_statement"
+        && node
+            .child_by_field_name("kind")
+            .is_some_and(|declaration| declaration.utf8_text(bytes).is_ok_and(|value| value == kind))
+        && field_binds(node, "left", name, bytes)
+}
+
 fn typescript_binding_occurrence(node: Node) -> bool {
     let mut current = node;
     while let Some(parent) = current.parent() {
@@ -731,13 +869,22 @@ fn typescript_binding_occurrence(node: Node) -> bool {
                 .is_some_and(|target| within(node, target))
         };
         match parent.kind() {
-            "variable_declarator" => return in_field("name"),
+            "variable_declarator" => return field_binds_node(parent, "name", node),
             "required_parameter" | "optional_parameter" => {
-                return in_field("pattern") || in_field("name")
+                return ["pattern", "name"]
+                    .iter()
+                    .any(|field| field_binds_node(parent, field, node))
             }
             "function_declaration"
             | "generator_function_declaration"
-            | "class_declaration" => return in_field("name"),
+            | "class_declaration"
+            | "abstract_class_declaration" => return in_field("name"),
+            "function_expression" | "generator_function" => return in_field("name"),
+            "arrow_function" => return field_binds_node(parent, "parameter", node),
+            "for_in_statement" => {
+                return parent.child_by_field_name("kind").is_some()
+                    && field_binds_node(parent, "left", node)
+            }
             "formal_parameters" => return true,
             "call_expression"
             | "return_statement"
@@ -763,11 +910,80 @@ fn typescript_parameters_bind(parameters: Node, name: &str, bytes: &[u8]) -> boo
     found
 }
 
-fn typescript_scope_binds(scope: Node, name: &str, bytes: &[u8]) -> bool {
-    if scope
+fn typescript_function_parameters_bind(scope: Node, name: &str, bytes: &[u8]) -> bool {
+    scope
         .child_by_field_name("parameters")
         .is_some_and(|parameters| typescript_parameters_bind(parameters, name, bytes))
+        || field_binds(scope, "parameter", name, bytes)
+}
+
+fn typescript_inner_name_binds(scope: Node, name: &str, bytes: &[u8]) -> bool {
+    matches!(
+        scope.kind(),
+        "function_expression"
+            | "generator_function"
+            | "class_declaration"
+            | "abstract_class_declaration"
+            | "class"
+    )
+        && field_binds(scope, "name", name, bytes)
+}
+
+fn typescript_function_scope(node: Node) -> bool {
+    matches!(
+        node.kind(),
+        "function_declaration"
+            | "generator_function_declaration"
+            | "function_expression"
+            | "generator_function"
+            | "arrow_function"
+            | "method_definition"
+    )
+}
+
+fn typescript_var_scope(node: Node) -> bool {
+    typescript_function_scope(node) || node.kind() == "class_static_block"
+}
+
+/** `var` crosses statement blocks and belongs to the nearest function or static-block scope. */
+fn typescript_function_var_binds(scope: Node, name: &str, bytes: &[u8]) -> bool {
+    fn visit(node: Node, scope_id: usize, name: &str, bytes: &[u8]) -> bool {
+        if node.id() != scope_id
+            && (typescript_function_scope(node)
+                || matches!(
+                    node.kind(),
+                    "class_declaration" | "abstract_class_declaration" | "class"
+                ))
+        {
+            return false;
+        }
+        if node.kind() == "variable_declarator"
+            && node
+                .parent()
+                .is_some_and(|parent| parent.kind() == "variable_declaration")
+            && field_binds(node, "name", name, bytes)
+        {
+            return true;
+        }
+        if typescript_for_binding(node, "var", name, bytes) {
+            return true;
+        }
+        let mut cursor = node.walk();
+        let found = node
+            .named_children(&mut cursor)
+            .any(|child| visit(child, scope_id, name, bytes));
+        found
+    }
+    visit(scope, scope.id(), name, bytes)
+}
+
+fn typescript_scope_binds(scope: Node, name: &str, bytes: &[u8]) -> bool {
+    if typescript_function_parameters_bind(scope, name, bytes)
+        || typescript_inner_name_binds(scope, name, bytes)
     {
+        return true;
+    }
+    if typescript_var_scope(scope) && typescript_function_var_binds(scope, name, bytes) {
         return true;
     }
     if scope.kind() == "catch_clause"
@@ -789,7 +1005,9 @@ fn typescript_scope_binds(scope: Node, name: &str, bytes: &[u8]) -> bool {
                     | "arrow_function"
                     | "method_definition"
                     | "class_declaration"
+                    | "abstract_class_declaration"
                     | "class"
+                    | "for_in_statement"
                     | "statement_block"
                     | "catch_clause"
             )
@@ -798,7 +1016,10 @@ fn typescript_scope_binds(scope: Node, name: &str, bytes: &[u8]) -> bool {
             // and parameters belong to the nested scope.
             return matches!(
                 node.kind(),
-                "function_declaration" | "generator_function_declaration" | "class_declaration"
+                "function_declaration"
+                    | "generator_function_declaration"
+                    | "class_declaration"
+                    | "abstract_class_declaration"
             ) && field_binds(node, "name", name, bytes);
         }
 
@@ -816,8 +1037,72 @@ fn typescript_scope_binds(scope: Node, name: &str, bytes: &[u8]) -> bool {
     visit(scope, scope.id(), name, bytes)
 }
 
+type TypescriptScopeCache = std::collections::HashMap<
+    usize,
+    std::collections::HashMap<String, bool>,
+>;
+
+fn cached_typescript_scope_binds(
+    scope: Node,
+    name: &str,
+    bytes: &[u8],
+    cache: &mut TypescriptScopeCache,
+) -> bool {
+    if let Some(cached) = cache
+        .get(&scope.id())
+        .and_then(|bindings| bindings.get(name))
+    {
+        return *cached;
+    }
+    let binds = typescript_scope_binds(scope, name, bytes);
+    cache
+        .entry(scope.id())
+        .or_default()
+        .insert(name.to_string(), binds);
+    binds
+}
+
+fn typescript_function_shadows(
+    scope: Node,
+    node: Node,
+    name: &str,
+    bytes: &[u8],
+    cache: &mut TypescriptScopeCache,
+) -> bool {
+    if scope
+        .child_by_field_name("body")
+        .is_some_and(|body| within(node, body))
+    {
+        return cached_typescript_scope_binds(scope, name, bytes, cache);
+    }
+    let parameters = scope.child_by_field_name("parameters");
+    let parameter = scope.child_by_field_name("parameter");
+    let parameter_scope = parameters.is_some_and(|parameters| within(node, parameters))
+        || parameter.is_some_and(|parameter| within(node, parameter))
+        || scope
+            .child_by_field_name("return_type")
+            .is_some_and(|return_type| within(node, return_type));
+    let type_parameter_scope = scope
+        .child_by_field_name("type_parameters")
+        .is_some_and(|type_parameters| within(node, type_parameters));
+    (parameter_scope
+        && (typescript_function_parameters_bind(scope, name, bytes)
+            || typescript_inner_name_binds(scope, name, bytes)))
+        || (type_parameter_scope && typescript_inner_name_binds(scope, name, bytes))
+}
+
+fn typescript_for_shadows(scope: Node, name: &str, bytes: &[u8]) -> bool {
+    typescript_for_binding(scope, "let", name, bytes)
+        || typescript_for_binding(scope, "const", name, bytes)
+}
+
 /** Whether a TypeScript/JavaScript scope nested inside the import shadows it. */
-fn typescript_shadowed(node: Node, binding: &Binding, bytes: &[u8]) -> bool {
+fn typescript_shadowed(
+    node: Node,
+    binding: &Binding,
+    bytes: &[u8],
+    cache: &mut TypescriptScopeCache,
+) -> bool {
     let mut current = node.parent();
     while let Some(scope) = current {
         if matches!(
@@ -828,8 +1113,11 @@ fn typescript_shadowed(node: Node, binding: &Binding, bytes: &[u8]) -> bool {
                 | "generator_function"
                 | "arrow_function"
                 | "method_definition"
+                | "class_static_block"
                 | "class_declaration"
+                | "abstract_class_declaration"
                 | "class"
+                | "for_in_statement"
                 | "statement_block"
                 | "catch_clause"
                 | "program"
@@ -837,7 +1125,14 @@ fn typescript_shadowed(node: Node, binding: &Binding, bytes: &[u8]) -> bool {
             if scope.start_byte() == binding.scope_start && scope.end_byte() == binding.scope_end {
                 return false;
             }
-            if typescript_scope_binds(scope, &binding.local, bytes) {
+            let shadowed = if typescript_function_scope(scope) {
+                typescript_function_shadows(scope, node, &binding.local, bytes, cache)
+            } else if scope.kind() == "for_in_statement" {
+                typescript_for_shadows(scope, &binding.local, bytes)
+            } else {
+                cached_typescript_scope_binds(scope, &binding.local, bytes, cache)
+            };
+            if shadowed {
                 return true;
             }
         }
@@ -858,6 +1153,7 @@ fn collect_refs(
 
     let mut refs = Vec::new();
     let mut seen = std::collections::HashSet::new();
+    let mut typescript_scope_cache = TypescriptScopeCache::new();
     let mut cursor = root.walk();
 
     loop {
@@ -890,7 +1186,12 @@ fn collect_refs(
                         let shadowed = match grammar {
                             Grammar::Python => python_shadowed(node, binding, bytes),
                             Grammar::Typescript | Grammar::Tsx => {
-                                typescript_shadowed(node, binding, bytes)
+                                typescript_shadowed(
+                                    node,
+                                    binding,
+                                    bytes,
+                                    &mut typescript_scope_cache,
+                                )
                             }
                         };
                         if !shadowed {
@@ -1295,6 +1596,197 @@ mod tests {
     }
 
     #[test]
+    fn respects_javascript_var_hoisting_without_leaking_let_bindings() {
+        let mut engines = Engines::new();
+        let parsed = parse(
+            &mut engines,
+            "shadow.js",
+            "javascript",
+            "import { foo } from './db.js';\n\
+             function hoisted(flag) { if (flag) { var foo = () => 1; } return foo(); }\n\
+             function lexical(flag) { if (flag) { let foo = () => 1; foo(); } return foo(); }",
+        );
+        let foo: Vec<&Reference> = parsed
+            .refs
+            .iter()
+            .filter(|reference| reference.name == "foo")
+            .collect();
+        assert_eq!(foo.len(), 1);
+        assert_eq!(foo[0].line, 3);
+    }
+
+    #[test]
+    fn respects_singular_arrow_parameters_and_named_function_expressions() {
+        let mut engines = Engines::new();
+        let parsed = parse(
+            &mut engines,
+            "shadow.ts",
+            "typescript",
+            "import { foo } from './db.js';\n\
+             const localArrow = foo => foo();\n\
+             const importedArrow = value => foo(value);\n\
+             const recursive = function foo(value = foo) { return foo(value); };\n\
+             const typed = function foo<T extends typeof foo>() { return foo; };",
+        );
+        let foo: Vec<&Reference> = parsed
+            .refs
+            .iter()
+            .filter(|reference| reference.name == "foo")
+            .collect();
+        assert_eq!(foo.len(), 1);
+        assert_eq!(foo[0].line, 3);
+    }
+
+    #[test]
+    fn does_not_hoist_var_out_of_abstract_class_static_blocks() {
+        let mut engines = Engines::new();
+        let parsed = parse(
+            &mut engines,
+            "scope.ts",
+            "typescript",
+            "import { foo } from './db.js';\n\
+             function outer() { abstract class C { static { if (true) { var foo = 1; } consume(foo); } } return foo(); }",
+        );
+        let foo: Vec<&Reference> = parsed
+            .refs
+            .iter()
+            .filter(|reference| reference.name == "foo")
+            .collect();
+        assert_eq!(foo.len(), 1);
+        assert_eq!(foo[0].line, 2);
+    }
+
+    #[test]
+    fn hoists_for_var_bindings_to_the_containing_function() {
+        let mut engines = Engines::new();
+        let parsed = parse(
+            &mut engines,
+            "loop.js",
+            "javascript",
+            "import { foo } from './db.js';\n\
+             function local(values) { foo(); for (var foo of values) { foo(); } return foo; }\n\
+             foo();",
+        );
+        let foo: Vec<&Reference> = parsed
+            .refs
+            .iter()
+            .filter(|reference| reference.name == "foo")
+            .collect();
+        assert_eq!(foo.len(), 1);
+        assert_eq!(foo[0].line, 3);
+    }
+
+    #[test]
+    fn scopes_for_let_bindings_over_the_loop_and_rhs() {
+        let mut engines = Engines::new();
+        let parsed = parse(
+            &mut engines,
+            "loop.js",
+            "javascript",
+            "import { foo } from './db.js';\n\
+             function local(values) { for (let foo of values) { foo(); } return foo(); }\n\
+             function direct() { for (const foo of foo) { foo(); } return foo(); }\n\
+             function destructured() { for (const { foo } of foo) { foo(); } return foo(); }\n\
+             function enumerated() { for (let foo in foo) { consume(foo); } return foo; }",
+        );
+        let foo: Vec<&Reference> = parsed
+            .refs
+            .iter()
+            .filter(|reference| reference.name == "foo")
+            .collect();
+        assert_eq!(foo.len(), 4);
+        assert_eq!(
+            foo.iter()
+                .map(|reference| reference.line)
+                .collect::<Vec<_>>(),
+            vec![2, 3, 4, 5]
+        );
+    }
+
+    #[test]
+    fn respects_class_names_as_lexical_bindings() {
+        let mut engines = Engines::new();
+        let parsed = parse(
+            &mut engines,
+            "classes.ts",
+            "typescript",
+            "import { foo } from './db.js';\n\
+             function declared() { class foo {}; return foo; }\n\
+             function abstracted() { abstract class foo {}; return foo; }\n\
+             const expression = class foo { method() { return foo; } };",
+        );
+        assert!(parsed
+            .refs
+            .iter()
+            .all(|reference| reference.name != "foo"));
+    }
+
+    #[test]
+    fn limits_javascript_var_hoisting_to_function_bodies() {
+        let mut engines = Engines::new();
+        let parsed = parse(
+            &mut engines,
+            "scope.js",
+            "javascript",
+            "import { foo } from './db.js';\n\
+             function defaulted(value = foo) { var foo = 1; return value; }\n\
+             class Container { [foo]() { var foo = 1; return foo; } }",
+        );
+        let foo: Vec<&Reference> = parsed
+            .refs
+            .iter()
+            .filter(|reference| reference.name == "foo")
+            .collect();
+        assert_eq!(foo.len(), 2);
+        assert_eq!(foo[0].line, 2);
+        assert_eq!(foo[1].line, 3);
+    }
+
+    #[test]
+    fn keeps_typescript_parameters_shadowing_imports_in_return_annotations() {
+        let mut engines = Engines::new();
+        let parsed = parse(
+            &mut engines,
+            "return-types.ts",
+            "typescript",
+            "import { foo } from './db.js';\n\
+             function predicate(foo: unknown): foo is string { return true; }\n\
+             function query(foo: string): typeof foo { return foo; }\n\
+             function imported(): typeof foo { throw new Error(); }",
+        );
+        let foo: Vec<&Reference> = parsed
+            .refs
+            .iter()
+            .filter(|reference| reference.name == "foo")
+            .collect();
+        assert_eq!(foo.len(), 1);
+        assert_eq!(foo[0].line, 4);
+    }
+
+    #[test]
+    fn keeps_javascript_destructuring_reads_out_of_the_var_binding_set() {
+        let mut engines = Engines::new();
+        let parsed = parse(
+            &mut engines,
+            "pattern.js",
+            "javascript",
+            "import { foo } from './db.js';\n\
+             function run(obj) { var { x = foo, [foo]: y } = obj; return foo(); }\n\
+             function shadowed(obj) { var { value: foo } = obj; return foo; }\n\
+             function parameter({ x = foo, [foo]: y }) { return foo(); }",
+        );
+        let foo: Vec<&Reference> = parsed
+            .refs
+            .iter()
+            .filter(|reference| reference.name == "foo")
+            .collect();
+        assert_eq!(foo.len(), 6);
+        assert!(foo
+            .iter()
+            .all(|reference| reference.line == 2 || reference.line == 4));
+    }
+
+    #[test]
     fn keeps_repeated_import_uses_on_the_same_line() {
         let mut engines = Engines::new();
         let parsed = parse(
@@ -1332,6 +1824,94 @@ mod tests {
                 .any(|reference| reference.name == "wave"
                     && reference.module == expected_module));
         }
+    }
+
+    #[test]
+    fn respects_python_comprehension_scopes_and_the_outer_iterable() {
+        let mut engines = Engines::new();
+        let parsed = parse(
+            &mut engines,
+            "user.py",
+            "python",
+            "from mod import Thing\n\
+             items = [1, 2]\n\
+             shadowed = [Thing.x for Thing in items]\n\
+             imported = [item for item in Thing]",
+        );
+        let thing: Vec<&Reference> = parsed
+            .refs
+            .iter()
+            .filter(|reference| reference.module == "mod")
+            .collect();
+        assert_eq!(thing.len(), 1);
+        assert_eq!(thing[0].name, "Thing");
+        assert_eq!(thing[0].line, 4);
+    }
+
+    #[test]
+    fn keeps_python_comprehension_target_reads() {
+        let mut engines = Engines::new();
+        let parsed = parse(
+            &mut engines,
+            "user.py",
+            "python",
+            "from mod import obj, key\n\
+             values = [obj for obj[key] in items]",
+        );
+        let obj: Vec<&Reference> = parsed
+            .refs
+            .iter()
+            .filter(|reference| reference.module == "mod" && reference.name == "obj")
+            .collect();
+        assert_eq!(obj.len(), 2);
+        assert!(parsed
+            .refs
+            .iter()
+            .any(|reference| reference.module == "mod" && reference.name == "key"));
+    }
+
+    #[test]
+    fn does_not_treat_a_python_class_namespace_as_a_method_closure() {
+        let mut engines = Engines::new();
+        let parsed = parse(
+            &mut engines,
+            "user.py",
+            "python",
+            r#"from mod import Thing
+class Container:
+    Thing = 1
+    def make(self):
+        return Thing()"#,
+        );
+        let thing: Vec<&Reference> = parsed
+            .refs
+            .iter()
+            .filter(|reference| reference.module == "mod" && reference.name == "Thing")
+            .collect();
+        assert_eq!(thing.len(), 1);
+        assert_eq!(thing[0].line, 5);
+    }
+
+    #[test]
+    fn resolves_python_class_headers_before_their_local_namespace() {
+        let mut engines = Engines::new();
+        let parsed = parse(
+            &mut engines,
+            "user.py",
+            "python",
+            r#"from mod import Thing
+class Container(Thing):
+    Thing = 1
+    class Nested(Thing):
+        pass"#,
+        );
+        let thing: Vec<&Reference> = parsed
+            .refs
+            .iter()
+            .filter(|reference| reference.module == "mod" && reference.name == "Thing")
+            .collect();
+        assert_eq!(thing.len(), 1);
+        assert_eq!(thing[0].line, 2);
     }
 
     #[test]
