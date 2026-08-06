@@ -1,6 +1,6 @@
 ---
 description: Full repository audit — index, run your tools, review the riskiest code with sub-agents, and record what was learned
-allowed-tools: Task, Read, Grep, Glob, AskUserQuestion, mcp__sdlc__audit_status, mcp__sdlc__audit_scan, mcp__sdlc__audit_run_tools, mcp__sdlc__audit_plan, mcp__sdlc__audit_context, mcp__sdlc__audit_record_findings, mcp__sdlc__audit_query, mcp__sdlc__audit_report
+allowed-tools: Task, Read, Grep, Glob, AskUserQuestion, mcp__sdlc__audit_status, mcp__sdlc__audit_scan, mcp__sdlc__audit_run_tools, mcp__sdlc__audit_plan, mcp__sdlc__audit_context, mcp__sdlc__audit_record_findings, mcp__sdlc__audit_query, mcp__sdlc__audit_report, mcp__sdlc__remember
 ---
 
 # Full audit

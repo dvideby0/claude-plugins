@@ -1,6 +1,6 @@
 ---
 description: Think through a design against what this codebase already is and already decided, then record the outcome
-allowed-tools: Read, Grep, Glob, AskUserQuestion, mcp__sdlc__recall, mcp__sdlc__context, mcp__sdlc__impact, mcp__sdlc__cross_search, mcp__sdlc__remember, mcp__sdlc__audit_query
+allowed-tools: Read, Grep, Glob, AskUserQuestion, mcp__sdlc__recall, mcp__sdlc__context, mcp__sdlc__impact, mcp__sdlc__cross_search, mcp__sdlc__remember, mcp__sdlc__forget, mcp__sdlc__audit_query
 ---
 
 # Brainstorm: $ARGUMENTS

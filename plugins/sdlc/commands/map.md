@@ -1,6 +1,6 @@
 ---
 description: Turn the machine's index into the map a person would draw — named regions, real flows, annotations — and afterwards keep only what moved up to date
-allowed-tools: Task, Read, Grep, Glob, mcp__sdlc__audit_status, mcp__sdlc__audit_scan, mcp__sdlc__map, mcp__sdlc__map_drift, mcp__sdlc__describe_component, mcp__sdlc__describe_flow, mcp__sdlc__tag, mcp__sdlc__gaps, mcp__sdlc__flow, mcp__sdlc__trace, mcp__sdlc__audit_query, mcp__sdlc__context, mcp__sdlc__relations, mcp__sdlc__remember
+allowed-tools: Task, Read, Grep, Glob, mcp__sdlc__audit_status, mcp__sdlc__audit_scan, mcp__sdlc__map, mcp__sdlc__map_drift, mcp__sdlc__describe_component, mcp__sdlc__describe_flow, mcp__sdlc__finalize_map, mcp__sdlc__tag, mcp__sdlc__gaps, mcp__sdlc__flow, mcp__sdlc__trace, mcp__sdlc__audit_query, mcp__sdlc__context, mcp__sdlc__relations, mcp__sdlc__remember
 ---
 
 # Map: $ARGUMENTS
@@ -20,11 +20,11 @@ its change signatures. The scan is incremental, so this is cheap when nothing
 moved, and it prevents a first `/map` call from mistaking an empty index for a
 clean repository. Only after that succeeds, call `map_drift`.
 
-- **`clean: true` and the map is empty** → this is a first drawing. Go to §1.
-  It is the expensive pass; do it properly once.
-- **`clean: false`** → the code moved under an existing drawing. Skip to §5 and
+- **`complete: false`** → the first drawing is new or was interrupted. Go to
+  §1 and complete the whole drawing, preserving any useful work already saved.
+- **`complete: true` and `clean: false`** → the code moved under an existing drawing. Skip to §5 and
   redraw only what it names. This should be quick.
-- **`clean: true` and a map exists** → nothing to do. Say so and stop.
+- **`complete: true` and `clean: true`** → nothing to do. Say so and stop.
 
 ## 1. Look before naming
 
@@ -96,7 +96,12 @@ wastes the effort that produced it.
 Dispatch a subagent per drifted component with `Task` when there is more than
 one; they are independent.
 
-## 6. Report
+## 6. Finish and report
+
+Call `map` and check `coverage`. Assign every explainable file to a component,
+then call `finalize_map`. Pass any files deliberately left outside the drawing
+in `acknowledgeUnassigned`; this explicit acknowledgement is what distinguishes
+an honest gap from an interrupted first pass.
 
 Show the map as a person would read it: boxes with their summaries, flows with
 their steps, and coverage. Then say what you changed and what you left alone.
