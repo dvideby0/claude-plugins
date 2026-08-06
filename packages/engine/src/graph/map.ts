@@ -89,16 +89,46 @@ export interface ComponentInput {
   name: string;
   summary?: string;
   kind?: ComponentKind;
-  parent?: string;
+  /** Parent name; null explicitly moves an existing component to the root. */
+  parent?: string | null;
   /** Paths or directory prefixes this box covers. */
   members?: string[];
+  /** Existing files deliberately left outside every component. */
+  acknowledgeUnassigned?: string[];
   ordinal?: number;
+}
+
+function allMappedFiles(db: Db): string[] {
+  return db
+    .all<{ path: string }>(`SELECT path FROM files WHERE ${MAPPED_FILES} ORDER BY path`)
+    .map((row) => row.path);
+}
+
+function unassignedFiles(db: Db): string[] {
+  const assigned = new Set<string>();
+  for (const component of db.all<{ id: string }>("SELECT id FROM components")) {
+    for (const path of membersOf(db, component.id).files) assigned.add(path);
+  }
+  return allMappedFiles(db).filter((path) => !assigned.has(path));
+}
+
+function acknowledgeMapFiles(db: Db, paths: Iterable<string>, at: string): void {
+  const unassigned = new Set(unassignedFiles(db));
+  for (const path of paths) {
+    if (!unassigned.has(path)) continue;
+    db.run(
+      "INSERT OR REPLACE INTO map_file_ack(path, acknowledged_at) VALUES(?, ?)",
+      [path, at],
+    );
+  }
 }
 
 export function describeComponent(db: Db, input: ComponentInput): { id: string; created: boolean } {
   const id = slug(input.name);
   const now = new Date().toISOString();
+  const parentSpecified = Object.prototype.hasOwnProperty.call(input, "parent");
   const parentId = input.parent ? slug(input.parent) : null;
+  const firstComponent = db.count("SELECT COUNT(*) AS n FROM components") === 0;
 
   if (parentId === id) throw new Error("A component cannot contain itself.");
   if (parentId) {
@@ -127,13 +157,14 @@ export function describeComponent(db: Db, input: ComponentInput): { id: string; 
       `UPDATE components SET
          summary = COALESCE(?, summary),
          kind = COALESCE(?, kind),
-         parent_id = COALESCE(?, parent_id),
+         parent_id = CASE WHEN ? = 1 THEN ? ELSE parent_id END,
          ordinal = COALESCE(?, ordinal),
          updated_at = ?
        WHERE id = ?`,
       [
         input.summary ?? null,
         input.kind ?? null,
+        parentSpecified ? 1 : 0,
         parentId,
         input.ordinal ?? null,
         now,
@@ -183,6 +214,14 @@ export function describeComponent(db: Db, input: ComponentInput): { id: string; 
         [id, path, sha],
       );
     }
+  }
+
+  // The first drawing establishes a per-file baseline. Later metadata/layout
+  // changes do not move it; newly unassigned files remain visible until they
+  // are mapped or explicitly acknowledged.
+  if (firstComponent) acknowledgeMapFiles(db, allMappedFiles(db), now);
+  if (input.acknowledgeUnassigned) {
+    acknowledgeMapFiles(db, input.acknowledgeUnassigned, now);
   }
 
   return { id, created: !existing };
@@ -378,28 +417,13 @@ export function mapDrift(db: Db): MapDrift {
         .map((step) => `${step.label}${step.resolves ? "" : " (file gone)"}`),
     }));
 
-  // "Newly" means since the map was drawn: files that first appeared after
-  // the last authoring pass. Reporting *all* unassigned files here re-flagged
-  // the same ones on every call forever, alongside `clean: true` — a drift
-  // signal nobody can act on teaches its readers to ignore it. Files that
-  // were already unmapped when the map was drawn stay where they belong, in
-  // coverage.
-  const drawnAt = db.get<{ latest: string | null }>(
-    "SELECT MAX(updated_at) AS latest FROM components",
-  )?.latest;
-  const appearedSince = new Set(
-    drawnAt
-      ? db
-          .all<{ path: string }>(
-            `SELECT f.path FROM files f JOIN runs r ON r.id = f.first_seen_run
-             WHERE f.present = 1 AND r.started_at > ?`,
-            [drawnAt],
-          )
-          .map((row) => row.path)
-      : [],
+  const acknowledged = new Set(
+    db.all<{ path: string }>("SELECT path FROM map_file_ack").map((row) => row.path),
   );
-  const newlyUnassigned = map.coverage.unassigned
-    .filter((path) => appearedSince.has(path))
+  // Work from the complete set. systemMap intentionally caps its display list,
+  // but a presentation cap must never turn a real drift signal into clean.
+  const newlyUnassigned = unassignedFiles(db)
+    .filter((path) => !acknowledged.has(path))
     .slice(0, 20);
 
   return {
@@ -563,10 +587,7 @@ export function systemMap(db: Db): SystemMap {
     }));
 
   const total = db.count(`SELECT COUNT(*) AS n FROM files WHERE ${MAPPED_FILES}`);
-  const unassigned = db
-    .all<{ path: string }>(`SELECT path FROM files WHERE ${MAPPED_FILES} ORDER BY path`)
-    .map((row) => row.path)
-    .filter((path) => !assigned.has(path));
+  const unassigned = allMappedFiles(db).filter((path) => !assigned.has(path));
 
   return {
     components: mapped,

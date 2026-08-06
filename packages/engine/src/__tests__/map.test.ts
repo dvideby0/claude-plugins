@@ -223,6 +223,59 @@ describe("the drawn map", () => {
     expect(systemMap(db).components.find((component) => component.name === "API")?.parent)
       .toBe(app.id);
   });
+
+  it("moves an existing nested component back to the root explicitly", async () => {
+    root = await makeProject(PROJECT);
+    await scan(root, { kind: "full" });
+    const db = await getDb(root);
+
+    describeComponent(db, { name: "App" });
+    describeComponent(db, { name: "API", parent: "App" });
+    describeComponent(db, { name: "API", parent: null });
+
+    expect(systemMap(db).components.find((component) => component.name === "API")?.parent)
+      .toBeNull();
+  });
+
+  it("finds a newly unassigned file beyond the map display cap", async () => {
+    const files = Object.fromEntries(
+      Array.from({ length: 45 }, (_, index) => [
+        `src/loose-${String(index).padStart(2, "0")}.py`,
+        `value = ${index}\n`,
+      ]),
+    );
+    root = await makeProject({
+      ...files,
+      "src/core/main.py": "def run():\n    return 1\n",
+    });
+    await scan(root, { kind: "full" });
+    const db = await getDb(root);
+    describeComponent(db, { name: "Core", members: ["src/core/"] });
+
+    await writeFile(join(root, "src/zzz-new.py"), "value = 99\n");
+    await scan(root, { kind: "incremental" });
+
+    expect(systemMap(db).coverage.unassigned).toHaveLength(40);
+    expect(systemMap(db).coverage.unassigned).not.toContain("src/zzz-new.py");
+    expect(mapDrift(db).newlyUnassigned).toContain("src/zzz-new.py");
+  });
+
+  it("keeps unassigned drift through metadata edits until explicitly acknowledged", async () => {
+    root = await makeProject(PROJECT);
+    await scan(root, { kind: "full" });
+    const db = await getDb(root);
+    describeComponent(db, { name: "API", members: ["src/api/"] });
+
+    await writeFile(join(root, "src/new-worker.py"), "def work():\n    return 1\n");
+    await scan(root, { kind: "incremental" });
+    expect(mapDrift(db).newlyUnassigned).toContain("src/new-worker.py");
+
+    describeComponent(db, { name: "API", summary: "Updated prose only." });
+    expect(mapDrift(db).newlyUnassigned).toContain("src/new-worker.py");
+
+    describeComponent(db, { name: "API", acknowledgeUnassigned: ["src/new-worker.py"] });
+    expect(mapDrift(db).newlyUnassigned).not.toContain("src/new-worker.py");
+  });
 });
 
 describe("crossing between the two maps", () => {

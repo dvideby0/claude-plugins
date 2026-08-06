@@ -1,4 +1,4 @@
-export const SCHEMA_VERSION = 12;
+export const SCHEMA_VERSION = 13;
 
 /**
  * The audit store. Files, symbols and edges are the deterministic picture of
@@ -181,6 +181,14 @@ CREATE TABLE IF NOT EXISTS component_members (
   pattern      TEXT NOT NULL,
   symbol       TEXT NOT NULL DEFAULT '',
   PRIMARY KEY (component_id, pattern, symbol)
+);
+
+-- Files intentionally left outside the authored map. This is independent of
+-- component timestamps: moving a box or editing prose must not acknowledge a
+-- newly added, still-unexplained file.
+CREATE TABLE IF NOT EXISTS map_file_ack (
+  path            TEXT PRIMARY KEY,
+  acknowledged_at TEXT NOT NULL
 );
 
 -- A named path through the system, in the order it happens.

@@ -517,11 +517,19 @@ export function createMcpServer(options: McpServerOptions): McpServer {
       name: z.string().min(1),
       summary: z.string().optional().describe("What it is for, in a sentence a newcomer would understand."),
       kind: z.enum(COMPONENT_KINDS).optional(),
-      parent: z.string().optional().describe("Name of the component this sits inside."),
+      parent: z
+        .string()
+        .nullable()
+        .optional()
+        .describe("Name of the parent component; null moves an existing component to the root."),
       members: z
         .array(z.string())
         .optional()
         .describe("Paths or directory prefixes it covers, e.g. 'src/workflows/lookup/'."),
+      acknowledgeUnassigned: z
+        .array(z.string())
+        .optional()
+        .describe("Existing paths deliberately left outside every component."),
       ordinal: z.number().optional().describe("Left-to-right order among its siblings."),
     },
     async ({ projectRoot, ...input }) =>
