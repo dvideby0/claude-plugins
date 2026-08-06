@@ -27,6 +27,7 @@ import {
   type Tool,
 } from "@modelcontextprotocol/sdk/types.js";
 import { baseUrl, findDaemon } from "@sdlc/protocol";
+import { forwardingOptions } from "./forwarding.js";
 
 const VERSION = "0.1.0";
 
@@ -133,7 +134,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
   }
 });
 
-server.setRequestHandler(CallToolRequestSchema, async (request) => {
+server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
   const upstream = await connect();
   if (!upstream) return errorResult(NO_DAEMON);
 
@@ -147,11 +148,19 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   const withRoot = { ...args, projectRoot: PROJECT_ROOT };
 
   try {
-    return (await upstream.callTool({
-      name: request.params.name,
-      arguments: withRoot,
-    })) as CallToolResult;
+    return (await upstream.callTool(
+      {
+        name: request.params.name,
+        arguments: withRoot,
+      },
+      undefined,
+      forwardingOptions(extra.signal),
+    )) as CallToolResult;
   } catch (error) {
+    // Cancellation is request-local, not evidence that the shared upstream
+    // connection died. Propagating the throw lets the MCP server finish its
+    // cancellation lifecycle without discarding a healthy client.
+    if (extra.signal.aborted) throw error;
     client = null;
     // The commonest failure is the daemon stopping mid-session. That case
     // deserves the standard guidance, not a bare "fetch failed".

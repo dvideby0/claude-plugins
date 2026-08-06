@@ -1,7 +1,7 @@
 import type { IncomingMessage } from "node:http";
 import { afterEach, describe, expect, it } from "vitest";
 import { checkUiBootstrap } from "../daemon/auth.js";
-import { isWorkspaceDirectory } from "../daemon/http.js";
+import { isWorkspaceDirectory, requestPath } from "../daemon/http.js";
 import { cleanup, makeProject } from "./helpers.js";
 import { join } from "node:path";
 
@@ -27,6 +27,11 @@ describe("daemon UI authentication", () => {
     });
     expect(checkUiBootstrap(request(`/?token=${token}`), token)).toEqual({ ok: true });
     expect(checkUiBootstrap(request("/", `Bearer ${token}`), token)).toEqual({ ok: true });
+  });
+
+  it("rejects malformed request targets before route dispatch", () => {
+    expect(requestPath("//%")).toBeNull();
+    expect(requestPath("/api/health?ok=1")).toBe("/api/health");
   });
 });
 

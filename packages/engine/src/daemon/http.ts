@@ -2,14 +2,16 @@
  * The daemon's HTTP surface: MCP for agents, a control API for the desktop
  * app, and the UI itself.
  *
- * MCP runs in stateless mode — a fresh server and transport per request —
- * because every tool already reads and writes its own workspace store. There
- * is no in-memory session worth keeping, and no session to lose on restart.
+ * MCP sessions remain lightweight, but they are stateful for one important
+ * reason: cancellation is a second HTTP request that must reach the same MCP
+ * server and abort controller as the tool call it names.
  */
 
 import type { ChildProcess } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { drawMap, supportedHarnesses, type DrawEvent, type DrawPhase } from "./draw.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
+import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
 import { existsSync, statSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
@@ -50,6 +52,15 @@ export function isWorkspaceDirectory(root: string): boolean {
     return statSync(root).isDirectory();
   } catch {
     return false;
+  }
+}
+
+/** Parse an HTTP request target without letting malformed local traffic escape. */
+export function requestPath(target: string | undefined): string | null {
+  try {
+    return new URL(target ?? "/", "http://127.0.0.1").pathname;
+  } catch {
+    return null;
   }
 }
 
@@ -157,6 +168,13 @@ export function createHttpServer(options: HttpServerOptions): HttpServerHandle {
   const jobs = new Map<string, IndexJob>();
   const indexingRoots = new Set<string>();
   const activeMcpSessions = new Set<() => void>();
+  const mcpSessions = new Map<
+    string,
+    {
+      transport: StreamableHTTPServerTransport;
+      close: () => void;
+    }
+  >();
   const removedRoots = new Set<string>();
   let boundPort = 0;
   let watchEnabled = process.env.SDLC_WATCH !== "0";
@@ -710,7 +728,11 @@ export function createHttpServer(options: HttpServerOptions): HttpServerHandle {
 
   const server = createServer((req, res) => {
     void (async () => {
-      const path = new URL(req.url ?? "/", "http://127.0.0.1").pathname;
+      const path = requestPath(req.url);
+      if (path === null) {
+        sendJson(res, 400, { error: "Bad request: malformed URL." });
+        return;
+      }
 
       // Everything is loopback-and-same-origin only.
       const origin = checkOrigin(req, boundPort);
@@ -760,12 +782,41 @@ export function createHttpServer(options: HttpServerOptions): HttpServerHandle {
   });
 
   async function handleMcp(req: IncomingMessage, res: ServerResponse): Promise<void> {
-    if (req.method !== "POST") {
-      sendJson(res, 405, { error: "MCP requests must be POST." });
+    const method = req.method ?? "GET";
+    if (method !== "POST" && method !== "GET" && method !== "DELETE") {
+      sendJson(res, 405, { error: "Unsupported MCP method." });
       return;
     }
 
-    const body = await readBody(req);
+    const body = method === "POST" ? await readBody(req) : undefined;
+    const rawSessionId = req.headers["mcp-session-id"];
+    const sessionId = Array.isArray(rawSessionId) ? rawSessionId[0] : rawSessionId;
+
+    if (sessionId) {
+      const session = mcpSessions.get(sessionId);
+      if (!session) {
+        sendJson(res, 404, { error: "Unknown MCP session." });
+        return;
+      }
+      await session.transport.handleRequest(req, res, body);
+      return;
+    }
+
+    if (method !== "POST" || !isInitializeRequest(body)) {
+      sendJson(res, 400, { error: "MCP initialization requires a new session." });
+      return;
+    }
+
+    let session!: {
+      transport: StreamableHTTPServerTransport;
+      close: () => void;
+    };
+    const transport = new StreamableHTTPServerTransport({
+      sessionIdGenerator: () => randomUUID(),
+      onsessioninitialized: (id) => {
+        mcpSessions.set(id, session);
+      },
+    });
     const mcp = createMcpServer({
       defaultRoot: null,
       // Watch what agents register, not just what the UI adds — otherwise a
@@ -796,23 +847,27 @@ export function createHttpServer(options: HttpServerOptions): HttpServerHandle {
           root: workspace.root,
         })),
     });
-    const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
     let closed = false;
     const closeSession = (): void => {
       if (closed) return;
       closed = true;
+      const id = transport.sessionId;
+      if (id && mcpSessions.get(id)?.transport === transport) mcpSessions.delete(id);
       activeMcpSessions.delete(closeSession);
-      void transport.close();
-      void mcp.close();
+      void mcp.close().catch((error) => {
+        log(`MCP session close failed: ${error instanceof Error ? error.message : String(error)}`);
+      });
     };
+    session = { transport, close: closeSession };
+    transport.onclose = closeSession;
     activeMcpSessions.add(closeSession);
-    res.on("close", closeSession);
 
     try {
       await mcp.connect(transport);
       await transport.handleRequest(req, res, body);
-    } finally {
+    } catch (error) {
       closeSession();
+      throw error;
     }
   }
 

@@ -812,11 +812,11 @@ export function createMcpServer(options: McpServerOptions): McpServer {
     "resolve_types",
     "Upgrade references from import-resolved to type-resolved using the TypeScript checker. Catches method calls on inferred types and type positions that the fast scan cannot see. Slow — a full type-check — so run it after indexing, not on every change.",
     projectRootArg,
-    async ({ projectRoot }) =>
+    async ({ projectRoot }, extra) =>
       wrap(async () => {
         const root = resolveRoot(projectRoot);
         const db = await getDb(root);
-        const result = await resolveTypesInWorker(db, root);
+        const result = await resolveTypesInWorker(db, root, extra.signal);
         await db.flush();
         await workspaceChanged(root, "indexed");
         return result;
