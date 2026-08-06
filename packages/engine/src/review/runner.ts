@@ -221,6 +221,12 @@ export function selectReviewProposals(parsed: unknown): ProposedFinding[] {
   return selected;
 }
 
+/** A headless review has no Read tool, so omitted source makes the unit unreviewable. */
+export function reviewContextFailure(filesOmitted: string[]): string | null {
+  if (filesOmitted.length === 0) return null;
+  return `Review context omitted source files: ${filesOmitted.join(", ")}`;
+}
+
 export async function runReview(
   db: Db,
   projectRoot: string,
@@ -269,6 +275,18 @@ export async function runReview(
       instructions: false,
       ...(options.lens ? { lens: options.lens } : {}),
     });
+
+    const contextError = reviewContextFailure(context.filesOmitted);
+    if (contextError) {
+      summary.failures.push({ unitId: unit.id, error: contextError });
+      db.run(
+        `INSERT INTO review_runs(run_id, unit_id, agent, status, detail, proposed, confirmed, cost_usd, duration_ms, created_at)
+         VALUES(?, ?, 'claude', 'failed', ?, 0, 0, 0, ?, ?)`,
+        [runId, unit.id, contextError, Date.now() - unitStarted, now()],
+      );
+      note(`  incomplete: ${contextError}`);
+      continue;
+    }
 
     const result = await runClaude(`${context.prompt}\n\n${REVIEW_INSTRUCTION}`, {
       cwd: projectRoot,

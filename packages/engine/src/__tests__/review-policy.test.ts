@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   MAX_PROPOSALS_PER_UNIT,
   isSubstantiatedVerdict,
+  reviewContextFailure,
   selectReviewProposals,
   sourceFor,
   type ProposedFinding,
@@ -29,6 +30,11 @@ function finding(index: number, overrides: Partial<ProposedFinding> = {}): Propo
 }
 
 describe("review proposal policy", () => {
+  it("fails closed when a headless review context omits source", () => {
+    expect(reviewContextFailure([])).toBeNull();
+    expect(reviewContextFailure(["src/oversized.ts"])).toContain("src/oversized.ts");
+  });
+
   it("requires real positive source lines", () => {
     expect(
       selectReviewProposals([

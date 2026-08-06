@@ -70,6 +70,10 @@ struct Binding {
     local: String,
     exported: String,
     module: String,
+    /// A Python `from pkg import child` may bind the child module as a
+    /// namespace. A qualified use such as `child.run()` resolves through
+    /// `pkg.child`, while a direct `child()` still means an export of `pkg`.
+    namespace_module: Option<String>,
     /// Python's unaliased `import pkg.db` binds `pkg`, but a useful exported
     /// symbol appears only after the full `pkg.db` qualifier in a use.
     module_path_bound: bool,
@@ -77,6 +81,14 @@ struct Binding {
     /// from resolving same-named identifiers elsewhere in the module.
     scope_start: usize,
     scope_end: usize,
+}
+
+fn python_from_namespace_module(module: &str, imported: &str) -> String {
+    if module.ends_with('.') {
+        format!("{module}{imported}")
+    } else {
+        format!("{module}.{imported}")
+    }
 }
 
 fn lexical_scope(mut node: Node) -> Node {
@@ -307,6 +319,7 @@ fn bindings_from_import(node: Node, bytes: &[u8], grammar: Grammar, out: &mut Ve
                                 local,
                                 exported: "*".to_string(),
                                 module,
+                                namespace_module: None,
                                 module_path_bound: true,
                                 scope_start,
                                 scope_end,
@@ -327,6 +340,7 @@ fn bindings_from_import(node: Node, bytes: &[u8], grammar: Grammar, out: &mut Ve
                                 local,
                                 exported: "*".to_string(),
                                 module,
+                                namespace_module: None,
                                 module_path_bound: false,
                                 scope_start,
                                 scope_end,
@@ -355,7 +369,8 @@ fn bindings_from_import(node: Node, bytes: &[u8], grammar: Grammar, out: &mut Ve
                     if !name.is_empty() {
                         out.push(Binding {
                             local: name.clone(),
-                            exported: name,
+                            exported: name.clone(),
+                            namespace_module: Some(python_from_namespace_module(&module, &name)),
                             module: module.clone(),
                             module_path_bound: false,
                             scope_start,
@@ -376,6 +391,10 @@ fn bindings_from_import(node: Node, bytes: &[u8], grammar: Grammar, out: &mut Ve
                     if !exported.is_empty() {
                         out.push(Binding {
                             local,
+                            namespace_module: Some(python_from_namespace_module(
+                                &module,
+                                &exported,
+                            )),
                             exported,
                             module: module.clone(),
                             module_path_bound: false,
@@ -415,6 +434,7 @@ fn bindings_from_import(node: Node, bytes: &[u8], grammar: Grammar, out: &mut Ve
                     local: text(part),
                     exported: "default".to_string(),
                     module: module.clone(),
+                    namespace_module: None,
                     module_path_bound: false,
                     scope_start,
                     scope_end,
@@ -426,6 +446,7 @@ fn bindings_from_import(node: Node, bytes: &[u8], grammar: Grammar, out: &mut Ve
                             local: text(alias),
                             exported: "*".to_string(),
                             module: module.clone(),
+                            namespace_module: None,
                             module_path_bound: false,
                             scope_start,
                             scope_end,
@@ -452,6 +473,7 @@ fn bindings_from_import(node: Node, bytes: &[u8], grammar: Grammar, out: &mut Ve
                                 local,
                                 exported,
                                 module: module.clone(),
+                                namespace_module: None,
                                 module_path_bound: false,
                                 scope_start,
                                 scope_end,
@@ -874,16 +896,30 @@ fn collect_refs(
                         if !shadowed {
                             let line = node.start_position().row as u32 + 1;
                             let column = node.start_position().column as u32;
-                            let name = if binding.exported == "*" {
+                            let mut module = binding.module.clone();
+                            let name = if grammar == Grammar::Python {
+                                if let (Some(namespace), Some(member)) = (
+                                    binding.namespace_module.as_ref(),
+                                    namespace_member(node, binding, bytes),
+                                ) {
+                                    module = namespace.clone();
+                                    member
+                                } else if binding.exported == "*" {
+                                    namespace_member(node, binding, bytes)
+                                        .unwrap_or_else(|| binding.exported.clone())
+                                } else {
+                                    binding.exported.clone()
+                                }
+                            } else if binding.exported == "*" {
                                 namespace_member(node, binding, bytes)
                                     .unwrap_or_else(|| binding.exported.clone())
                             } else {
                                 binding.exported.clone()
                             };
-                            if seen.insert((name.clone(), binding.module.clone(), line, column)) {
+                            if seen.insert((name.clone(), module.clone(), line, column)) {
                                 refs.push(Reference {
                                     name,
-                                    module: binding.module.clone(),
+                                    module,
                                     line,
                                     column,
                                 });
@@ -1274,6 +1310,28 @@ mod tests {
             .collect();
         assert_eq!(foo.len(), 2);
         assert_ne!(foo[0].column, foo[1].column);
+    }
+
+    #[test]
+    fn resolves_python_from_import_namespace_members_through_the_child_module() {
+        let mut engines = Engines::new();
+        for (source, expected_module) in [
+            (
+                "from . import helpers\ndef run():\n    return helpers.wave()\n",
+                ".helpers",
+            ),
+            (
+                "from pkg import helpers as h\ndef run():\n    return h.wave()\n",
+                "pkg.helpers",
+            ),
+        ] {
+            let parsed = parse(&mut engines, "pkg/user.py", "python", source);
+            assert!(parsed
+                .refs
+                .iter()
+                .any(|reference| reference.name == "wave"
+                    && reference.module == expected_module));
+        }
     }
 
     #[test]

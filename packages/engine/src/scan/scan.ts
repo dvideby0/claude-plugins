@@ -28,7 +28,7 @@ import { canonicalWorkspaceRoot, workspaceIdentityKey } from "../lib/workspace-p
  *
  * When the stored version is behind, the next scan is promoted to a full one.
  */
-export const EXTRACTION_VERSION = 6;
+export const EXTRACTION_VERSION = 7;
 
 export interface ScanOptions {
   /** Re-parse every file, ignoring content hashes. */
@@ -118,6 +118,18 @@ async function doScan(projectRoot: string, options: ScanOptions = {}): Promise<S
       .map((row) => [row.path, row.content_sha]),
   );
 
+  const walked = new Set(files.map((file) => file.path));
+  const removed = [...previous.keys()].filter((path) => !walked.has(path));
+  const invalidatedSources = new Set<string>();
+  for (const path of removed) {
+    for (const row of db.all<{ src_path: string }>(
+      "SELECT DISTINCT src_path FROM refs WHERE dst_path = ?",
+      [path],
+    )) {
+      invalidatedSources.add(row.src_path);
+    }
+  }
+
   const seen = new Set<string>();
   const languages: Record<string, number> = {};
   let filesChanged = 0;
@@ -130,15 +142,17 @@ async function doScan(projectRoot: string, options: ScanOptions = {}): Promise<S
     !isNoise(path) && (lang === "typescript" || lang === "javascript" || lang === "python");
   const parsed = new Map<string, Awaited<ReturnType<typeof parseFile>>>();
   for (const file of files) {
-    const changed = full || previous.get(file.path) !== file.contentSha;
+    // A reference is owned by its caller. If its target disappears, rebuild
+    // that unchanged caller now so the unresolved row survives and can resolve
+    // again when the target returns. Deleting the inbound row permanently lost
+    // the call until a full scan or an unrelated caller edit.
+    const changed =
+      full || previous.get(file.path) !== file.contentSha || invalidatedSources.has(file.path);
     if (!changed || !parseable(file.path, file.lang)) continue;
     // The native core has already parsed everything; the TypeScript path
     // parses here, so that only changed files pay for it.
     parsed.set(file.path, file.parsed ?? (await parseFile(file.path, file.lang, file.content ?? "")));
   }
-
-  const walked = new Set(files.map((file) => file.path));
-  const removed = [...previous.keys()].filter((path) => !walked.has(path));
 
   db.transaction(() => {
     for (const file of files) {
@@ -221,9 +235,8 @@ async function doScan(projectRoot: string, options: ScanOptions = {}): Promise<S
     }
 
     // Files that disappeared: keep the row for history, retire their graph and
-    // close any findings that pointed at them. Refs *into* them go too — the
-    // typed pass is the only thing that would heal those, and it only runs
-    // after a scan that parsed something.
+    // close any findings that pointed at them. Present callers were re-parsed
+    // above, leaving unresolved refs that can heal if the target returns.
     for (const path of removed) {
       db.run("UPDATE files SET present = 0 WHERE path = ?", [path]);
       db.run("DELETE FROM symbols WHERE path = ?", [path]);
@@ -268,20 +281,6 @@ async function doScan(projectRoot: string, options: ScanOptions = {}): Promise<S
         reference.specifier,
       ]);
     }
-
-    // A default import is locally named by the importer, but its declaration
-    // can have a different real name (`export default function start`). Keep
-    // refs keyed to declaration identity, not the export-slot spelling.
-    db.run(
-      `UPDATE refs SET name = (
-         SELECT s.name FROM symbols s
-         WHERE s.path = refs.dst_path AND s.default_export = 1
-         ORDER BY s.start_line ASC LIMIT 1
-       )
-       WHERE refs.name = 'default' AND refs.dst_path IS NOT NULL
-         AND 1 = (SELECT COUNT(*) FROM symbols s
-                  WHERE s.path = refs.dst_path AND s.default_export = 1)`,
-    );
 
     // The innermost enclosing declaration is the caller. Destination ids use
     // typed declaration lines where available, so duplicate method names stay

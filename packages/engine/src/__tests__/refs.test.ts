@@ -1,5 +1,5 @@
 import { describe, expect, it, afterEach } from "vitest";
-import { writeFile } from "node:fs/promises";
+import { rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { getDb } from "../db/db.js";
 import { impactOf, referencesTo } from "../graph/refs.js";
@@ -12,6 +12,10 @@ import { cleanup, makeProject } from "./helpers.js";
 
 const PROJECT = {
   "package.json": JSON.stringify({ name: "fixture", version: "1.0.0" }),
+  "tsconfig.json": JSON.stringify({
+    compilerOptions: { target: "ES2022", module: "ESNext", moduleResolution: "Bundler" },
+    include: ["src/**/*"],
+  }),
   "src/db.ts": `
 export function connect(url: string) { return { url }; }
 export function query(sql: string) { return sql; }
@@ -71,6 +75,23 @@ def module_loud(text):
   "pkg/db.py": `
 def fetch_rows(sql):
     return sql
+`,
+  "pkg/__init__.py": "",
+  "pkg/helpers.py": `
+def wave():
+    return "hello"
+`,
+  "pkg/from_module.py": `
+from pkg import helpers
+
+def absolute_wave():
+    return helpers.wave()
+`,
+  "pkg/from_relative.py": `
+from . import helpers
+
+def relative_wave():
+    return helpers.wave()
 `,
   "src/dotted_user.py": `
 import pkg.db
@@ -180,10 +201,28 @@ withNative("symbol references", () => {
       )?.default_export,
     ).toBe(1);
     expect(referencesTo(db, "initialize").files).toContain("src/default-user.ts");
+    // Keep the stable export slot in the row; destination identity maps it to
+    // the declaration currently occupying that slot.
     expect(
       db.get<{ name: string }>("SELECT name FROM refs WHERE src_path = 'src/default-user.ts'")
         ?.name,
-    ).toBe("initialize");
+    ).toBe("default");
+  });
+
+  it("remaps an unchanged default importer when the declaration is renamed", async () => {
+    root = await makeProject(PROJECT);
+    await scan(root, { kind: "full" });
+    const db = await getDb(root);
+    expect(resolveTypes(db, root).ran).toBe(true);
+
+    await writeFile(
+      join(root, "src/default.ts"),
+      'export default function launch() { return "ready"; }\n',
+    );
+    await scan(root, { kind: "incremental" });
+
+    expect(referencesTo(db, "initialize").definedIn).toBeNull();
+    expect(referencesTo(db, "launch").files).toContain("src/default-user.ts");
   });
 
   it("resolves the symbol used through an unaliased dotted Python import", async () => {
@@ -195,6 +234,16 @@ withNative("symbol references", () => {
     expect(rows.definedIn).toBe("pkg/db.py");
     expect(rows.files).toContain("src/dotted_user.py");
     expect(rows.callSites.find((site) => site.path === "src/dotted_user.py")?.line).toBe(5);
+  });
+
+  it("resolves namespace members imported through Python from-imports", async () => {
+    root = await makeProject(PROJECT);
+    await scan(root, { kind: "full" });
+    const db = await getDb(root);
+
+    const wave = referencesTo(db, "wave");
+    expect(wave.definedIn).toBe("pkg/helpers.py");
+    expect(wave.files.sort()).toEqual(["pkg/from_module.py", "pkg/from_relative.py"]);
   });
 
   it("separates blast radius from import count", async () => {
@@ -221,16 +270,43 @@ withNative("symbol references", () => {
     const db = await getDb(root);
     expect(referencesTo(db, "getUser").total).toBe(1);
 
-    const { rm } = await import("node:fs/promises");
-    const { join } = await import("node:path");
     await rm(join(root, "src/orders.ts"));
     await scan(root, { kind: "incremental" });
 
     expect(referencesTo(db, "getUser").total).toBe(0);
   });
+
+  it("restores incoming references when a deleted target returns unchanged", async () => {
+    root = await makeProject(PROJECT);
+    await scan(root, { kind: "full" });
+    const db = await getDb(root);
+    expect(referencesTo(db, "query").total).toBe(4);
+
+    await rm(join(root, "src/db.ts"));
+    await scan(root, { kind: "incremental" });
+    expect(referencesTo(db, "query").total).toBe(0);
+
+    await writeFile(join(root, "src/db.ts"), PROJECT["src/db.ts"]);
+    await scan(root, { kind: "incremental" });
+    expect(referencesTo(db, "query").total).toBe(4);
+  });
 });
 
 describe("reference coverage", () => {
+  it("returns candidates instead of guessing between ambiguous impact suffixes", async () => {
+    root = await makeProject({
+      "services/a/db.ts": "export function alpha() { return 1; }\n",
+      "services/b/db.ts": "export function beta() { return 2; }\n",
+    });
+    await scan(root, { kind: "full" });
+    const db = await getDb(root);
+
+    const ambiguous = impactOf(db, "db.ts");
+    expect(ambiguous.resolved).toBeNull();
+    expect(ambiguous.candidates).toEqual(["services/a/db.ts", "services/b/db.ts"]);
+    expect(impactOf(db, "services/a/db.ts").resolved).toBe("services/a/db.ts");
+  });
+
   it("preserves default export identity in the TypeScript parser fallback", async () => {
     const parsed = await parseFile(
       "src/default.ts",

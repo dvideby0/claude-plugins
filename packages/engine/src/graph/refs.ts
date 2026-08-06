@@ -205,6 +205,8 @@ export function referencesTo(
 export interface Impact {
   target: string;
   resolved: string | null;
+  /** Exact candidates when a suffix names more than one present file. */
+  candidates?: string[];
   /** Symbols this file exports, each with how widely it is used. */
   symbols: Array<{
     name: string;
@@ -234,18 +236,26 @@ export interface Impact {
  * call sites is a much smaller change than the import graph suggests.
  */
 export function impactOf(db: Db, target: string, limit = 200): Impact {
-  // Escaped: an unescaped suffix match can resolve the impact question
-  // against the wrong file entirely.
-  const escaped = likeEscape(target);
-  const file = db.get<{ path: string }>(
-    "SELECT path FROM files WHERE (path = ? OR path LIKE ? ESCAPE '\\') AND present = 1 ORDER BY LENGTH(path) LIMIT 1",
-    [target, `%/${escaped}`],
+  const exact = db.get<{ path: string }>(
+    "SELECT path FROM files WHERE path = ? AND present = 1",
+    [target],
   );
+  // Escaped: an unescaped suffix match can resolve the impact question
+  // against the wrong file entirely. A suffix must also be unique; choosing
+  // one of two db.ts files would return confident facts about the wrong code.
+  const matches = exact
+    ? [exact]
+    : db.all<{ path: string }>(
+        "SELECT path FROM files WHERE path LIKE ? ESCAPE '\\' AND present = 1 ORDER BY path",
+        [`%/${likeEscape(target)}`],
+      );
+  const file = matches.length === 1 ? matches[0] : null;
 
   if (!file) {
     return {
       target,
       resolved: null,
+      ...(matches.length > 1 ? { candidates: matches.map((match) => match.path) } : {}),
       symbols: [],
       affectedFiles: [],
       coveringTests: [],

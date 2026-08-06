@@ -507,12 +507,26 @@ export function applyTypedAnalysis(db: Db, analysis: TypedAnalysis): TypedResult
   }
 
   const before = db.count("SELECT COUNT(*) AS n FROM refs WHERE dst_path IS NOT NULL");
+  const defaultSlots = new Set(
+    db
+      .all<{ path: string; name: string }>(
+        "SELECT path, name FROM symbols WHERE default_export = 1",
+      )
+      .map((symbol) => `${symbol.path}\0${symbol.name}`),
+  );
   const seen = new Set<string>();
   db.transaction(() => {
     for (const [src, refs] of refsBySrc) {
       db.run("DELETE FROM refs WHERE src_path = ?", [src]);
       for (const reference of refs) {
-        const key = `${reference.src}|${reference.line}|${reference.column}|${reference.name}|${reference.dst}|${reference.dstLine}|${reference.dstColumn}`;
+        // The declaration name can change while the stable `default` export
+        // slot does not. Preserve that slot in typed rows just as the native
+        // import pass does, then refreshReferenceIdentity maps it to whichever
+        // declaration currently occupies the slot.
+        const name = defaultSlots.has(`${reference.dst}\0${reference.name}`)
+          ? "default"
+          : reference.name;
+        const key = `${reference.src}|${reference.line}|${reference.column}|${name}|${reference.dst}|${reference.dstLine}|${reference.dstColumn}`;
         if (seen.has(key)) continue;
         seen.add(key);
         db.run(
@@ -523,7 +537,7 @@ export function applyTypedAnalysis(db: Db, analysis: TypedAnalysis): TypedResult
             reference.src,
             reference.line,
             reference.column,
-            reference.name,
+            name,
             typedSpecifier(reference.dst, reference.dstLine, reference.dstColumn),
             reference.dst,
             reference.dstLine,

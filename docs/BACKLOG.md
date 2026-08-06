@@ -243,3 +243,16 @@ Until the first four slices are measured and usable, defer:
 - full CodeQL/Joern-style data-flow and security-query breadth.
 
 These may become valuable. Deferral protects the evidence model and core user workflow from being buried under infrastructure.
+
+## Deferred checkpoint findings
+
+These issues were reproduced during the architecture checkpoint review but do
+not currently threaten stored knowledge, answer correctness, a supported
+end-to-end workflow, or the local security boundary:
+
+- Add bounded idle expiry for stateful HTTP MCP sessions. Normal bridge exit
+  closes its stream without sending the optional session-termination request,
+  so the daemon retains a small session object until restart.
+- Collapse strongly connected call components, or otherwise prevent cycles
+  from inflating presentation depth in the layered flow view. Traversal is
+  already depth- and node-bounded; this is a layout-quality issue.
