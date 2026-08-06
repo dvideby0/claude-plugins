@@ -12,7 +12,7 @@
  */
 
 import type { Db } from "../db/db.js";
-import { memoriesForSymbolName, type Memory } from "../memory/store.js";
+import { memoriesForSymbol, memoriesForSymbolName, type Memory } from "../memory/store.js";
 import { likeEscape } from "../lib/sql.js";
 
 export interface CallSite {
@@ -186,7 +186,15 @@ export function referencesTo(
         rows.map((row) => row.src_path).filter((path) => path !== definition?.path),
       ),
     ],
-    notes: memoriesForSymbolName(db, name),
+    // A same-named declaration in another file may carry completely different
+    // constraints. Once this query identifies a declaration, its notes must be
+    // scoped to that file; an unresolved name can still surface orphaned or
+    // repository-wide symbol notes when there is no live declaration at all.
+    notes: definition
+      ? memoriesForSymbol(db, definition.path, name)
+      : definitions.length === 0
+        ? memoriesForSymbolName(db, name)
+        : [],
     referenceCoverage: definition ? incomingReferenceCoverage(db) : "none",
     ...(definitions.length > 1
       ? {

@@ -15,11 +15,13 @@ export interface WatchRefreshOptions {
 
 export class WatchRefreshQueue {
   private readonly pending = new Map<string, Set<string>>();
-  private readonly refreshing = new Set<string>();
+  private readonly refreshing = new Map<string, Promise<void>>();
+  private readonly discarded = new Set<string>();
 
   constructor(private readonly options: WatchRefreshOptions) {}
 
   enqueue(root: string, paths: Iterable<string>): void {
+    this.discarded.delete(root);
     const batch = this.pending.get(root) ?? new Set<string>();
     for (const path of paths) batch.add(path);
     this.pending.set(root, batch);
@@ -31,8 +33,11 @@ export class WatchRefreshQueue {
     this.kick(root);
   }
 
-  discard(root: string): void {
+  /** Drop queued work and wait for a refresh that already owns the store. */
+  discard(root: string): Promise<void> {
+    this.discarded.add(root);
     this.pending.delete(root);
+    return this.refreshing.get(root) ?? Promise.resolve();
   }
 
   pendingCount(root: string): number {
@@ -40,28 +45,30 @@ export class WatchRefreshQueue {
   }
 
   private kick(root: string): void {
-    if (this.refreshing.has(root) || this.options.blocked(root)) return;
+    if (this.discarded.has(root) || this.refreshing.has(root) || this.options.blocked(root)) return;
     const paths = [...(this.pending.get(root) ?? [])];
     if (paths.length === 0) return;
     this.pending.delete(root);
-    this.refreshing.add(root);
     let failed = false;
-
-    void this.options
+    const refresh = this.options
       .refresh(root, paths)
       .catch((error) => {
         failed = true;
-        const retry = this.pending.get(root) ?? new Set<string>();
-        for (const path of paths) retry.add(path);
-        this.pending.set(root, retry);
+        if (!this.discarded.has(root)) {
+          const retry = this.pending.get(root) ?? new Set<string>();
+          for (const path of paths) retry.add(path);
+          this.pending.set(root, retry);
+        }
         this.options.onError(root, error);
       })
       .finally(() => {
         this.refreshing.delete(root);
         // Avoid a tight failure loop. A new filesystem event or an explicit
         // resume after a foreground job will retry the preserved batch.
-        if (!failed) this.kick(root);
+        if (!failed && !this.discarded.has(root)) this.kick(root);
       });
+    this.refreshing.set(root, refresh);
+    void refresh;
   }
 }
 

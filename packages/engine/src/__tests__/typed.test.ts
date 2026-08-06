@@ -9,6 +9,7 @@ import {
   typedWorkspaceGeneration,
 } from "../graph/typed.js";
 import { neighbourhood } from "../memory/context.js";
+import { remember } from "../memory/store.js";
 import { scan } from "../scan/scan.js";
 import { loadNative } from "../scan/source.js";
 import { cleanup, makeProject } from "./helpers.js";
@@ -400,5 +401,43 @@ export function packageEntry() { return makeStore().add("ok"); }
     expect(
       context.symbols.filter((symbol) => symbol.name === "run").map((symbol) => symbol.references),
     ).toEqual([1, 1]);
+  });
+
+  it("does not mix memories between same-named declarations in different files", async () => {
+    root = await makeProject({
+      "package.json": JSON.stringify({ name: "ambiguous-files", type: "module" }),
+      "src/a.ts": `export function run(): string { return "a"; }\n`,
+      "src/b.ts": `export function run(): string { return "b"; }\n`,
+    });
+    await scan(root, { kind: "full" });
+    const db = await getDb(root);
+    const ambiguous = referencesTo(db, "run");
+    const first = ambiguous.candidates?.find((candidate) => candidate.path === "src/a.ts");
+    const second = ambiguous.candidates?.find((candidate) => candidate.path === "src/b.ts");
+    expect(first).toBeDefined();
+    expect(second).toBeDefined();
+
+    remember(db, {
+      kind: "constraint",
+      title: "A-only constraint",
+      anchors: [{ path: "src/a.ts", symbol: "run" }],
+    });
+    remember(db, {
+      kind: "constraint",
+      title: "B-only constraint",
+      anchors: [{ path: "src/b.ts", symbol: "run" }],
+    });
+
+    expect(
+      referencesTo(db, "run", 100, { symbolId: first!.symbolId }).notes.map(
+        (note) => note.title,
+      ),
+    ).toEqual(["A-only constraint"]);
+    expect(
+      referencesTo(db, "run", 100, { symbolId: second!.symbolId }).notes.map(
+        (note) => note.title,
+      ),
+    ).toEqual(["B-only constraint"]);
+    expect(referencesTo(db, "run").notes).toEqual([]);
   });
 });

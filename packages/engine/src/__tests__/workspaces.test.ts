@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { mkdir, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { WorkspaceRegistry } from "../daemon/workspaces.js";
-import { getDb } from "../db/db.js";
+import { closeDb, getDb } from "../db/db.js";
 import { canonicalWorkspaceRoot } from "../lib/workspace-path.js";
 import { crossQuery } from "../graph/cross.js";
 import { scan } from "../scan/scan.js";
@@ -71,5 +71,23 @@ describe("workspace identity", () => {
       }),
     ]);
     expect(result.unreadable.sort()).toEqual(["corrupt", "missing"]);
+  });
+
+  it("persists and evicts a removed workspace database handle", async () => {
+    root = await makeProject({
+      "project/package.json": JSON.stringify({ name: "evicted" }),
+    });
+    const project = join(root, "project");
+    const first = await getDb(project);
+    first.run("INSERT OR REPLACE INTO meta(key, value) VALUES('eviction-test', 'preserved')");
+
+    expect(await closeDb(project)).toBe(true);
+    expect(() => first.count("SELECT COUNT(*) AS n FROM meta")).toThrow();
+
+    const reopened = await getDb(project);
+    expect(reopened).not.toBe(first);
+    expect(
+      reopened.get<{ value: string }>("SELECT value FROM meta WHERE key = 'eviction-test'")?.value,
+    ).toBe("preserved");
   });
 });

@@ -18,7 +18,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { dirname, extname, join, normalize } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { EngineStatus, WorkspaceStatus } from "@sdlc/protocol";
-import { getDb } from "../db/db.js";
+import { closeDb, getDb } from "../db/db.js";
 import { loadPlan } from "../plan/risk.js";
 import { scan } from "../scan/scan.js";
 import { createMcpServer, ENGINE_VERSION } from "../mcp/server.js";
@@ -88,6 +88,20 @@ interface IndexJob {
    * and spent the user's tokens — a minute after they said no.
    */
   stopped: boolean;
+  /** Settles after every scan, typed pass and draw has released the store. */
+  finished: Promise<void>;
+}
+
+interface ActiveMcpSession {
+  transport: StreamableHTTPServerTransport;
+  close: () => void;
+  /** Canonical and caller-supplied roots touched through this session. */
+  roots: Set<string>;
+  /** Requests that may still hold a workspace database handle. */
+  requests: Set<Promise<void>>;
+  /** Fire-and-forget registry writes started when a read-only tool first touches a root. */
+  registrations: Set<Promise<void>>;
+  closed: boolean;
 }
 
 const MAX_EVENTS = 40;
@@ -168,13 +182,7 @@ export function createHttpServer(options: HttpServerOptions): HttpServerHandle {
   const jobs = new Map<string, IndexJob>();
   const indexingRoots = new Set<string>();
   const activeMcpSessions = new Set<() => void>();
-  const mcpSessions = new Map<
-    string,
-    {
-      transport: StreamableHTTPServerTransport;
-      close: () => void;
-    }
-  >();
+  const mcpSessions = new Map<string, ActiveMcpSession>();
   const removedRoots = new Set<string>();
   let boundPort = 0;
   let watchEnabled = process.env.SDLC_WATCH !== "0";
@@ -187,13 +195,16 @@ export function createHttpServer(options: HttpServerOptions): HttpServerHandle {
    */
   const typedTimers = new Map<string, NodeJS.Timeout>();
   const typedControllers = new Map<string, Set<AbortController>>();
+  const typedRuns = new Map<string, Set<Promise<void>>>();
 
-  function cancelTypedPasses(root: string): void {
+  async function cancelTypedPasses(root: string): Promise<void> {
     const timer = typedTimers.get(root);
     if (timer) clearTimeout(timer);
     typedTimers.delete(root);
     for (const controller of typedControllers.get(root) ?? []) controller.abort();
+    await Promise.allSettled(typedRuns.get(root) ?? []);
     typedControllers.delete(root);
+    typedRuns.delete(root);
   }
 
   async function runTypedPass(root: string) {
@@ -202,6 +213,13 @@ export function createHttpServer(options: HttpServerOptions): HttpServerHandle {
     const active = typedControllers.get(root) ?? new Set<AbortController>();
     active.add(controller);
     typedControllers.set(root, active);
+    let finish!: () => void;
+    const finished = new Promise<void>((resolve) => {
+      finish = resolve;
+    });
+    const runs = typedRuns.get(root) ?? new Set<Promise<void>>();
+    runs.add(finished);
+    typedRuns.set(root, runs);
     try {
       const db = await getDb(root);
       const typed = await resolveTypesInWorker(db, root, controller.signal);
@@ -209,6 +227,9 @@ export function createHttpServer(options: HttpServerOptions): HttpServerHandle {
     } finally {
       active.delete(controller);
       if (active.size === 0) typedControllers.delete(root);
+      finish();
+      runs.delete(finished);
+      if (runs.size === 0) typedRuns.delete(root);
     }
   }
 
@@ -335,6 +356,7 @@ export function createHttpServer(options: HttpServerOptions): HttpServerHandle {
       events: [],
       child: null,
       stopped: false,
+      finished: Promise.resolve(),
     };
     jobs.set(id, job);
     indexingRoots.add(root);
@@ -345,7 +367,7 @@ export function createHttpServer(options: HttpServerOptions): HttpServerHandle {
       if (job.events.length > MAX_EVENTS) job.events.splice(0, job.events.length - MAX_EVENTS);
     };
 
-    void (async () => {
+    job.finished = (async () => {
       try {
         note("Scanning files");
         await scan(root, { kind: "incremental" });
@@ -585,13 +607,28 @@ export function createHttpServer(options: HttpServerOptions): HttpServerHandle {
 
       if (!sub && method === "DELETE") {
         const job = jobs.get(id);
-        if (job) requestIndexStop(job);
         removedRoots.add(workspace.root);
-        cancelTypedPasses(workspace.root);
+        // A tool request can hold the same sql.js image independently of the
+        // desktop's index jobs. Stop only sessions that touched this workspace,
+        // then wait for their handlers to release the handle before eviction.
+        const workspaceSessions = [...new Set(mcpSessions.values())].filter((session) =>
+          session.roots.has(workspace.root),
+        );
+        for (const session of workspaceSessions) session.close();
+        if (job) requestIndexStop(job);
+        await cancelTypedPasses(workspace.root);
+        await watchRefresh.discard(workspace.root);
+        if (job) await job.finished;
+        await Promise.allSettled(
+          workspaceSessions.flatMap((session) => [
+            ...session.requests,
+            ...session.registrations,
+          ]),
+        );
         await registry.remove(id);
         jobs.delete(id);
-        watchRefresh.discard(workspace.root);
         await syncWatchers();
+        await closeDb(workspace.root);
         sendJson(res, 200, { removed: true });
         return true;
       }
@@ -798,7 +835,7 @@ export function createHttpServer(options: HttpServerOptions): HttpServerHandle {
         sendJson(res, 404, { error: "Unknown MCP session." });
         return;
       }
-      await session.transport.handleRequest(req, res, body);
+      await handleMcpSessionRequest(session, req, res, body);
       return;
     }
 
@@ -807,10 +844,7 @@ export function createHttpServer(options: HttpServerOptions): HttpServerHandle {
       return;
     }
 
-    let session!: {
-      transport: StreamableHTTPServerTransport;
-      close: () => void;
-    };
+    let session!: ActiveMcpSession;
     const transport = new StreamableHTTPServerTransport({
       sessionIdGenerator: () => randomUUID(),
       onsessioninitialized: (id) => {
@@ -822,19 +856,31 @@ export function createHttpServer(options: HttpServerOptions): HttpServerHandle {
       // Watch what agents register, not just what the UI adds — otherwise a
       // repo first seen through the bridge is never watched until a restart.
       onWorkspaceTouched: (root) => {
-        void registry
+        session.roots.add(root);
+        const registration = registry
           .add(root)
           .then((workspace) => {
+            session.roots.add(workspace.root);
+            // A delete may close this session while its initial registration
+            // is still queued. Do not let that stale completion resurrect the
+            // workspace after the user removed it.
+            if (session.closed && removedRoots.has(workspace.root)) {
+              return registry.remove(workspace.id).then(() => {});
+            }
             removedRoots.delete(workspace.root);
             return syncWatchers();
           })
-          .catch(() => {});
+          .catch(() => {})
+          .finally(() => session.registrations.delete(registration));
+        session.registrations.add(registration);
+        void registration;
       },
       onWorkspaceChanged: async (root, kind) => {
         // Registration and publication are one awaited operation here. The
         // touch callback is intentionally fire-and-forget and may still be in
         // flight when a fast MCP write completes.
         const workspace = await registry.add(root);
+        session.roots.add(workspace.root);
         removedRoots.delete(workspace.root);
         if (kind === "indexed") await registry.markIndexed(root);
         else await registry.markUpdated(root);
@@ -851,6 +897,7 @@ export function createHttpServer(options: HttpServerOptions): HttpServerHandle {
     const closeSession = (): void => {
       if (closed) return;
       closed = true;
+      session.closed = true;
       const id = transport.sessionId;
       if (id && mcpSessions.get(id)?.transport === transport) mcpSessions.delete(id);
       activeMcpSessions.delete(closeSession);
@@ -858,16 +905,38 @@ export function createHttpServer(options: HttpServerOptions): HttpServerHandle {
         log(`MCP session close failed: ${error instanceof Error ? error.message : String(error)}`);
       });
     };
-    session = { transport, close: closeSession };
+    session = {
+      transport,
+      close: closeSession,
+      roots: new Set(),
+      requests: new Set(),
+      registrations: new Set(),
+      closed: false,
+    };
     transport.onclose = closeSession;
     activeMcpSessions.add(closeSession);
 
     try {
       await mcp.connect(transport);
-      await transport.handleRequest(req, res, body);
+      await handleMcpSessionRequest(session, req, res, body);
     } catch (error) {
       closeSession();
       throw error;
+    }
+  }
+
+  async function handleMcpSessionRequest(
+    session: ActiveMcpSession,
+    req: IncomingMessage,
+    res: ServerResponse,
+    body: unknown,
+  ): Promise<void> {
+    const handling = session.transport.handleRequest(req, res, body);
+    session.requests.add(handling);
+    try {
+      await handling;
+    } finally {
+      session.requests.delete(handling);
     }
   }
 

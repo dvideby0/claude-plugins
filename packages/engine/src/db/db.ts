@@ -275,11 +275,16 @@ export class Db {
 // would otherwise each build an in-memory copy of the same file, and the
 // second flush would silently overwrite everything the first one wrote.
 const open = new Map<string, Promise<Db>>();
+const closing = new Map<string, Promise<boolean>>();
 
 /** Open (or reuse) the store for a project. */
 export async function getDb(projectRoot: string): Promise<Db> {
   const canonical = await canonicalWorkspaceRoot(projectRoot);
   const key = workspaceIdentityKey(canonical);
+  // A workspace removed from the desktop may be flushing and closing its old
+  // in-memory image. Do not open a second writer until that publication is
+  // complete, or their later flushes could overwrite one another.
+  await closing.get(key);
   const existing = open.get(key);
   if (existing) return existing;
   const opening = Db.open(canonical);
@@ -287,6 +292,36 @@ export async function getDb(projectRoot: string): Promise<Db> {
   // A failed open must not poison the cache for every later call.
   opening.catch(() => open.delete(key));
   return opening;
+}
+
+/** Persist, evict and close one workspace store without disturbing others. */
+export async function closeDb(projectRoot: string): Promise<boolean> {
+  const canonical = await canonicalWorkspaceRoot(projectRoot);
+  const key = workspaceIdentityKey(canonical);
+  const alreadyClosing = closing.get(key);
+  if (alreadyClosing) return alreadyClosing;
+
+  const pending = open.get(key);
+  if (!pending) return false;
+  // Block a new open immediately. Callers that already hold this handle must
+  // be stopped by the daemon before it invokes closeDb.
+  if (open.get(key) === pending) open.delete(key);
+
+  const task = (async (): Promise<boolean> => {
+    const db = await pending;
+    try {
+      await db.flush();
+    } finally {
+      db.close();
+    }
+    return true;
+  })();
+  closing.set(key, task);
+  try {
+    return await task;
+  } finally {
+    if (closing.get(key) === task) closing.delete(key);
+  }
 }
 
 /** Open a store only when an index already exists on disk. */
@@ -304,6 +339,7 @@ export async function getExistingDb(projectRoot: string): Promise<Db> {
 
 /** Drop the cached handles — used by tests. */
 export async function resetDbCache(): Promise<void> {
+  await Promise.allSettled(closing.values());
   const pending = [...open.values()];
   open.clear();
   for (const db of await Promise.allSettled(pending)) {

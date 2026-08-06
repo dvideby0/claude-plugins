@@ -48,6 +48,33 @@ describe("watch refresh queue", () => {
     await vi.waitFor(() => expect(batches).toEqual([["src/a.ts"], ["src/b.ts"]]));
   });
 
+  it("waits for an active refresh and does not retry it after discard", async () => {
+    let release!: () => void;
+    const active = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const refresh = vi.fn(async () => active);
+    const queue = new WatchRefreshQueue({
+      blocked: () => false,
+      refresh,
+      onError: vi.fn(),
+    });
+
+    queue.enqueue("/repo", ["src/a.ts"]);
+    await vi.waitFor(() => expect(refresh).toHaveBeenCalledOnce());
+    let discarded = false;
+    const done = queue.discard("/repo").then(() => {
+      discarded = true;
+    });
+    await Promise.resolve();
+    expect(discarded).toBe(false);
+
+    release();
+    await done;
+    queue.resume("/repo");
+    expect(refresh).toHaveBeenCalledOnce();
+  });
+
   it("recognizes compiler configuration changes independent of source parsing", () => {
     expect(hasTypedConfigChange(["tsconfig.json"])).toBe(true);
     expect(hasTypedConfigChange(["packages/api/tsconfig.build.json"])).toBe(true);
@@ -65,5 +92,12 @@ describe("watch refresh queue", () => {
     expect(isInterestingChange(".git/config")).toBe(false);
     expect(isInterestingChange(".DS_Store")).toBe(false);
     expect(isInterestingChange("src/.#app.ts")).toBe(false);
+  });
+
+  it("rescans for directory rename events that have no file extension", () => {
+    expect(isInterestingChange("src/old", "rename")).toBe(true);
+    expect(isInterestingChange("src/new", "rename")).toBe(true);
+    expect(isInterestingChange("src/old", "change")).toBe(false);
+    expect(isInterestingChange("node_modules/pkg", "rename")).toBe(false);
   });
 });

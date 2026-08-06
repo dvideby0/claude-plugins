@@ -79,6 +79,7 @@ jobs:
       - run: npm ci
       - run: npm run build
       - run: npm run build -w @sdlc/scan-core
+      - run: cargo test --manifest-path packages/scan-core/Cargo.toml
 
       # The engine must pass with and without the native core, because the
       # native module is an optional dependency.

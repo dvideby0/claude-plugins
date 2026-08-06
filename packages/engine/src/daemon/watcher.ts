@@ -27,7 +27,7 @@ export interface WatcherOptions {
   log: (message: string) => void;
 }
 
-function interesting(relative: string): boolean {
+function interesting(relative: string, event: "rename" | "change" = "change"): boolean {
   if (!relative) return false;
   for (const segment of relative.split(/[\\/]/)) {
     if (IGNORED_SEGMENTS.has(segment)) return false;
@@ -37,7 +37,11 @@ function interesting(relative: string): boolean {
   // Root dotfiles such as .mcp.json and .eslintrc.json are indexed inputs.
   // Classification and the ignored-segment list are the boundary; a leading
   // dot by itself is not evidence that a recognized config file is noise.
-  return classify(relative) !== "other" && !isNoise(relative);
+  // A recursive watcher may report a directory rename only as `src/old` or
+  // `src/new`. Directories have no classifiable extension, and the old path no
+  // longer exists to stat, so retain every non-noise rename event. The scan is
+  // debounced and will cheaply determine whether indexed files really moved.
+  return (event === "rename" || classify(relative) !== "other") && !isNoise(relative);
 }
 
 interface Watched {
@@ -83,10 +87,10 @@ export class WorkspaceWatcher {
       this.stop(root);
     });
 
-    watcher.on("change", (_event, filename) => {
+    watcher.on("change", (event, filename) => {
       if (!filename) return;
       const relative = typeof filename === "string" ? filename : filename.toString();
-      if (!interesting(relative)) return;
+      if (!interesting(relative, event === "rename" ? "rename" : "change")) return;
 
       entry.pending.add(relative);
       if (entry.timer) clearTimeout(entry.timer);

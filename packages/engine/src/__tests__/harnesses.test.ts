@@ -4,7 +4,7 @@
  * nested sub-tables, and our own block already being present.
  */
 
-import { mkdir, readFile, readdir } from "node:fs/promises";
+import { lstat, mkdir, readFile, readlink, readdir, symlink } from "node:fs/promises";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
@@ -157,6 +157,31 @@ model = "gpt-5.6-sol"
     expect(await readFile(path, "utf-8")).toContain("[mcp_servers.sdlc]");
     expect(await readFile(`${path}.sdlc-backup`, "utf-8")).toBe(EXISTING);
     expect((await readdir(root)).filter((name) => name.endsWith(".tmp"))).toEqual([]);
+  });
+
+  it("updates a symlink target without replacing the managed config link", async () => {
+    root = await makeProject({ "managed.toml": EXISTING });
+    const path = join(root, "config.toml");
+    await symlink("managed.toml", path);
+
+    await writeCodexFile(path, OURS);
+
+    expect((await lstat(path)).isSymbolicLink()).toBe(true);
+    expect(await readlink(path)).toBe("managed.toml");
+    expect(await readFile(join(root, "managed.toml"), "utf-8")).toContain(
+      "[mcp_servers.sdlc]",
+    );
+    expect(await readFile(`${path}.sdlc-backup`, "utf-8")).toBe(EXISTING);
+  });
+
+  it("rejects a dangling config symlink without replacing it", async () => {
+    root = await makeProject({});
+    const path = join(root, "config.toml");
+    await symlink("missing.toml", path);
+
+    await expect(writeCodexFile(path, OURS)).rejects.toThrow();
+    expect((await lstat(path)).isSymbolicLink()).toBe(true);
+    expect(await readlink(path)).toBe("missing.toml");
   });
 
   it("detects bare and quoted forms of both dotted keys", () => {

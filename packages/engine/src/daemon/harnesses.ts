@@ -9,7 +9,16 @@
 import { execFile } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { constants as fsConstants } from "node:fs";
-import { copyFile, lstat, mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
+import {
+  copyFile,
+  lstat,
+  mkdir,
+  readFile,
+  realpath,
+  rename,
+  unlink,
+  writeFile,
+} from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { promisify } from "node:util";
@@ -260,14 +269,34 @@ export async function writeCodexFile(path: string, block: string | null): Promis
 }
 
 async function atomicConfigWrite(path: string, content: string): Promise<void> {
-  const temporary = `${path}.sdlc-${process.pid}-${randomBytes(8).toString("hex")}.tmp`;
+  // Renaming over a symlink replaces the link itself. Dotfile managers commonly
+  // make the harness config a symlink, so publish beside the final target and
+  // leave the user's link intact. A dangling link is rejected by realpath
+  // rather than silently being replaced with a regular file.
+  let existing;
+  try {
+    existing = await lstat(path);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") existing = null;
+    else throw error;
+  }
+  let destination = path;
+  if (existing?.isSymbolicLink()) {
+    // Deliberately outside the lstat ENOENT handler: a dangling link must fail
+    // closed, not fall back to a rename that destroys the link.
+    destination = await realpath(path);
+  } else if (existing && !existing.isFile()) {
+    throw new Error(`Cannot update harness config: ${path} is not a regular file.`);
+  }
+
+  const temporary = `${destination}.sdlc-${process.pid}-${randomBytes(8).toString("hex")}.tmp`;
   try {
     await writeFile(temporary, content, {
       encoding: "utf-8",
       flag: "wx",
       mode: 0o600,
     });
-    await rename(temporary, path);
+    await rename(temporary, destination);
   } catch (error) {
     await unlink(temporary).catch(() => {});
     throw error;
