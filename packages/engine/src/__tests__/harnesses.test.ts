@@ -134,6 +134,20 @@ mcp_servers.sdlc.env.ELECTRON_RUN_AS_NODE = "1"
     expect(result.match(/^\[mcp_servers\.sdlc\]$/gm)).toHaveLength(1);
   });
 
+  it("does not consume unrelated config after delimiters in TOML comments", () => {
+    const dotted = `${EXISTING}
+mcp_servers.sdlc.args = [] # [legacy value
+
+[profiles.careful]
+model = "gpt-5.6-sol"
+`;
+    const result = spliceCodexBlock(dotted, OURS);
+
+    expect(result).not.toContain("mcp_servers.sdlc.args");
+    expect(result).toContain("[profiles.careful]");
+    expect(result).toContain('model = "gpt-5.6-sol"');
+  });
+
   it("publishes config updates atomically and keeps the pristine backup", async () => {
     root = await makeProject({ "config.toml": EXISTING });
     const path = join(root, "config.toml");

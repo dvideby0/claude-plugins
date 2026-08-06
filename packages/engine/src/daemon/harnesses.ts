@@ -241,6 +241,9 @@ function tomlValueComplete(value: string): boolean {
       continue;
     }
     if (quote) continue;
+    // TOML comments end the value. Delimiters inside them are prose, not
+    // continuation syntax (`args = [] # [legacy` is already complete).
+    if (char === "#") break;
     if (char === "[") square++;
     else if (char === "]") square--;
     else if (char === "{") curly++;
