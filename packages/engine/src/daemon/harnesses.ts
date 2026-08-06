@@ -7,8 +7,9 @@
  */
 
 import { execFile } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import { constants as fsConstants } from "node:fs";
-import { copyFile, lstat, mkdir, readFile, writeFile } from "node:fs/promises";
+import { copyFile, lstat, mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { promisify } from "node:util";
@@ -28,9 +29,16 @@ const CODEX_SERVER_HEADER = new RegExp(
     `${tomlExactKey(SERVER_NAME)}(?:\\s*\\.[^\\]]+)?\\s*\\]`,
   "m",
 );
+const CODEX_SERVER_DOTTED_KEY = new RegExp(
+  `^\\s*${tomlExactKey("mcp_servers")}\\s*\\.\\s*${tomlExactKey(SERVER_NAME)}` +
+    `(?:\\s*\\.\\s*(?:[A-Za-z0-9_-]+|"(?:\\\\.|[^"\\\\])*"|'[^']*'))*\\s*=`,
+);
 
 export function hasCodexServer(toml: string): boolean {
-  return CODEX_SERVER_HEADER.test(toml);
+  return (
+    CODEX_SERVER_HEADER.test(toml) ||
+    toml.split("\n").some((line) => CODEX_SERVER_DOTTED_KEY.test(line))
+  );
 }
 
 async function version(bin: string): Promise<string | null> {
@@ -170,10 +178,28 @@ function spliceCodexBlock(toml: string, block: string | null): string {
   const kept: string[] = [];
 
   let skipping = false;
+  let skippingDottedValue: string | null = null;
   for (const line of lines) {
     const isSectionHeader = /^\s*\[/.test(line);
     if (isSectionHeader) skipping = CODEX_SERVER_HEADER.test(line);
-    if (!skipping) kept.push(line);
+    if (skipping) continue;
+
+    // A table can be written entirely with dotted assignments instead of a
+    // section header. Retaining those and appending [mcp_servers.sdlc] makes
+    // the complete config invalid TOML because the same table is declared
+    // twice. Continuation lines belong to the assignment until brackets,
+    // braces and quotes balance again.
+    if (skippingDottedValue === null && CODEX_SERVER_DOTTED_KEY.test(line)) {
+      const value = line.slice(line.indexOf("=") + 1);
+      skippingDottedValue = tomlValueComplete(value) ? null : value;
+      continue;
+    }
+    if (skippingDottedValue !== null) {
+      skippingDottedValue += `\n${line}`;
+      if (tomlValueComplete(skippingDottedValue)) skippingDottedValue = null;
+      continue;
+    }
+    kept.push(line);
   }
 
   let result = kept.join("\n").replace(/\n{3,}$/, "\n");
@@ -184,12 +210,54 @@ function spliceCodexBlock(toml: string, block: string | null): string {
   return result;
 }
 
-async function writeCodex(block: string | null): Promise<void> {
-  const path = codexConfig();
+/** Whether a TOML value has closed every quote, array and inline table. */
+function tomlValueComplete(value: string): boolean {
+  let quote: "'" | '"' | null = null;
+  let escaped = false;
+  let square = 0;
+  let curly = 0;
+  for (const char of value) {
+    if (quote === '"' && escaped) {
+      escaped = false;
+      continue;
+    }
+    if (quote === '"' && char === "\\") {
+      escaped = true;
+      continue;
+    }
+    if (char === "'" || char === '"') {
+      quote = quote === char ? null : quote ?? char;
+      continue;
+    }
+    if (quote) continue;
+    if (char === "[") square++;
+    else if (char === "]") square--;
+    else if (char === "{") curly++;
+    else if (char === "}") curly--;
+  }
+  return quote === null && square <= 0 && curly <= 0;
+}
+
+export async function writeCodexFile(path: string, block: string | null): Promise<void> {
   await mkdir(dirname(path), { recursive: true });
 
   const existing = await readCodexForWrite(path);
-  await writeFile(path, spliceCodexBlock(existing, block), "utf-8");
+  const temporary = `${path}.sdlc-${process.pid}-${randomBytes(8).toString("hex")}.tmp`;
+  try {
+    await writeFile(temporary, spliceCodexBlock(existing, block), {
+      encoding: "utf-8",
+      flag: "wx",
+      mode: 0o600,
+    });
+    await rename(temporary, path);
+  } catch (error) {
+    await unlink(temporary).catch(() => {});
+    throw error;
+  }
+}
+
+async function writeCodex(block: string | null): Promise<void> {
+  await writeCodexFile(codexConfig(), block);
 }
 
 /** Read a Codex config and guarantee its pristine backup before mutation. */

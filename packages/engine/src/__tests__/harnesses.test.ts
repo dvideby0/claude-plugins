@@ -4,10 +4,15 @@
  * nested sub-tables, and our own block already being present.
  */
 
-import { mkdir } from "node:fs/promises";
+import { mkdir, readFile, readdir } from "node:fs/promises";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { hasCodexServer, readCodexForWrite, spliceCodexBlock } from "../daemon/harnesses.js";
+import {
+  hasCodexServer,
+  readCodexForWrite,
+  spliceCodexBlock,
+  writeCodexFile,
+} from "../daemon/harnesses.js";
 import {
   codexMcpOverride,
   drawInvocationArgs,
@@ -110,6 +115,35 @@ describe("codex config splice", () => {
     expect(result).not.toContain('command = "old"');
   });
 
+  it("replaces dotted server assignments, including multiline values", () => {
+    const dotted = `${EXISTING}
+mcp_servers.sdlc.command = "echo"
+mcp_servers.sdlc.args = [
+  "old",
+  "--stdio",
+]
+mcp_servers.sdlc.env.ELECTRON_RUN_AS_NODE = "1"
+`;
+    const result = spliceCodexBlock(dotted, OURS);
+
+    expect(result).not.toContain("mcp_servers.sdlc.command");
+    expect(result).not.toContain("mcp_servers.sdlc.args");
+    expect(result).not.toContain("ELECTRON_RUN_AS_NODE");
+    expect(result).not.toContain('  "old"');
+    expect(result.match(/^\[mcp_servers\.sdlc\]$/gm)).toHaveLength(1);
+  });
+
+  it("publishes config updates atomically and keeps the pristine backup", async () => {
+    root = await makeProject({ "config.toml": EXISTING });
+    const path = join(root, "config.toml");
+
+    await writeCodexFile(path, OURS);
+
+    expect(await readFile(path, "utf-8")).toContain("[mcp_servers.sdlc]");
+    expect(await readFile(`${path}.sdlc-backup`, "utf-8")).toBe(EXISTING);
+    expect((await readdir(root)).filter((name) => name.endsWith(".tmp"))).toEqual([]);
+  });
+
   it("detects bare and quoted forms of both dotted keys", () => {
     for (const header of [
       "[mcp_servers.sdlc]",
@@ -119,7 +153,10 @@ describe("codex config splice", () => {
     ]) {
       expect(hasCodexServer(`${header}\ncommand = "node"\n`)).toBe(true);
     }
+    expect(hasCodexServer('mcp_servers.sdlc.command = "node"')).toBe(true);
+    expect(hasCodexServer('"mcp_servers"."sdlc".command = "node"')).toBe(true);
     expect(hasCodexServer("[mcp_servers.sdlcx]")).toBe(false);
+    expect(hasCodexServer('mcp_servers.sdlcx.command = "node"')).toBe(false);
   });
 });
 
