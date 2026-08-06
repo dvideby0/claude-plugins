@@ -25,6 +25,8 @@ let shuttingDown = false;
 let recoveryTimer: NodeJS.Timeout | null = null;
 let recoveryRunning = false;
 let recoveryAttempt = 0;
+let quitAfterEngineStops = false;
+let engineStopInFlight: Promise<void> | null = null;
 
 function enginePath(): string {
   try {
@@ -35,6 +37,70 @@ function enginePath(): string {
 }
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
+
+function childExited(childProcess: ChildProcess): boolean {
+  return childProcess.exitCode !== null || childProcess.signalCode !== null;
+}
+
+function waitForChildExit(childProcess: ChildProcess, timeoutMs: number): Promise<boolean> {
+  if (childExited(childProcess)) return Promise.resolve(true);
+  return new Promise((resolve) => {
+    const finish = (exited: boolean): void => {
+      clearTimeout(timer);
+      childProcess.removeListener("exit", onExit);
+      resolve(exited);
+    };
+    const onExit = (): void => finish(true);
+    const timer = setTimeout(() => finish(false), timeoutMs);
+    childProcess.once("exit", onExit);
+    // Close the race between the initial check and listener registration.
+    if (childExited(childProcess)) finish(true);
+  });
+}
+
+/** Stop the entire owned tree after the daemon's control path has failed. */
+function terminateOwnedEngine(childProcess: ChildProcess, force: boolean): void {
+  if (childExited(childProcess)) return;
+  if (process.platform !== "win32" || !childProcess.pid) {
+    childProcess.kill(force ? "SIGKILL" : "SIGTERM");
+    return;
+  }
+
+  const killer = spawn(
+    "taskkill.exe",
+    ["/pid", String(childProcess.pid), "/t", ...(force ? ["/f"] : [])],
+    { stdio: "ignore", windowsHide: true },
+  );
+  killer.on("error", () => {
+    childProcess.kill(force ? "SIGKILL" : "SIGTERM");
+  });
+  killer.unref();
+}
+
+/** Prefer the daemon's own cleanup path, then guarantee no descendants remain. */
+async function stopOwnedEngine(childProcess: ChildProcess): Promise<void> {
+  try {
+    const daemon = await readDaemon();
+    if (daemon && daemon.pid === childProcess.pid) {
+      const url = new URL("/api/shutdown", baseUrl(daemon));
+      const response = await fetch(url, {
+        method: "POST",
+        headers: { authorization: `Bearer ${daemon.token}` },
+        signal: AbortSignal.timeout(1_500),
+      });
+      if (response.ok && (await waitForChildExit(childProcess, 3_000))) return;
+    }
+  } catch (error) {
+    process.stderr.write(
+      `[shell] graceful engine shutdown failed: ${error instanceof Error ? error.message : String(error)}\n`,
+    );
+  }
+
+  terminateOwnedEngine(childProcess, false);
+  if (await waitForChildExit(childProcess, 1_000)) return;
+  terminateOwnedEngine(childProcess, true);
+  await waitForChildExit(childProcess, 1_000);
+}
 
 /** The HTML shell is the only response that embeds the daemon bearer token. */
 function authenticatedUiUrl(daemon: DaemonInfo): string {
@@ -242,14 +308,21 @@ if (!app.requestSingleInstanceLock()) {
     app.quit();
   });
 
-  app.on("before-quit", () => {
+  app.on("before-quit", (event) => {
     shuttingDown = true;
     if (recoveryTimer) clearTimeout(recoveryTimer);
     recoveryTimer = null;
     // Adopted engines keep running — we did not start them.
-    if (child) {
+    if (child && !quitAfterEngineStops) {
+      event.preventDefault();
       process.stderr.write("[shell] stopping the engine we started\n");
-      child.kill("SIGTERM");
+      if (!engineStopInFlight) {
+        const owned = child;
+        engineStopInFlight = stopOwnedEngine(owned).finally(() => {
+          quitAfterEngineStops = true;
+          app.quit();
+        });
+      }
     }
   });
 }

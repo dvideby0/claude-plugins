@@ -937,7 +937,7 @@ export function createMcpServer(options: McpServerOptions): McpServer {
         .describe("Second-pass refutation of each finding. Default true."),
       model: z.string().optional(),
     },
-    async ({ projectRoot, unitIds, maxUnits, lens, verify, model }) =>
+    async ({ projectRoot, unitIds, maxUnits, lens, verify, model }, extra) =>
       wrap(async () => {
         const root = resolveRoot(projectRoot);
         const db = await getDb(root);
@@ -947,6 +947,7 @@ export function createMcpServer(options: McpServerOptions): McpServer {
           ...(lens ? { lens } : {}),
           ...(verify !== undefined ? { verify } : {}),
           ...(model ? { model } : {}),
+          signal: extra.signal,
         });
         await workspaceChanged(root, "updated");
         return result;

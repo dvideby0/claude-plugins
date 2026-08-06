@@ -125,8 +125,38 @@ async function main(): Promise<void> {
   const registry = new WorkspaceRegistry();
   const bridge = await resolveBridge();
 
-  const handle = createHttpServer({ token, registry, bridge, log: write });
-  const { server, listen } = handle;
+  let shuttingDown = false;
+  let handle: ReturnType<typeof createHttpServer>;
+  const shutdown = (signal: string): void => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    write(`received ${signal}, shutting down`);
+
+    // Kill draw and review agents now — the close event waits for connections
+    // to drain, and the forced-exit fallback below never fires it at all.
+    handle.shutdown();
+
+    handle.server.close(() => {
+      void relinquishOwnership().finally(() => {
+        log.end();
+        process.exit(0);
+      });
+    });
+
+    // Do not hang forever on a client holding a connection open.
+    setTimeout(() => {
+      void relinquishOwnership().finally(() => process.exit(0));
+    }, 3000).unref();
+  };
+
+  handle = createHttpServer({
+    token,
+    registry,
+    bridge,
+    log: write,
+    onShutdownRequested: () => shutdown("control request"),
+  });
+  const { listen } = handle;
   const port = await listen(DEFAULT_PORT);
 
   await writeDaemon({
@@ -140,29 +170,6 @@ async function main(): Promise<void> {
 
   write(`engine ${ENGINE_VERSION} listening on http://127.0.0.1:${port}`);
   write(`bridge command: ${bridge.command} ${bridge.args.join(" ")}`);
-
-  let shuttingDown = false;
-  const shutdown = (signal: string): void => {
-    if (shuttingDown) return;
-    shuttingDown = true;
-    write(`received ${signal}, shutting down`);
-
-    // Kill draw agents now — the close event waits for connections to drain,
-    // and the forced-exit fallback below never fires it at all.
-    handle.shutdown();
-
-    server.close(() => {
-      void relinquishOwnership().finally(() => {
-        log.end();
-        process.exit(0);
-      });
-    });
-
-    // Do not hang forever on a client holding a connection open.
-    setTimeout(() => {
-      void relinquishOwnership().finally(() => process.exit(0));
-    }, 3000).unref();
-  };
 
   process.on("SIGINT", () => shutdown("SIGINT"));
   process.on("SIGTERM", () => shutdown("SIGTERM"));

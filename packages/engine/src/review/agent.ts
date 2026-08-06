@@ -22,6 +22,8 @@ export interface AgentOptions {
   /** Hard stop, so a stuck review cannot pin a core forever. */
   timeoutMs?: number;
   model?: string;
+  /** Cancellation from the MCP request or daemon lifecycle. */
+  signal?: AbortSignal;
 }
 
 /** Exposed so the no-tools security boundary can be regression-tested. */
@@ -62,6 +64,15 @@ interface ClaudeEnvelope {
  */
 export function runClaude(prompt: string, options: AgentOptions): Promise<AgentResult> {
   const started = Date.now();
+  const cancelled = (): AgentResult => ({
+    ok: false,
+    text: "",
+    costUsd: null,
+    durationMs: Date.now() - started,
+    error: "Cancelled.",
+  });
+  if (options.signal?.aborted) return Promise.resolve(cancelled());
+
   const args = reviewInvocationArgs(options);
   const command = platformCommand("claude", args);
 
@@ -83,7 +94,16 @@ export function runClaude(prompt: string, options: AgentOptions): Promise<AgentR
       if (settled) return;
       settled = true;
       clearTimeout(timer);
+      options.signal?.removeEventListener("abort", abort);
       resolve(result);
+    };
+
+    // Cancellation is an explicit request to stop spending tokens. Force the
+    // complete tree down immediately; a polite signal to a Windows cmd shim
+    // can leave the actual Claude process running behind it.
+    const abort = (): void => {
+      terminateProcessTree(child, true);
+      finish(cancelled());
     };
 
     const timer = setTimeout(() => {
@@ -96,6 +116,7 @@ export function runClaude(prompt: string, options: AgentOptions): Promise<AgentR
         error: `Timed out after ${options.timeoutMs ?? 300_000}ms`,
       });
     }, options.timeoutMs ?? 300_000);
+    options.signal?.addEventListener("abort", abort, { once: true });
 
     child.stdout.on("data", (chunk: Buffer) => {
       stdout += chunk.toString();

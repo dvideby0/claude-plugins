@@ -14,7 +14,7 @@ import {
 } from "../daemon/draw.js";
 import { posixShellQuote, windowsLauncherCommand } from "../daemon/launcher.js";
 import { exec, platformCommand, processTreeTerminationCommand } from "../lib/exec.js";
-import { reviewInvocationArgs } from "../review/agent.js";
+import { reviewInvocationArgs, runClaude } from "../review/agent.js";
 
 const OURS = `[mcp_servers.sdlc]\ncommand = "node"\nargs = ["/path/bridge.js"]\n`;
 
@@ -147,6 +147,18 @@ describe("draw harness ids", () => {
     expect(args).toContain("--strict-mcp-config");
     expect(args.slice(args.indexOf("--setting-sources"), args.indexOf("--setting-sources") + 2))
       .toEqual(["--setting-sources", "user"]);
+  });
+
+  it("does not start a paid review after its request was cancelled", async () => {
+    const controller = new AbortController();
+    controller.abort();
+
+    const result = await runClaude("do not run", {
+      cwd: process.cwd(),
+      signal: controller.signal,
+    });
+    expect(result.ok).toBe(false);
+    expect(result.error).toBe("Cancelled.");
   });
 });
 

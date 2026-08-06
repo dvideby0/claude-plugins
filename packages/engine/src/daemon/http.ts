@@ -40,6 +40,17 @@ export interface HttpServerOptions {
   /** How a harness should spawn the bridge, recorded into harness config. */
   bridge: BridgeCommand;
   log: (message: string) => void;
+  /** Ask the owning daemon process to perform its full graceful shutdown. */
+  onShutdownRequested?: () => void;
+}
+
+/** A workspace must be a directory, not merely an existing filesystem path. */
+export function isWorkspaceDirectory(root: string): boolean {
+  try {
+    return statSync(root).isDirectory();
+  } catch {
+    return false;
+  }
 }
 
 /** Indexing runs in the background; the UI polls for the result. */
@@ -145,6 +156,7 @@ export function createHttpServer(options: HttpServerOptions): HttpServerHandle {
   const { registry, token, log } = options;
   const jobs = new Map<string, IndexJob>();
   const indexingRoots = new Set<string>();
+  const activeMcpSessions = new Set<() => void>();
   let boundPort = 0;
   let watchEnabled = process.env.SDLC_WATCH !== "0";
 
@@ -357,6 +369,14 @@ export function createHttpServer(options: HttpServerOptions): HttpServerHandle {
   ): Promise<boolean> {
     const method = req.method ?? "GET";
 
+    if (path === "/api/shutdown" && method === "POST") {
+      sendJson(res, 202, { ok: true });
+      // Let the acknowledgement drain before server.close() starts rejecting
+      // new work. The daemon owns lock cleanup and process termination.
+      setImmediate(() => options.onShutdownRequested?.());
+      return true;
+    }
+
     if (path === "/api/health") {
       sendJson(res, 200, { ok: true, version: ENGINE_VERSION });
       return true;
@@ -418,13 +438,7 @@ export function createHttpServer(options: HttpServerOptions): HttpServerHandle {
         sendJson(res, 400, { error: "Provide a root path." });
         return true;
       }
-      let isDirectory = false;
-      try {
-        isDirectory = statSync(body.root).isDirectory();
-      } catch {
-        // The same client-facing error covers a missing or unreadable path.
-      }
-      if (!isDirectory) {
+      if (!isWorkspaceDirectory(body.root)) {
         sendJson(res, 400, { error: `No such directory: ${body.root}` });
         return true;
       }
@@ -739,14 +753,23 @@ export function createHttpServer(options: HttpServerOptions): HttpServerHandle {
         })),
     });
     const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
-
-    res.on("close", () => {
+    let closed = false;
+    const closeSession = (): void => {
+      if (closed) return;
+      closed = true;
+      activeMcpSessions.delete(closeSession);
       void transport.close();
       void mcp.close();
-    });
+    };
+    activeMcpSessions.add(closeSession);
+    res.on("close", closeSession);
 
-    await mcp.connect(transport);
-    await transport.handleRequest(req, res, body);
+    try {
+      await mcp.connect(transport);
+      await transport.handleRequest(req, res, body);
+    } finally {
+      closeSession();
+    }
   }
 
   /**
@@ -788,8 +811,10 @@ export function createHttpServer(options: HttpServerOptions): HttpServerHandle {
   function shutdown(): void {
     watcher.stopAll();
     for (const timer of typedTimers.values()) clearTimeout(timer);
-    // Draw agents are children of this process; leaving them running after
-    // shutdown means an unattended CLI burning tokens with no UI record.
+    // Closing an MCP server aborts every in-flight handler signal. Reviews
+    // propagate that signal to their Claude process trees.
+    for (const closeSession of [...activeMcpSessions]) closeSession();
+    // Draw agents are separate from MCP requests and need direct termination.
     for (const job of jobs.values()) {
       job.stopped = true;
       if (job.child) terminateProcessTree(job.child);

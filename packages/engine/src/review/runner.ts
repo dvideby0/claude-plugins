@@ -36,6 +36,8 @@ export interface ReviewOptions {
   verify?: boolean;
   model?: string;
   onProgress?: (message: string) => void;
+  /** Abort all current and future model calls for this review. */
+  signal?: AbortSignal;
 }
 
 export interface ReviewSummary {
@@ -209,6 +211,7 @@ export async function runReview(
   const started = Date.now();
   const note = options.onProgress ?? ((): void => {});
   const verify = options.verify !== false;
+  options.signal?.throwIfAborted();
 
   const plan = loadPlan(db);
   if (plan.length === 0) {
@@ -236,6 +239,7 @@ export async function runReview(
   const now = (): string => new Date().toISOString();
 
   for (const unit of units) {
+    options.signal?.throwIfAborted();
     note(`reviewing ${unit.id}`);
     const unitStarted = Date.now();
 
@@ -250,8 +254,10 @@ export async function runReview(
 
     const result = await runClaude(`${context.prompt}\n\n${REVIEW_INSTRUCTION}`, {
       cwd: projectRoot,
+      ...(options.signal ? { signal: options.signal } : {}),
       ...(options.model ? { model: options.model } : {}),
     });
+    options.signal?.throwIfAborted();
     let unitCost = result.costUsd ?? 0;
     summary.costUsd += result.costUsd ?? 0;
 
@@ -296,8 +302,10 @@ export async function runReview(
       const check = await runClaude(verificationPrompt(candidates), {
         cwd: projectRoot,
         timeoutMs: 120_000,
+        ...(options.signal ? { signal: options.signal } : {}),
         ...(options.model ? { model: options.model } : {}),
       });
+      options.signal?.throwIfAborted();
       unitCost += check.costUsd ?? 0;
       summary.costUsd += check.costUsd ?? 0;
 
