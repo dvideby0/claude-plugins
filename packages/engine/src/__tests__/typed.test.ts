@@ -259,6 +259,28 @@ export function packageEntry() { return makeStore().add("ok"); }
     ]);
   });
 
+  it("discovers independently configured projects below four directories", async () => {
+    root = await makeProject({
+      "package.json": JSON.stringify({ name: "deep-package", private: true }),
+      "a/b/c/d/e/tsconfig.json": JSON.stringify({
+        compilerOptions: { target: "ES2022", module: "ESNext", moduleResolution: "Bundler" },
+        include: ["src/**/*"],
+      }),
+      "a/b/c/d/e/src/store.ts":
+        "export class Store { add(value: string): string { return value; } }\n",
+      "a/b/c/d/e/src/app.ts":
+        "import { Store } from './store.js';\nexport const run = () => new Store().add('ok');\n",
+    });
+    await scan(root, { kind: "full" });
+    const db = await getDb(root);
+
+    const result = resolveTypes(db, root);
+    expect(result.ran).toBe(true);
+    expect(referencesTo(db, "add").callSites).toEqual([
+      expect.objectContaining({ path: "a/b/c/d/e/src/app.ts", line: 2 }),
+    ]);
+  });
+
   it("rejects a worker generation when an overlapping scan adds an input", async () => {
     root = await makeProject({
       "package.json": JSON.stringify({ name: "generation-fence", type: "module" }),

@@ -150,11 +150,25 @@ const SKIP_DIRS = new Set(["node_modules", ".git", "dist", "build", "out", "targ
  * the repository root therefore finds nothing, which is how this silently did
  * no work the first time.
  */
-function findConfigs(projectRoot: string, maxDepth = 4): string[] {
+function findConfigs(
+  projectRoot: string,
+  maxDirectories = 50_000,
+): { configs: string[]; capped: boolean } {
   const found: string[] = [];
+  const visited = new Set<string>();
+  const pending = [resolve(projectRoot)];
+  let cursor = 0;
 
-  const walk = (dir: string, depth: number): void => {
-    if (depth > maxDepth) return;
+  // Count directories instead of imposing a structural depth. A valid package
+  // can sit at any depth, while a cap still bounds pathological repositories
+  // and symlink cycles. Breadth-first traversal gives shallow projects useful
+  // work first, and a capped result is rejected below rather than presented as
+  // complete typed coverage.
+  while (cursor < pending.length && visited.size < maxDirectories) {
+    const dir = pending[cursor++] as string;
+    const canonical = resolve(ts.sys.realpath?.(dir) ?? dir);
+    if (visited.has(canonical)) continue;
+    visited.add(canonical);
 
     let files: string[];
     let directories: string[];
@@ -164,18 +178,18 @@ function findConfigs(projectRoot: string, maxDepth = 4): string[] {
         .filter(ts.sys.fileExists);
       directories = ts.sys.getDirectories(dir);
     } catch {
-      return;
+      continue;
     }
 
     for (const file of files) found.push(resolve(file));
     for (const child of directories) {
       const name = basename(child);
       if (SKIP_DIRS.has(name) || name.startsWith(".")) continue;
-      walk(isAbsolute(child) ? child : join(dir, child), depth + 1);
+      pending.push(isAbsolute(child) ? child : join(dir, child));
     }
-  };
+  }
 
-  walk(projectRoot, 0);
+  const capped = cursor < pending.length;
 
   // A mixed config can both own files and refer to package projects. Retain
   // independently discovered configs too: a root that owns `src/` says
@@ -202,10 +216,11 @@ function findConfigs(projectRoot: string, maxDepth = 4): string[] {
     visitReferences(rootConfig);
     found.push(...referenced);
   }
-  return [...new Set(found)].sort((a, b) => {
+  const configs = [...new Set(found)].sort((a, b) => {
     const depth = (path: string) => relative(projectRoot, path).split(/[\\/]/).length;
     return depth(a) - depth(b) || a.localeCompare(b);
   });
+  return { configs, capped };
 }
 
 function readConfig(configPath: string): ts.ParsedCommandLine | undefined {
@@ -263,7 +278,20 @@ function contentSha(content: string): string {
  */
 export function analyseTypes(projectRoot: string): TypedAnalysis {
   const started = Date.now();
-  const configs = findConfigs(projectRoot);
+  const discovery = findConfigs(projectRoot);
+  const { configs } = discovery;
+
+  if (discovery.capped) {
+    return {
+      ran: false,
+      reason: "TypeScript config discovery exceeded 50000 directories; typed coverage is incomplete.",
+      filesAnalysed: 0,
+      references: [],
+      analysedFiles: [],
+      inputs: [],
+      durationMs: Date.now() - started,
+    };
+  }
 
   if (configs.length === 0) {
     return {

@@ -11,7 +11,6 @@
  */
 
 import { watch, type FSWatcher } from "node:fs";
-import { basename, sep } from "node:path";
 import { classify, isNoise } from "../scan/walk.js";
 
 /** Directories whose churn is never worth reacting to. */
@@ -30,13 +29,14 @@ export interface WatcherOptions {
 
 function interesting(relative: string): boolean {
   if (!relative) return false;
-  for (const segment of relative.split(sep)) {
+  for (const segment of relative.split(/[\\/]/)) {
     if (IGNORED_SEGMENTS.has(segment)) return false;
     // Editor swap and lock files, which change constantly and mean nothing.
     if (segment.startsWith(".#") || segment.endsWith("~")) return false;
   }
-  const name = basename(relative);
-  if (name.startsWith(".") && !name.startsWith(".github")) return false;
+  // Root dotfiles such as .mcp.json and .eslintrc.json are indexed inputs.
+  // Classification and the ignored-segment list are the boundary; a leading
+  // dot by itself is not evidence that a recognized config file is noise.
   return classify(relative) !== "other" && !isNoise(relative);
 }
 

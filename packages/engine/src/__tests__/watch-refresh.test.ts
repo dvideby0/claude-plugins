@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { hasTypedConfigChange, WatchRefreshQueue } from "../daemon/watch-refresh.js";
+import { isInterestingChange } from "../daemon/watcher.js";
 
 describe("watch refresh queue", () => {
   it("retains changes while a foreground index job is running", async () => {
@@ -54,5 +55,15 @@ describe("watch refresh queue", () => {
     expect(hasTypedConfigChange(["config/base.json"])).toBe(true);
     expect(hasTypedConfigChange(["package.json"])).toBe(true);
     expect(hasTypedConfigChange(["src/app.ts", "README.md"])).toBe(false);
+  });
+
+  it("watches recognized dotfiles and configuration without watching noise", () => {
+    expect(isInterestingChange(".mcp.json")).toBe(true);
+    expect(isInterestingChange(".eslintrc.json")).toBe(true);
+    expect(isInterestingChange(".codex/config.toml")).toBe(true);
+    expect(isInterestingChange(".github/workflows/review.yml")).toBe(true);
+    expect(isInterestingChange(".git/config")).toBe(false);
+    expect(isInterestingChange(".DS_Store")).toBe(false);
+    expect(isInterestingChange("src/.#app.ts")).toBe(false);
   });
 });
