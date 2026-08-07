@@ -36,6 +36,7 @@ const state = {
   workspaces: [],
   graph: null,
   flow: null,
+  map: null,
   /** What the current view was rendered from, so polling does not clobber it. */
   renderedKey: null,
   onboarded: localStorage.getItem("sdlc.onboarded") === "1",
@@ -800,28 +801,88 @@ async function paneGraph(workspace, pane) {
  * shares this one, so drilling from a component box into a file works the same
  * way it does from a node.
  */
-function openDrawer() {
+let drawerReturnFocus = null;
+let drawerWorkspace = null;
+
+function openDrawer(origin = document.activeElement, workspace = null) {
   let drawer = document.getElementById("drawer");
+  const wasClosed = !drawer || drawer.hidden;
   if (!drawer) {
+    const backdrop = document.createElement("div");
+    backdrop.id = "drawer-backdrop";
+    backdrop.className = "drawer-backdrop";
+    backdrop.hidden = true;
+    backdrop.addEventListener("click", closeDrawer);
+    document.body.append(backdrop);
+
     drawer = document.createElement("aside");
     drawer.id = "drawer";
     drawer.className = "inspector drawer";
+    drawer.setAttribute("role", "dialog");
+    drawer.setAttribute("aria-modal", "true");
+    drawer.setAttribute("aria-label", "Map details");
+    drawer.tabIndex = -1;
+    // The body is replaced whenever the user drills into a component, flow,
+    // or file. Dismissal belongs to the permanent shell so Close cannot become
+    // inert just because a new body forgot to wire itself.
+    drawer.addEventListener("click", (event) => {
+      if (event.target.closest?.('[data-action="close-drawer"]')) closeDrawer();
+    });
     document.body.append(drawer);
     document.addEventListener("keydown", (event) => {
-      if (event.key === "Escape") closeDrawer();
+      if (event.key === "Escape" && !drawer.hidden) {
+        event.preventDefault();
+        closeDrawer();
+      } else if (event.key === "Tab" && !drawer.hidden) {
+        const focusable = [
+          ...drawer.querySelectorAll(
+            'button:not([disabled]), a[href], input:not([disabled]), select:not([disabled]), summary, [tabindex]:not([tabindex="-1"])',
+          ),
+        ].filter(
+          (element) =>
+            (element.matches("summary") || !element.closest("details:not([open])")) &&
+            element.getClientRects().length > 0,
+        );
+        if (!focusable.length) {
+          event.preventDefault();
+          drawer.focus();
+        } else if (document.activeElement === drawer) {
+          event.preventDefault();
+          (event.shiftKey ? focusable.at(-1) : focusable[0]).focus();
+        } else if (event.shiftKey && document.activeElement === focusable[0]) {
+          event.preventDefault();
+          focusable.at(-1).focus();
+        } else if (!event.shiftKey && document.activeElement === focusable.at(-1)) {
+          event.preventDefault();
+          focusable[0].focus();
+        }
+      }
     });
   }
+  if (wasClosed && origin instanceof HTMLElement) drawerReturnFocus = origin;
+  if (workspace) drawerWorkspace = { id: workspace.id, generation: workspace.generation };
+  document.querySelector(".body").inert = true;
+  document.getElementById("drawer-backdrop").hidden = false;
   drawer.hidden = false;
+  drawer.focus({ preventScroll: true });
   return drawer;
 }
 
 function closeDrawer() {
   const drawer = document.getElementById("drawer");
+  const backdrop = document.getElementById("drawer-backdrop");
   if (drawer) drawer.hidden = true;
+  if (backdrop) backdrop.hidden = true;
+  document.querySelector(".body").inert = false;
+  if (drawerReturnFocus?.isConnected) drawerReturnFocus.focus({ preventScroll: true });
+  drawerReturnFocus = null;
+  drawerWorkspace = null;
 }
 
-async function showFile(workspace, path) {
-  const inspector = document.getElementById("inspector") ?? openDrawer();
+async function showFile(workspace, path, options = {}) {
+  const localInspector = options.forceDrawer ? null : document.getElementById("inspector");
+  const inspector = localInspector ?? openDrawer(options.origin, workspace);
+  const inDrawer = !localInspector;
   try {
     const file = await api(`/api/workspaces/${workspace.id}/file?path=${encodeURIComponent(path)}`);
     const list = (title, values) =>
@@ -835,8 +896,17 @@ async function showFile(workspace, path) {
         : "";
 
     inspector.innerHTML = `
-      <button class="close" aria-label="Close">×</button>
-      <h4>${esc(file.path)}</h4>
+      ${
+        inDrawer
+          ? `<div class="drawer-head drawer-head-sticky">
+               <div>
+                 ${options.back ? '<button class="drawer-back" data-action="drawer-back">← Back</button>' : '<div class="drawer-eyebrow">Indexed file</div>'}
+                 <h2 class="drawer-file-title">${esc(file.path)}</h2>
+               </div>
+               <button class="drawer-close" data-action="close-drawer" aria-label="Close details">×</button>
+             </div>`
+          : `<button class="close" aria-label="Close">×</button><h4>${esc(file.path)}</h4>`
+      }
       <div class="sub">${esc(file.lang)} · ${num(file.loc)} loc · churn ${num(file.churn)}${file.isTest ? " · test" : ""}</div>
       ${
         file.component
@@ -876,16 +946,34 @@ async function showFile(workspace, path) {
       }
     `;
     inspector.hidden = false;
-    inspector.querySelector(".close").addEventListener("click", () => {
-      inspector.hidden = true;
-    });
+    if (inDrawer && options.back) {
+      on("drawer-back", () => options.back(), inspector);
+    } else if (!inDrawer) {
+      inspector.querySelector(".close").addEventListener("click", () => {
+        inspector.hidden = true;
+      });
+    }
     for (const link of inspector.querySelectorAll("[data-component]")) {
-      link.addEventListener("click", () => void showComponent(workspace, link.dataset.component));
+      link.addEventListener("click", () =>
+        void showComponent(workspace, link.dataset.component, {
+          back: inDrawer ? () => showFile(workspace, path, options) : null,
+        }),
+      );
     }
     for (const button of inspector.querySelectorAll("[data-path]")) {
       button.addEventListener("click", () => {
         state.graph?.select(button.dataset.path);
-        void showFile(workspace, button.dataset.path);
+        void showFile(
+          workspace,
+          button.dataset.path,
+          inDrawer
+            ? {
+                ...options,
+                forceDrawer: true,
+                back: () => showFile(workspace, path, options),
+              }
+            : {},
+        );
       });
     }
   } catch (error) {
@@ -1049,6 +1137,7 @@ async function paneMap(workspace, pane) {
   let map;
   try {
     map = await api(`/api/workspaces/${workspace.id}/map`);
+    state.map = { workspaceId: workspace.id, generation: workspace.generation, value: map };
   } catch (error) {
     pane.innerHTML = `<div class="empty">${esc(error.message)}</div>`;
     return;
@@ -1086,68 +1175,128 @@ async function paneMap(workspace, pane) {
           <span>${num(component.rollupSymbols ?? component.symbolCount)} symbols</span>
           ${component.openFindings ? `<span class="warn">${num(component.openFindings)} findings</span>` : ""}
           ${component.tags.map((tag) => `<span class="tagchip">${esc(tag)}</span>`).join("")}
+          <span class="mapbox-open">View details →</span>
         </div>
         ${children.length ? `<div class="mapbox-children">${children.map((child) => box(child, depth + 1)).join("")}</div>` : ""}
       </div>`;
   };
 
+  const componentSearch = (component, seen = new Set()) => {
+    if (!component || seen.has(component.id)) return "";
+    seen.add(component.id);
+    return [
+      component.name,
+      component.kind,
+      component.summary,
+      ...component.tags,
+      ...component.children.map((child) => componentSearch(byId.get(child), seen)),
+    ].join(" ");
+  };
+
   const flows = map.flows
     .map(
-      (flow) => `
-      <div class="mapflow">
-        <div class="mapflow-head">
-          <strong>${esc(flow.name)}</strong>
-          ${flow.trigger ? `<span class="sub">triggered by ${esc(flow.trigger)}</span>` : ""}
-        </div>
-        ${flow.summary ? `<p class="sub mapflow-summary">${esc(flow.summary)}</p>` : ""}
-        <ol class="mapflow-steps">
-          ${flow.steps
-            .map(
-              (step) => `
-            <li class="${step.resolves ? "" : "gone"} ${step.drifted ? "moved" : ""}
-                       ${step.path ? "clickable" : ""}"
-                ${step.path ? `data-action="open-step" data-path="${esc(step.path)}"` : ""}>
-              <div class="step-label">${esc(step.label)}</div>
-              <div class="step-where">
-                ${step.component ? `<span class="tagchip">${esc(step.component)}</span>` : ""}
-                ${step.symbol ? `<span class="mono">${esc(step.symbol)}</span>` : ""}
-                ${step.resolves ? "" : '<span class="warn">file no longer exists</span>'}
-                ${step.drifted ? '<span class="warn">code changed since</span>' : ""}
-              </div>
-              ${step.note ? `<div class="step-note">${esc(step.note)}</div>` : ""}
-            </li>`,
-            )
-            .join("")}
-        </ol>
-      </div>`,
+      (flow) => {
+        const first = flow.steps[0];
+        const last = flow.steps.at(-1);
+        const components = [...new Set(flow.steps.map((step) => step.component).filter(Boolean))];
+        const attention = flow.steps.filter((step) => !step.resolves || step.drifted).length;
+        const unanchored = flow.steps.filter((step) => !step.path).length;
+        const search = [
+          flow.name,
+          flow.summary,
+          flow.trigger,
+          ...flow.steps.flatMap((step) => [step.label, step.path, step.symbol, step.component, step.note]),
+        ].join(" ");
+        return `
+          <button class="mapflow map-searchable" data-map-kind="flow"
+                  data-map-search="${esc(search.toLowerCase())}"
+                  data-action="open-flow" data-id="${esc(flow.id)}">
+            <span class="mapflow-head">
+              <span>
+                <span class="drawer-eyebrow">Drawn flow</span>
+                <strong>${esc(flow.name)}</strong>
+              </span>
+              <span class="mapflow-open">View ${num(flow.steps.length)} steps →</span>
+            </span>
+            ${flow.summary ? `<span class="mapflow-summary">${esc(flow.summary)}</span>` : ""}
+            <span class="mapflow-route" aria-label="From ${esc(first?.label ?? "start")} to ${esc(last?.label ?? "finish")}">
+              <span>${esc(first?.label ?? "Start")}</span>
+              ${flow.steps.length > 1 ? '<span class="mapflow-arrow">→</span>' : ""}
+              ${flow.steps.length > 2 ? `<span class="mapflow-more">${num(flow.steps.length - 2)} between</span><span class="mapflow-arrow">→</span>` : ""}
+              ${flow.steps.length > 1 ? `<span>${esc(last?.label ?? "Finish")}</span>` : ""}
+            </span>
+            <span class="mapflow-meta">
+              ${flow.trigger ? `<span>Trigger: ${esc(flow.trigger)}</span>` : ""}
+              <span>${num(components.length)} component${components.length === 1 ? "" : "s"}</span>
+              ${
+                attention
+                  ? `<span class="warn">${num(attention)} need attention</span>`
+                  : unanchored
+                    ? `<span>${num(unanchored)} conceptual step${unanchored === 1 ? "" : "s"}</span>`
+                    : '<span class="ok">Anchors current</span>'
+              }
+            </span>
+          </button>`;
+      },
     )
     .join("");
 
   const coverage = map.coverage;
   pane.innerHTML = `
-    <p class="sub maplead">
-      Drawn by an agent that read the code. Every box opens onto the files
-      underneath it — the prose says how it works, the index says what would
-      change if you edited it.
-    </p>
-    <div class="mapcoverage">
-      <div class="bar-row">
-        <span class="label">explained</span>
-        <span class="bar-track"><span class="bar-fill" style="width:${coverage.percent}%"></span></span>
-        <span class="val">${coverage.percent}%</span>
+    <div class="map-toolbar">
+      <div>
+        <div class="drawer-eyebrow">System explanation</div>
+        <p class="maplead">
+          Agent-authored components and workflows, paired with deterministic index evidence where they name code.
+          Open an item to see the evidence behind it.
+        </p>
       </div>
-      <div class="sub">
-        ${num(coverage.assigned)} of ${num(coverage.total)} files sit in a component.
-        ${coverage.unassigned.length ? `Unexplained: ${coverage.unassigned.slice(0, 6).map(esc).join(", ")}${coverage.unassigned.length > 6 ? ` and ${coverage.unassigned.length - 6} more` : ""}.` : ""}
+      <label class="map-search">
+        <span>Find a component or flow</span>
+        <input id="map-filter" type="search" placeholder="Search this map…" autocomplete="off" />
+      </label>
+    </div>
+
+    <div class="map-overview">
+      <div class="map-overview-stat"><strong>${num(map.components.length)}</strong><span>components</span></div>
+      <div class="map-overview-stat"><strong>${num(map.flows.length)}</strong><span>drawn flows</span></div>
+      <div class="map-overview-coverage">
+        <div class="bar-row">
+          <span class="label">explained</span>
+          <span class="bar-track"><span class="bar-fill" style="width:${coverage.percent}%"></span></span>
+          <span class="val">${coverage.percent}%</span>
+        </div>
+        <div class="sub">
+          ${num(coverage.assigned)} of ${num(coverage.total)} indexed code files are assigned.
+          ${coverage.total > coverage.assigned ? `${num(coverage.total - coverage.assigned)} remain unexplained.` : ""}
+        </div>
       </div>
     </div>
 
-    <div class="block">
-      <h3 class="section">Components</h3>
-      <div class="mapboxes">${roots.map((component) => box(component, 0)).join("")}</div>
+    <div id="map-no-results" class="empty map-no-results" hidden>No map items match that search.</div>
+
+    <div class="block map-section" data-map-section="component">
+      <div class="map-section-head">
+        <div><h3 class="section">Components</h3><p class="sub">Areas of responsibility, nested to show ownership.</p></div>
+      </div>
+      <div class="mapboxes">${roots
+        .map(
+          (component) =>
+            `<div class="map-searchable" data-map-kind="component" data-map-search="${esc(componentSearch(component).toLowerCase())}">${box(component, 0)}</div>`,
+        )
+        .join("")}</div>
     </div>
 
-    ${flows ? `<div class="block"><h3 class="section">Flows</h3>${flows}</div>` : ""}
+    ${
+      flows
+        ? `<div class="block map-section" data-map-section="flow">
+             <div class="map-section-head">
+               <div><h3 class="section">Flows</h3><p class="sub">Compact overviews; open one for the complete path and evidence.</p></div>
+             </div>
+             <div class="mapflows">${flows}</div>
+           </div>`
+        : ""
+    }
 
     ${
       map.tags.length
@@ -1162,12 +1311,133 @@ async function paneMap(workspace, pane) {
   // the outer box wins. Stop it at the box that was actually clicked.
   on("open-component", (element, event) => {
     event.stopPropagation();
-    void showComponent(workspace, element.dataset.id);
+    void showComponent(workspace, element.dataset.id, { origin: element });
   });
-  on("open-step", (element, event) => {
-    event.stopPropagation();
-    void showFile(workspace, element.dataset.path);
+  on("open-flow", (element) => {
+    void showMapFlow(workspace, element.dataset.id, { origin: element });
   });
+  for (const element of pane.querySelectorAll('[role="button"][data-action="open-component"]')) {
+    element.addEventListener("keydown", (event) => {
+      if (event.target !== element) return;
+      if (event.key === "Enter" || event.key === " ") {
+        event.preventDefault();
+        event.stopPropagation();
+        element.click();
+      }
+    });
+  }
+
+  const filter = pane.querySelector("#map-filter");
+  filter.addEventListener("input", () => {
+    const query = filter.value.trim().toLowerCase();
+    let visible = 0;
+    for (const item of pane.querySelectorAll(".map-searchable")) {
+      const matches = !query || item.dataset.mapSearch.includes(query);
+      item.hidden = !matches;
+      if (matches) visible++;
+    }
+    for (const section of pane.querySelectorAll("[data-map-section]")) {
+      section.hidden = !section.querySelector(".map-searchable:not([hidden])");
+    }
+    pane.querySelector("#map-no-results").hidden = visible > 0;
+  });
+}
+
+async function showMapFlow(workspace, id, options = {}) {
+  const drawer = openDrawer(options.origin, workspace);
+  drawer.innerHTML = `<div class="loading">Loading…</div>`;
+  let map =
+    state.map?.workspaceId === workspace.id && state.map.generation === workspace.generation
+      ? state.map.value
+      : null;
+  try {
+    if (!map) {
+      map = await api(`/api/workspaces/${workspace.id}/map`);
+      state.map = { workspaceId: workspace.id, generation: workspace.generation, value: map };
+    }
+  } catch (error) {
+    drawer.innerHTML = `<div class="empty">${esc(error.message)}</div>`;
+    return;
+  }
+
+  const flow = map.flows.find((candidate) => candidate.id === id);
+  if (!flow) {
+    drawer.innerHTML = `<div class="empty">This flow is no longer in the current map.</div>`;
+    return;
+  }
+  const componentByName = new Map(map.components.map((component) => [component.name, component]));
+  const components = [...new Set(flow.steps.map((step) => step.component).filter(Boolean))];
+  const attention = flow.steps.filter((step) => !step.resolves || step.drifted).length;
+  const anchored = flow.steps.filter((step) => step.path).length;
+
+  drawer.innerHTML = `
+    <div class="drawer-head drawer-head-sticky">
+      <div>
+        ${options.back ? '<button class="drawer-back" data-action="drawer-back">← Back</button>' : '<div class="drawer-eyebrow">Agent-drawn flow</div>'}
+        <h2>${esc(flow.name)}</h2>
+      </div>
+      <button class="drawer-close" data-action="close-drawer" aria-label="Close details">×</button>
+    </div>
+
+    <p class="drawer-summary">${esc(flow.summary || "No explanation has been recorded for this flow yet.")}</p>
+    <div class="drawer-stats">
+      <div><strong>${num(flow.steps.length)}</strong><span>steps</span></div>
+      <div><strong>${num(components.length)}</strong><span>components</span></div>
+      <div><strong>${num(anchored)}</strong><span>file anchors</span></div>
+      <div class="${attention ? "warn" : "ok"}"><strong>${num(attention)}</strong><span>need attention</span></div>
+    </div>
+    ${flow.trigger ? `<div class="drawer-callout"><span>Trigger</span><strong>${esc(flow.trigger)}</strong></div>` : ""}
+    <p class="drawer-provenance">
+      This is an authored explanation, not the deterministic call graph. Where present, steps are anchored to indexed files and symbols.
+      Changed or missing anchors are called out below.
+    </p>
+
+    <div class="block">
+      <h3 class="section">Complete path</h3>
+      <ol class="mapflow-steps drawer-flow-steps">
+        ${flow.steps
+          .map((step) => {
+            const component = step.component ? componentByName.get(step.component) : null;
+            return `
+              <li class="${step.resolves ? "" : "gone"} ${step.drifted ? "moved" : ""}">
+                <div class="step-label">${esc(step.label)}</div>
+                <div class="step-where">
+                  ${component ? `<button class="tagchip" data-action="open-flow-component" data-id="${esc(component.id)}">${esc(component.name)}</button>` : ""}
+                  ${step.symbol ? `<span class="mono">${esc(step.symbol)}</span>` : ""}
+                  ${!step.resolves ? '<span class="warn">file no longer exists</span>' : ""}
+                  ${step.drifted ? '<span class="warn">code changed since this was drawn</span>' : ""}
+                </div>
+                ${step.note ? `<div class="step-note">${esc(step.note)}</div>` : ""}
+                ${
+                  step.path
+                    ? `<div class="drawer-step-source"><code>${esc(step.path)}</code>${step.resolves ? `<button data-action="open-flow-file" data-path="${esc(step.path)}">Open file</button>` : ""}</div>`
+                    : '<div class="drawer-step-source sub">Conceptual step — no file anchor</div>'
+                }
+              </li>`;
+          })
+          .join("")}
+      </ol>
+    </div>
+  `;
+
+  on("drawer-back", () => options.back?.(), drawer);
+  on(
+    "open-flow-file",
+    (element) =>
+      void showFile(workspace, element.dataset.path, {
+        forceDrawer: true,
+        back: () => showMapFlow(workspace, id, options),
+      }),
+    drawer,
+  );
+  on(
+    "open-flow-component",
+    (element) =>
+      void showComponent(workspace, element.dataset.id, {
+        back: () => showMapFlow(workspace, id, options),
+      }),
+    drawer,
+  );
 }
 
 /**
@@ -1177,8 +1447,8 @@ async function paneMap(workspace, pane) {
  * top, the machine's file list under it, and every row a way further down into
  * imports, symbols and findings.
  */
-async function showComponent(workspace, id) {
-  const drawer = openDrawer();
+async function showComponent(workspace, id, options = {}) {
+  const drawer = openDrawer(options.origin, workspace);
   drawer.innerHTML = `<div class="loading">Loading…</div>`;
   let detail;
   try {
@@ -1188,30 +1458,88 @@ async function showComponent(workspace, id) {
     return;
   }
 
+  const map =
+    state.map?.workspaceId === workspace.id && state.map.generation === workspace.generation
+      ? state.map.value
+      : null;
+  const mappedComponent = map?.components.find((component) => component.id === id);
+  const componentNames = new Set();
+  const collectComponentNames = (componentId) => {
+    const component = map?.components.find((candidate) => candidate.id === componentId);
+    if (!component || componentNames.has(component.name)) return;
+    componentNames.add(component.name);
+    for (const child of component.children) collectComponentNames(child);
+  };
+  collectComponentNames(id);
+  const participatingFlows = map
+    ? map.flows
+        .filter((flow) => flow.steps.some((step) => componentNames.has(step.component)))
+        .map((flow) => ({
+          id: flow.id,
+          name: flow.name,
+          trigger: flow.trigger,
+          steps: flow.steps
+            .filter((step) => componentNames.has(step.component))
+            .map((step) => step.label),
+        }))
+    : detail.flows;
+  const representedFiles = mappedComponent?.rollupFiles ?? detail.files.length;
+  const representedFileLabel = mappedComponent && detail.children.length ? "files in tree" : "direct files";
+  const openFindings = detail.files.reduce((total, file) => total + file.openFindings, 0);
+  const changed = detail.files.filter((file) => file.changed).length;
+  const drifted = Boolean(mappedComponent?.drifted || changed);
+  const primaryFiles = detail.files.slice(0, 8);
+  const remainingFiles = detail.files.slice(8);
+  const fileRow = (file) => `
+    <button class="drawer-file-row" data-action="open-file" data-path="${esc(file.path)}">
+      <span class="mono">${esc(file.path)}${file.changed ? ' <span class="warn">changed</span>' : ""}</span>
+      <span class="drawer-file-meta">
+        ${num(file.loc)} lines · ${num(file.symbols)} symbols · used by ${num(file.fanIn)}
+        ${file.openFindings ? `<span class="warn"> · ${num(file.openFindings)} findings</span>` : ""}
+      </span>
+    </button>`;
+
   drawer.innerHTML = `
-    <div class="drawer-head">
+    <div class="drawer-head drawer-head-sticky">
       <div>
+        ${options.back ? '<button class="drawer-back" data-action="drawer-back">← Back</button>' : '<div class="drawer-eyebrow">Component</div>'}
         <h2>${esc(detail.name)}</h2>
         <span class="mapbox-kind">${esc(detail.kind)}</span>
       </div>
-      <button class="ghost" data-action="close-drawer">Close</button>
+      <button class="drawer-close" data-action="close-drawer" aria-label="Close details">×</button>
     </div>
 
-    <p class="drawer-summary">${esc(detail.summary)}</p>
+    <p class="drawer-summary">${esc(detail.summary || "No explanation has been recorded for this component yet.")}</p>
+    <div class="drawer-stats">
+      <div><strong>${num(representedFiles)}</strong><span>${representedFileLabel}</span></div>
+      <div><strong>${num(detail.children.length)}</strong><span>child components</span></div>
+      <div><strong>${num(participatingFlows.length)}</strong><span>flows</span></div>
+      <div class="${openFindings ? "warn" : ""}"><strong>${num(openFindings)}</strong><span>${detail.children.length ? "direct findings" : "open findings"}</span></div>
+    </div>
+    ${
+      drifted
+        ? `<div class="drawer-callout warn"><span>Map freshness</span><strong>This component's membership or contents changed since it was drawn${changed ? `, including ${num(changed)} modified file${changed === 1 ? "" : "s"}` : ""}.</strong></div>`
+        : ""
+    }
     ${
       detail.patterns.length
-        ? `<div class="mapbox-stats">covers ${detail.patterns.map((pattern) => `<code class="inline">${esc(pattern)}</code>`).join(" ")}</div>`
+        ? `<details class="drawer-details"><summary>Membership rules</summary><div class="mapbox-stats">${detail.patterns.map((pattern) => `<code class="inline">${esc(pattern)}</code>`).join(" ")}</div></details>`
         : ""
     }
 
     ${
-      detail.flows.length
+      participatingFlows.length
         ? `<div class="block">
-             <h3 class="section">Flows through here</h3>
-             ${detail.flows
+             <h3 class="section">How this component participates</h3>
+             ${participatingFlows
                .map(
-                 (flow) =>
-                   `<div class="sub"><b>${esc(flow.name)}</b> — ${flow.steps.map(esc).join(" → ")}</div>`,
+                 (flow) => {
+                   return `<button class="drawer-flow-link" data-action="open-drawer-flow" data-id="${esc(flow.id)}">
+                     <span><b>${esc(flow.name)}</b>${flow.trigger ? `<small>Trigger: ${esc(flow.trigger)}</small>` : ""}</span>
+                     <span class="drawer-flow-part">Here: ${flow.steps.map(esc).join(" → ")}</span>
+                     <span class="drawer-flow-go">View full flow →</span>
+                   </button>`;
+                 },
                )
                .join("")}
            </div>`
@@ -1222,12 +1550,16 @@ async function showComponent(workspace, id) {
       detail.memories.length
         ? `<div class="block">
              <h3 class="section">Recorded about this</h3>
-             ${detail.memories
+             <div class="drawer-notes">${detail.memories
                .map(
                  (memory) =>
-                   `<div class="sub"><span class="tagchip">${esc(memory.kind)}</span> ${esc(memory.title)}</div>`,
+                   `<button data-action="open-file" data-path="${esc(memory.path)}">
+                      <span class="tagchip">${esc(memory.kind)}</span>
+                      <span>${esc(memory.title)}</span>
+                      <code>${esc(memory.path)}</code>
+                    </button>`,
                )
-               .join("")}
+               .join("")}</div>
            </div>`
         : ""
     }
@@ -1254,27 +1586,16 @@ async function showComponent(workspace, id) {
     }
 
     ${
-      detail.files.length
+      primaryFiles.length
         ? `<div class="block">
-      <h3 class="section">What is actually in here — ${detail.files.length} files</h3>
-      <table class="rows">
-        <thead><tr><th>File</th><th>Lines</th><th>Symbols</th><th>Used by</th><th></th></tr></thead>
-        <tbody>
-          ${detail.files
-            .map(
-              (file) => `
-            <tr data-action="open-file" data-path="${esc(file.path)}" class="clickable">
-              <td class="mono">${esc(file.path)}${file.changed ? ' <span class="warn">changed</span>' : ""}</td>
-              <td class="numeric">${num(file.loc)}</td>
-              <td class="numeric">${num(file.symbols)}</td>
-              <td class="numeric">${num(file.fanIn)}</td>
-              <td>${file.openFindings ? `<span class="warn">${file.openFindings}</span>` : ""}
-                  ${file.tags.map((tag) => `<span class="tagchip">${esc(tag)}</span>`).join("")}</td>
-            </tr>`,
-            )
-            .join("")}
-        </tbody>
-      </table>
+      <h3 class="section">Key files</h3>
+      <p class="sub block-lede">Sorted by how often the rest of the repository uses them.</p>
+      <div class="drawer-files">${primaryFiles.map(fileRow).join("")}</div>
+      ${
+        remainingFiles.length
+          ? `<details class="drawer-details"><summary>Show ${num(remainingFiles.length)} more files</summary><div class="drawer-files">${remainingFiles.map(fileRow).join("")}</div></details>`
+          : ""
+      }
     </div>`
         : detail.children.length
           ? `<p class="sub">This box groups the ones above rather than holding files itself.</p>`
@@ -1282,9 +1603,32 @@ async function showComponent(workspace, id) {
     }
   `;
 
-  on("close-drawer", closeDrawer, drawer);
-  on("open-child", (element) => void showComponent(workspace, element.dataset.id), drawer);
-  on("open-file", (element) => void showFile(workspace, element.dataset.path), drawer);
+  on("drawer-back", () => options.back?.(), drawer);
+  on(
+    "open-child",
+    (element) =>
+      void showComponent(workspace, element.dataset.id, {
+        back: () => showComponent(workspace, id, options),
+      }),
+    drawer,
+  );
+  on(
+    "open-drawer-flow",
+    (element) =>
+      void showMapFlow(workspace, element.dataset.id, {
+        back: () => showComponent(workspace, id, options),
+      }),
+    drawer,
+  );
+  on(
+    "open-file",
+    (element) =>
+      void showFile(workspace, element.dataset.path, {
+        forceDrawer: true,
+        back: () => showComponent(workspace, id, options),
+      }),
+    drawer,
+  );
 }
 
 // --- flow ------------------------------------------------------------------
@@ -1716,6 +2060,13 @@ function render() {
   if (key === state.renderedKey) return;
   state.renderedKey = key;
 
+  if (drawerWorkspace) {
+    const current = state.workspaces.find((workspace) => workspace.id === drawerWorkspace.id);
+    if (route.id !== drawerWorkspace.id || current?.generation !== drawerWorkspace.generation) {
+      closeDrawer();
+    }
+  }
+
   if (route.name !== "project" || parseHash().tab !== "graph") {
     state.graph?.destroy();
     state.graph = null;
@@ -1783,6 +2134,7 @@ async function refresh(force = false) {
 }
 
 window.addEventListener("hashchange", () => {
+  closeDrawer();
   state.renderedKey = null;
   render();
 });
