@@ -5,14 +5,14 @@
  * graph but cannot see `db.run(...)` — the method belongs to a type, and
  * nothing was imported by that name. Getting those right needs a type checker.
  *
- * scip-typescript is a wrapper over the very compiler API used here, so going
- * through it would mean shelling out to an indexer and decoding protobuf to
- * obtain what `getSymbolAtLocation` returns directly. This asks the compiler.
+ * This direct compiler integration predates the provider-first architecture
+ * decision in docs/PROVIDER_STRATEGY.md. It remains a useful prototype and
+ * evaluation baseline, but it is not the production semantic-indexing path.
+ * Do not expand its project/package-resolution machinery before evaluating a
+ * maintained SCIP or compiler provider against the golden corpus.
  *
- * It is slow — a full type-check of the project — so it runs after the fast
- * pass rather than instead of it, and upgrades the rows it can. That trade is
- * only available because a daemon can afford a slow background job; a server
- * spawned per session never could.
+ * It is slow — a full type-check of the project — so the prototype runs after
+ * the fast pass rather than instead of it and upgrades the rows it can.
  */
 
 import { createHash } from "node:crypto";

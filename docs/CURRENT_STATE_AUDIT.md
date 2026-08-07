@@ -2,6 +2,14 @@
 
 Audit date: 2026-08-05. This describes the work-in-progress working tree, not just the last committed revision.
 
+Architecture correction, 2026-08-06: the existing TypeScript enrichment remains
+a prototype, not a production semantic-indexing foundation. A bespoke expansion
+of its project-resolution and freshness machinery was removed before commit.
+Future precise references and deeper program analysis follow the
+[provider-first strategy](PROVIDER_STRATEGY.md): import maintained SCIP,
+compiler/language-server, or Code Property Graph outputs and concentrate SDLC
+work on orchestration, evidence-backed fusion, retrieval, and product workflows.
+
 ## Executive assessment
 
 The repository already validates the most important architectural choice: a reusable local engine, a daemon-served interface, a desktop supervisor, and thin tool integrations can be packaged as one system. The project is beyond a throwaway proof of concept. It has a meaningful schema, native parsing, a working MCP surface, a useful initial UI, packaging automation, and a healthy TypeScript test suite.

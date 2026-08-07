@@ -164,7 +164,7 @@ everything else reads from it while work is happening.
 | `context` | Everything known about a file or symbol before changing it: shape, importers, findings, and what earlier sessions recorded |
 | `references` | Every place a symbol is used, with file and line — not just which files import its module |
 | `impact` | What re-checking a change needs: which exports are actually used, by whom, and which tests already cover them |
-| `resolve_types` | Upgrade references to type-precision using the TypeScript checker |
+| `resolve_types` | Prototype: upgrade references using the TypeScript checker |
 | `remember` / `recall` / `forget` | Decisions, conventions, constraints and traps — anchored to the files they apply to |
 | `cross_search` | The same questions across every indexed repository at once |
 | `audit_query` | The resolved graph: definitions, importers, hotspots, cycles, packages |
@@ -188,16 +188,20 @@ name imported from a module and used in the body resolves to that module's
 definition. It covers exported functions, classes and constants, and costs
 nothing on top of parsing.
 
-The **typed pass** (`resolve_types`) runs the TypeScript type checker and
+The prototype **typed pass** (`resolve_types`) runs the TypeScript type checker and
 resolves what the first cannot — `db.run(...)`, where the method belongs to an
 inferred type and nothing was imported by that name, plus type positions. On
 this repository it lifts `flush` from 0 references to 11 and `Db` from 0 to 61.
 It is a full type-check, so it runs after indexing rather than during it; a
 daemon can afford that, a server spawned per session cannot.
 
-This is the job scip-typescript does, without shelling out to an indexer and
-decoding protobuf to get what the compiler returns directly. Typed resolution
-is TypeScript and JavaScript only — Python stays import-resolved.
+This direct compiler integration is useful prototype capability, not the
+production semantic-indexing architecture. Future precise navigation follows
+the [provider strategy](docs/PROVIDER_STRATEGY.md): evaluate and import a
+maintained SCIP or compiler provider tied to a verified source snapshot, retain
+Tree-sitter as the resilient fallback, and avoid expanding SDLC's own language
+resolver. Today the prototype is TypeScript and JavaScript only — Python stays
+import-resolved.
 
 Where nothing resolves a symbol, the tools say **"uses not tracked"** rather
 than "unused". Reporting unknown as zero is how someone deletes live code.

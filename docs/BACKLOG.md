@@ -8,7 +8,8 @@ The next phase should make one end-to-end path trustworthy before broadening lan
 
 ```mermaid
 flowchart LR
-  A["Evidence contract and evals"] --> B["App-owned incremental store"]
+  P["Provider boundary and evals"] --> A["Evidence envelope"]
+  A --> B["App-owned incremental store"]
   A --> C["Deterministic flow vertical slice"]
   B --> C
   C --> D["Human flow workspace"]
@@ -19,9 +20,44 @@ flowchart LR
 
 ## P0 — foundations that prevent rework
 
+### PROV-001: Provider runner and SCIP import spike
+
+Implement the boundary described in
+[`PROVIDER_STRATEGY.md`](PROVIDER_STRATEGY.md) before extending the current
+TypeScript semantic prototype.
+
+Acceptance criteria:
+
+- Providers declare identity, version, supported capabilities, required inputs,
+  and degradation behavior.
+- One maintained SCIP indexer can be invoked against an immutable, app-owned
+  staged snapshot of this repository. A prebuilt index may also be imported for
+  evaluation, but is unverified unless it comes with equivalent provenance.
+- The runner records provider identity and version, output digest, and an input
+  manifest for the staged snapshot. Only output produced from that immutable
+  view, or from equivalently mutation-fenced inputs, can be classified as exact
+  for that snapshot; equal live-workspace signatures before and after a run are
+  not sufficient.
+- A mismatched working tree is reported as stale rather than exact. An arbitrary
+  imported index is reported as unverified, not assigned the snapshot observed
+  at import time.
+- Provider artifacts are written to app-owned or temporary workspace storage,
+  not into the indexed source repository.
+- Tree-sitter syntax/search remains available when the precise provider is
+  absent or fails.
+- EVAL-001 compares the provider with the existing reference prototype before
+  either is promoted as the product default.
+- The implementation does not duplicate TypeScript project or package
+  resolution inside SDLC.
+
 ### INT-001: Canonical fact, edge, and provenance contract
 
 Define the common intermediate representation before adding deeper analyzers.
+
+This is a provider-neutral interchange envelope, not a new semantic indexer or
+a duplicate compiler dependency graph. Keep it no larger than required to
+preserve provider identity, evidence, uncertainty, snapshot, and staleness at
+the app boundary.
 
 Required fields include stable identity, workspace, producer, producer version, source anchor, confidence or certainty class, generation, ownership scope, input signature, and timestamps. Define an initial vocabulary for containment, import, reference, call, return, branch, throw/catch, await/resume, register/dispatch, read/write, emit/handle, and terminal-effect relations.
 
@@ -76,7 +112,11 @@ Acceptance criteria:
 
 Dogfood the engine on this repository. Recognize daemon HTTP routes and CLI/MCP handlers as entries, then trace calls and branches to responses, database mutations, process execution, filesystem operations, and outbound requests as terminal effects.
 
-This is a progressive static analysis, not a claim of complete path feasibility. Start with a typed syntax-level control-flow representation for function bodies, interprocedural call edges, and explicit framework adapters. Do not rely on undocumented TypeScript compiler internals as the only representation.
+This is a progressive static analysis, not a claim of complete path feasibility.
+Evaluate Joern/CPG output against EVAL-001 first, then add only the translation
+and product-specific framework adapters needed for the vertical slice. Do not
+build a universal TypeScript control/data-flow engine or rely on undocumented
+TypeScript compiler internals as the only representation.
 
 Acceptance criteria:
 
@@ -216,7 +256,10 @@ Acceptance criteria:
 
 ### Slice 1: Trust the facts
 
-Deliver INT-001 and the smallest useful EVAL-001 corpus. Migrate existing symbol/reference outputs into the fact contract and make provenance visible in one existing query. This makes subsequent work measurable.
+Deliver the smallest useful EVAL-001 corpus, the narrow PROV-001 runner/SCIP
+spike, and only the minimum INT-001 envelope needed to compare existing and
+imported facts honestly. This makes subsequent work measurable without first
+rebuilding a compiler indexer.
 
 ### Slice 2: Own the state
 

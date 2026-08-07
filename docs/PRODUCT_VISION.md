@@ -124,6 +124,12 @@ Integrations should remain thin. They may contain tool-specific instructions and
 - The application is useful without an agent, and agent integrations make it more useful rather than defining it.
 - Prefer a small number of strong query primitives over a large, overlapping tool catalog.
 - Extend through language providers and enrichment adapters rather than putting every implementation in the core.
+- Adopt before building. Prefer mature, battle-tested, license-compatible
+  software when it meets the product need; SDLC should differentiate through
+  integration and product experience rather than recreating solved internals.
+- Prefer Rust for new app-owned engine, indexing, storage, orchestration, and
+  background-runtime work. Use TypeScript where its platform ecosystem is the
+  practical boundary, especially Electron UI and thin JavaScript integrations.
 
 ## What this is not
 
