@@ -16,6 +16,7 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { readContent } from "../content.js";
 import { getExistingDb } from "../db/db.js";
+import { mapDrift } from "../graph/map.js";
 import { platformCommand, spawnEnv } from "../lib/exec.js";
 import type { BridgeCommand } from "./harnesses.js";
 
@@ -78,6 +79,10 @@ const INVOCATIONS: Record<string, HarnessInvocation> = {
           sdlc: {
             command: bridge.command,
             args: bridge.args,
+            // Claude now defers MCP tools behind its built-in ToolSearch by
+            // default. This unattended run deliberately disables all built-in
+            // tools, so load the small, allow-listed SDLC surface up front.
+            alwaysLoad: true,
             ...(bridge.env ? { env: bridge.env } : {}),
           },
         },
@@ -190,9 +195,24 @@ export function mapCompletionAdvanced(
   return current !== null && current !== previous;
 }
 
-async function mapCompletion(root: string): Promise<string | null> {
+export interface MapRunState {
+  marker: string | null;
+  complete: boolean;
+  clean: boolean;
+}
+
+/** Initial drawings advance the marker; maintenance drawings resolve drift. */
+export function mapRunSucceeded(before: MapRunState, after: MapRunState): boolean {
+  if (before.complete) return after.complete && after.clean;
+  return after.complete && after.clean && mapCompletionAdvanced(before.marker, after.marker);
+}
+
+async function mapState(root: string): Promise<MapRunState> {
   const db = await getExistingDb(root);
-  return db.get<{ value: string }>("SELECT value FROM meta WHERE key = 'map_complete'")?.value ?? null;
+  const marker =
+    db.get<{ value: string }>("SELECT value FROM meta WHERE key = 'map_complete'")?.value ?? null;
+  const drift = mapDrift(db);
+  return { marker, complete: drift.complete, clean: drift.clean };
 }
 
 /**
@@ -259,7 +279,7 @@ export async function drawMap(options: DrawOptions): Promise<DrawHandle> {
   }
 
   const prompt = await readContent("prompts/map.md");
-  const previousCompletion = await mapCompletion(options.root);
+  const previousState = await mapState(options.root);
   const rawArgs = drawInvocationArgs(options.harness, prompt, options.bridge);
   const command = platformCommand(invocation.bin, rawArgs);
   const child = spawn(command.command, command.args, {
@@ -303,15 +323,24 @@ export async function drawMap(options: DrawOptions): Promise<DrawHandle> {
     });
     child.on("close", (code) => {
       if (code === 0) {
-        void mapCompletion(options.root).then(
-          (currentCompletion) => {
+        void mapState(options.root).then(
+          (currentState) => {
+            const ok = mapRunSucceeded(previousState, currentState);
             resolve(
-              mapCompletionAdvanced(previousCompletion, currentCompletion)
-                ? { ok: true, summary: "Map drawn." }
+              ok
+                ? {
+                    ok: true,
+                    summary: previousState.complete
+                      ? previousState.clean
+                        ? "Map already current."
+                        : "Map updated."
+                      : "Map drawn.",
+                  }
                 : {
                     ok: false,
-                    summary:
-                      "The agent exited before finalize_map completed. Its partial map was kept so the next build can resume.",
+                    summary: previousState.complete
+                      ? "The agent exited before resolving the map's remaining drift. Its updates were kept so the next build can resume."
+                      : "The agent exited before finalize_map completed. Its partial map was kept so the next build can resume.",
                   },
             );
           },

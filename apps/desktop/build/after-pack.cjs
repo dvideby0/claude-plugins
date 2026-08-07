@@ -121,6 +121,7 @@ module.exports = async function afterPack(context) {
     join(packages, "protocol", "dist", "index.js"),
     join(packages, "mcp-bridge", "dist", "index.js"),
     join(packages, "scan-core", "index.js"),
+    join(app, "node_modules", "@sourcegraph", "scip-typescript", "dist", "src", "main.js"),
     // Typed resolution runs from the packaged compiler. Removing declarations
     // makes ordinary built-ins such as Array.map opaque only after packaging.
     join(app, "node_modules", "typescript", "lib", "lib.d.ts"),

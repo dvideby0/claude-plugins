@@ -50,6 +50,25 @@ Acceptance criteria:
 - The implementation does not duplicate TypeScript project or package
   resolution inside SDLC.
 
+Progress (2026-08-06): the app now bundles the maintained SCIP TypeScript
+indexer, supervises bounded evaluation runs, decodes and hashes indexes in Rust,
+stores manifests outside source repositories, reports capabilities in the
+desktop, and preserves Tree-sitter fallback behavior. These initial runs read a
+mutable working tree and are explicitly `unverified`; immutable staging and
+provider-neutral fact import remain the acceptance-critical next steps. Joern
+is detected but intentionally not bundled before its EVAL-001 spike. Configless
+evaluation now uses an app-owned config rather than allowing the upstream CLI
+to write `tsconfig.json` into the workspace, and Rust comparison aggregates
+deduplicate documents emitted by overlapping project configs. Discovery,
+execution, and decode waits are cancellable; requested projects that the
+upstream tool skips are reported as `partial` rather than a fully successful
+evaluation. Discovery covers both TypeScript and JavaScript configs, invalid
+configs and oversized-source skips remain visible in partial results, and
+flag-like but legal workspace paths cannot be interpreted as provider options.
+Preflight is syntax-only, size/time bounded, and leaves solution-config project
+references to SCIP instead of synchronously duplicating compiler resolution in
+the daemon.
+
 ### INT-001: Canonical fact, edge, and provenance contract
 
 Define the common intermediate representation before adding deeper analyzers.
@@ -81,6 +100,12 @@ Acceptance criteria:
 - Results are machine-readable and CI fails on agreed correctness regressions.
 - Benchmarks clearly separate cold, warm, and one-file-change runs.
 
+Progress (2026-08-06): the first checked-in TypeScript fixture covers a
+cross-file call, condition, early return, throw, await, and terminal HTTP
+response, with a machine-readable oracle and a real SCIP integration test. The
+fixture set, precision/recall scorer, incremental measurements, peak-memory
+capture, and CI thresholds are still open.
+
 ### STORE-001: Move workspace state under app ownership
 
 Replace in-repository, whole-export `sql.js` persistence with a native SQLite owner behind the local engine. Define workspace IDs, store locations, migrations, backups, corruption recovery, and repository relocation behavior.
@@ -105,6 +130,15 @@ Acceptance criteria:
 - A public symbol change invalidates known callers and dependent summaries.
 - The application can explain why an item is fresh or stale.
 - Deleted, renamed, and moved files do not leave orphan facts.
+- Native and fallback scanners share an explicit, tested source-inclusion
+  policy. Generated builds, packaged app copies, and app-owned artifacts cannot
+  enter trusted facts through either a full scan or a watch refresh, and the UI
+  can explain why a path was included or excluded.
+
+Observed during the 2026-08-06 desktop walkthrough: creating the packaged app
+under `release/` caused its bundled `preload.cjs` to enter the live inventory and
+immediately appear as an unexplained, drifting map file. Resolve this as an
+input-boundary rule, not as a one-off special case for this repository.
 
 ## P1 — first differentiated product slice
 
@@ -189,6 +223,17 @@ Acceptance criteria:
 - A changed dependency marks the artifact stale without deleting the last approved version.
 - The UI shows deterministic facts and semantic interpretation as separate layers.
 - Generation is cached by normalized input/model/prompt signature and has a configurable local or remote provider policy.
+- Interrupted generation remains explicitly partial, can resume without
+  discarding valid work, and cannot be presented as a complete map until its
+  coverage/finalization contract succeeds.
+
+Progress (2026-08-06): the Claude map runner now eagerly loads only the
+allowlisted SDLC MCP tools even when built-in tools are disabled. A previously
+interrupted 75% map resumed to 98% coverage, and maintenance refreshed six
+drifted components without rebuilding clean work. Finalization rejects stale
+retained components or flows, and the supervisor distinguishes initial drawing
+from maintenance completion. Editing/approval, fine-grained dependency
+invalidation, cancellation UX, and repeatable product evaluation remain open.
 
 ### MEM-001: Trustworthy project memory
 

@@ -32,6 +32,7 @@ const ui = {
 const state = {
   status: null,
   harnesses: [],
+  providers: [],
   workspaces: [],
   graph: null,
   flow: null,
@@ -40,7 +41,9 @@ const state = {
   onboarded: localStorage.getItem("sdlc.onboarded") === "1",
 };
 const HARNESS_REFRESH_MS = 60_000;
+const SCIP_OVERVIEW_REFRESH_MS = 2500;
 let harnessRefreshAt = 0;
+let scipOverviewRefreshTimer = null;
 
 // --- plumbing --------------------------------------------------------------
 
@@ -517,9 +520,10 @@ function bars(entries, total) {
 
 async function paneOverview(workspace, pane) {
   try {
-    const [overview, findings] = await Promise.all([
+    const [overview, findings, providerState] = await Promise.all([
       api(`/api/workspaces/${workspace.id}/overview`),
       api(`/api/workspaces/${workspace.id}/findings`),
+      api(`/api/workspaces/${workspace.id}/providers`),
     ]);
 
     const severities = ["critical", "high", "medium", "low"];
@@ -579,6 +583,8 @@ async function paneOverview(workspace, pane) {
         }
       </div>
 
+      ${providerEvaluation(workspace, providerState)}
+
       ${
         overview.tools.length
           ? `<div class="block">
@@ -600,8 +606,124 @@ async function paneOverview(workspace, pane) {
           : ""
       }
     `;
+    on("evaluate-scip", (element) => void evaluateScip(workspace, element), pane);
+    scheduleScipOverviewRefresh(workspace);
   } catch (error) {
     pane.innerHTML = `<div class="empty">${esc(error.message)}</div>`;
+  }
+}
+
+function providerEvaluation(workspace, providerState) {
+  const provider = providerState.providers.find((item) => item.id === "scip-typescript");
+  const evaluation = providerState.scip.latest;
+  const running = providerState.scip.running;
+  const result = evaluation?.scip;
+  const base = evaluation?.baseline;
+  const rows = result
+    ? `<table class="rows">
+        <tr><th>Coverage signal</th><th class="num">Current prototype</th><th class="num">SCIP</th></tr>
+        <tr><td>TypeScript/JavaScript documents</td><td class="num">${num(base.documents)}</td><td class="num">${num(result.documents)}</td></tr>
+        <tr><td>Recorded declarations</td><td class="num">${num(base.symbols)}</td><td class="num">${num(result.definitions)}</td></tr>
+        <tr><td>Recorded references</td><td class="num">${num(base.references)}</td><td class="num">${num(result.references)}</td></tr>
+        <tr><td>SCIP relationships</td><td class="num">—</td><td class="num">${num(result.relationships)}</td></tr>
+      </table>`
+    : "";
+  const outcome = evaluation
+    ? evaluation.status === "ok"
+      ? `<div class="notice">
+          Last evaluation ${relative(evaluation.finishedAt)} in ${num(evaluation.durationMs)} ms.
+          ${num(evaluation.projects?.length || 1)} project${(evaluation.projects?.length || 1) === 1 ? "" : "s"} evaluated.
+          <b>Unverified:</b> it ran over the mutable working tree and has not replaced trusted facts.
+        </div>${rows}`
+      : evaluation.status === "partial"
+        ? `<div class="notice">
+            Last evaluation ${relative(evaluation.finishedAt)} in ${num(evaluation.durationMs)} ms.
+            <b>Incomplete:</b> one or more of the ${num(evaluation.projects?.length || 1)} requested projects was skipped,
+            so these unverified counts are partial. ${esc(evaluation.error)}
+          </div>${rows}`
+        : `<div class="notice error">Last SCIP evaluation failed: ${esc(evaluation.error)}</div>`
+    : `<p class="sub">No comparison has been run for this project yet.</p>`;
+
+  return `<div class="block" data-provider-evaluation="${workspace.id}">
+    <div class="page-head compact">
+      <div>
+        <h3 class="section">Precise provider evaluation</h3>
+        <p class="sub block-lede">
+          SCIP is measured beside the current index before any provider is promoted.
+          These counts have different symbol scopes and are coverage signals, not a precision score.
+        </p>
+      </div>
+      <button data-action="evaluate-scip" class="${provider?.available ? "primary" : ""}"
+              ${provider?.available && !running ? "" : "disabled"}>
+        ${running ? "Evaluating…" : evaluation ? "Run again" : "Evaluate SCIP"}
+      </button>
+    </div>
+    <p class="sub">${esc(provider?.detail ?? "SCIP status unavailable.")}</p>
+    ${outcome}
+  </div>`;
+}
+
+function scheduleScipOverviewRefresh(workspace) {
+  clearTimeout(scipOverviewRefreshTimer);
+  scipOverviewRefreshTimer = setTimeout(() => {
+    scipOverviewRefreshTimer = null;
+    void pollScipOverview(workspace);
+  }, SCIP_OVERVIEW_REFRESH_MS);
+}
+
+/** Keep a reloaded or second window in sync with provider runs started elsewhere. */
+async function pollScipOverview(workspace) {
+  const route = parseHash();
+  if (route.name !== "project" || route.id !== workspace.id || route.tab !== "overview") return;
+  try {
+    const providerState = await api(`/api/workspaces/${workspace.id}/providers`);
+    const current = document.querySelector(
+      `[data-provider-evaluation="${workspace.id}"]`,
+    );
+    if (!current?.isConnected) return;
+
+    const holder = document.createElement("div");
+    holder.innerHTML = providerEvaluation(workspace, providerState);
+    const replacement = holder.firstElementChild;
+    if (replacement) {
+      current.replaceWith(replacement);
+      on("evaluate-scip", (element) => void evaluateScip(workspace, element), replacement);
+    }
+  } catch {
+    // The normal engine health poll owns global connectivity feedback. Keep
+    // the last provider result visible during a transient request failure.
+  } finally {
+    const currentRoute = parseHash();
+    if (
+      currentRoute.name === "project" &&
+      currentRoute.id === workspace.id &&
+      currentRoute.tab === "overview"
+    ) {
+      scheduleScipOverviewRefresh(workspace);
+    }
+  }
+}
+
+async function refreshScipOverview(workspace) {
+  const route = parseHash();
+  if (route.name !== "project" || route.id !== workspace.id || route.tab !== "overview") return;
+  const pane = document.getElementById("pane");
+  if (pane?.isConnected) await paneOverview(workspace, pane);
+}
+
+async function evaluateScip(workspace, button) {
+  button.disabled = true;
+  button.textContent = "Evaluating…";
+  toast("SCIP is indexing this project for comparison.");
+  try {
+    await api(`/api/workspaces/${workspace.id}/providers/scip-typescript/evaluate`, {
+      method: "POST",
+    });
+    await refreshScipOverview(workspace);
+    toast("SCIP evaluation finished. Results remain unverified until immutable staging lands.");
+  } catch (error) {
+    toast(error.message);
+    await refreshScipOverview(workspace);
   }
 }
 
@@ -1423,6 +1545,21 @@ function renderSettings() {
     .join("");
 
   const status = state.status;
+  const providers = state.providers
+    .map(
+      (provider) => `<div class="setting">
+        <div class="setting-body">
+          <div class="setting-title">
+            ${esc(provider.name)}
+            <span class="pill ${provider.available ? "on" : ""}">${provider.available ? "available" : "unavailable"}</span>
+            ${provider.bundled ? '<span class="pill">bundled</span>' : '<span class="pill">optional</span>'}
+          </div>
+          <div class="sub">${esc(provider.version ? `v${provider.version} · ${provider.detail}` : provider.detail)}</div>
+          <div class="sub note">${provider.capabilities.map(esc).join(" · ")}</div>
+        </div>
+      </div>`,
+    )
+    .join("");
   ui.view.innerHTML = `
     <div class="page">
       <div class="page-head">
@@ -1430,6 +1567,14 @@ function renderSettings() {
           <h1>Settings</h1>
           <p class="sub">Coding agents and the local engine.</p>
         </div>
+      </div>
+
+      <div class="block">
+        <h3 class="section">Code-intelligence providers</h3>
+        <p class="sub block-lede">
+          Syntax always remains available. Precise and program-analysis providers add evidence without becoming hidden dependencies.
+        </p>
+        <div class="settings-list">${providers}</div>
       </div>
 
       <div class="block">
@@ -1553,7 +1698,10 @@ function viewKey(route) {
     )
     .join(",");
   const agents = state.harnesses.map((h) => `${h.id}:${h.connected ? 1 : 0}`).join(",");
-  return JSON.stringify([route, workspaces, agents, Boolean(state.status)]);
+  const providers = state.providers
+    .map((provider) => `${provider.id}:${provider.available ? 1 : 0}:${provider.version ?? ""}`)
+    .join(",");
+  return JSON.stringify([route, workspaces, agents, providers, Boolean(state.status)]);
 }
 
 function render() {
@@ -1612,13 +1760,15 @@ async function refresh(force = false) {
   try {
     const shouldRefreshHarnesses =
       state.harnesses.length === 0 || Date.now() - harnessRefreshAt >= HARNESS_REFRESH_MS;
-    const [status, harnesses, workspaces] = await Promise.all([
+    const [status, harnesses, providers, workspaces] = await Promise.all([
       api("/api/status"),
       shouldRefreshHarnesses ? api("/api/harnesses") : Promise.resolve(state.harnesses),
+      shouldRefreshHarnesses ? api("/api/providers") : Promise.resolve(state.providers),
       api("/api/workspaces"),
     ]);
     state.status = status;
     state.harnesses = harnesses;
+    state.providers = providers;
     if (shouldRefreshHarnesses) harnessRefreshAt = Date.now();
     state.workspaces = workspaces;
     if (force) state.renderedKey = null;

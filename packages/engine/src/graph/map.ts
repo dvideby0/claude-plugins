@@ -253,6 +253,25 @@ export function finalizeMap(
     );
   }
 
+  // A resumed first drawing may inherit boxes from an earlier scan. Requiring
+  // their evidence snapshots to be refreshed prevents a newly completed map
+  // from appearing stale the moment it is shown.
+  const current = systemMap(db);
+  const staleComponents = current.components.filter((component) => component.drifted);
+  const staleFlows = current.flows.filter((flow) =>
+    flow.steps.some((step) => step.drifted || !step.resolves),
+  );
+  if (staleComponents.length > 0 || staleFlows.length > 0) {
+    const names = [
+      ...staleComponents.map((component) => component.name),
+      ...staleFlows.map((flow) => flow.name),
+    ];
+    throw new Error(
+      `Map still has ${names.length} stale component/flow item(s): ${names.slice(0, 10).join(", ")}. ` +
+        "Re-describe them against the current index before finalizing.",
+    );
+  }
+
   // Each drawing must advance the marker. A timestamp alone can collide when
   // a fast retry finalizes in the same millisecond, and the draw supervisor
   // uses this value to distinguish new completion from an inherited old flag.

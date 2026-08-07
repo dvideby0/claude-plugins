@@ -23,7 +23,10 @@ use rayon::prelude::*;
 use std::path::Path;
 
 mod parse;
+mod provider;
 mod walk;
+
+pub use provider::{inspect_scip, NativeScipDocument, NativeScipSummary};
 
 #[napi(object)]
 pub struct NativeSymbol {

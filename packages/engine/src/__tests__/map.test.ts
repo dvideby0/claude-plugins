@@ -334,6 +334,20 @@ describe("the drawn map", () => {
     expect(() => finalizeMap(db)).toThrow(/unexplained file/);
     expect(mapDrift(db).complete).toBe(false);
   });
+
+  it("refuses to finalize a resumed box whose evidence snapshot is stale", async () => {
+    root = await makeProject(PROJECT);
+    await scan(root, { kind: "full" });
+    const db = await getDb(root);
+    describeComponent(db, { name: "App", kind: "system", members: ["src/"] });
+
+    await writeFile(join(root, "src/api/routes.py"), "def route():\n    return 'changed'\n");
+    await scan(root, { kind: "incremental" });
+
+    expect(() => finalizeMap(db)).toThrow(/stale component\/flow/);
+    describeComponent(db, { name: "App", members: ["src/"] });
+    expect(() => finalizeMap(db)).not.toThrow();
+  });
 });
 
 describe("crossing between the two maps", () => {

@@ -1,0 +1,16 @@
+{
+  "scenario": "typescript-entry-effect",
+  "features": [
+    "cross-file-call",
+    "branch",
+    "early-return",
+    "throw",
+    "await",
+    "terminal-response"
+  ],
+  "scip": {
+    "documents": 2,
+    "minimumDefinitions": 4,
+    "minimumReferences": 5
+  }
+}

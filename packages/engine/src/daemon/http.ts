@@ -36,6 +36,14 @@ import { WorkspaceWatcher } from "./watcher.js";
 import { hasTypedConfigChange, WatchRefreshQueue } from "./watch-refresh.js";
 import { WorkspaceRegistry } from "./workspaces.js";
 import { canonicalWorkspaceRoot, workspaceIdentityKey } from "../lib/workspace-path.js";
+import {
+  cancelAllScipEvaluations,
+  cancelScipEvaluation,
+  detectProviders,
+  latestScipEvaluation,
+  runScipEvaluation,
+  scipEvaluationRunning,
+} from "../providers/index.js";
 
 export interface HttpServerOptions {
   token: string;
@@ -547,6 +555,59 @@ export function createHttpServer(options: HttpServerOptions): HttpServerHandle {
       return true;
     }
 
+    if (path === "/api/providers" && method === "GET") {
+      sendJson(res, 200, await detectProviders());
+      return true;
+    }
+
+    const workspaceProvidersMatch =
+      /^\/api\/workspaces\/([a-f0-9]{12})\/providers(?:\/scip-typescript\/evaluate)?$/.exec(
+        path,
+      );
+    if (workspaceProvidersMatch) {
+      const id = workspaceProvidersMatch[1] as string;
+      const workspace = await registry.get(id);
+      if (!workspace) {
+        sendJson(res, 404, { error: "Unknown workspace." });
+        return true;
+      }
+      if (!isWorkspaceDirectory(workspace.root)) {
+        sendJson(res, 503, { error: `Workspace is temporarily unavailable: ${workspace.root}` });
+        return true;
+      }
+
+      if (path.endsWith("/evaluate") && method === "POST") {
+        try {
+          const db = await getDb(workspace.root);
+          log(`SCIP evaluation started for ${workspace.root}`);
+          const evaluation = await runScipEvaluation(id, workspace.root, db);
+          log(
+            `SCIP evaluation ${evaluation.status} for ${workspace.root} in ${evaluation.durationMs}ms`,
+          );
+          sendJson(res, evaluation.status === "failed" ? 422 : 200, evaluation);
+        } catch (error) {
+          log(
+            `SCIP evaluation stopped for ${workspace.root}: ${
+              error instanceof Error ? error.message : error
+            }`,
+          );
+          sendJson(res, 500, { error: error instanceof Error ? error.message : String(error) });
+        }
+        return true;
+      }
+
+      if (method === "GET") {
+        sendJson(res, 200, {
+          providers: await detectProviders(),
+          scip: {
+            running: scipEvaluationRunning(id),
+            latest: await latestScipEvaluation(id),
+          },
+        });
+        return true;
+      }
+    }
+
     // Suppress a finding from the UI — the same path audit_suppress writes.
     const suppressMatch = /^\/api\/workspaces\/([a-f0-9]{12})\/findings\/([a-f0-9]+)\/suppress$/.exec(
       path,
@@ -652,6 +713,7 @@ export function createHttpServer(options: HttpServerOptions): HttpServerHandle {
         }
         for (const session of workspaceSessions) session.close();
         if (job) requestIndexStop(job);
+        await cancelScipEvaluation(id);
         await cancelTypedPasses(workspace.root);
         await watchRefresh.discard(workspace.root);
         if (job) await job.finished;
@@ -1020,6 +1082,7 @@ export function createHttpServer(options: HttpServerOptions): HttpServerHandle {
 
   function shutdown(): void {
     watcher.stopAll();
+    cancelAllScipEvaluations();
     for (const timer of typedTimers.values()) clearTimeout(timer);
     typedTimers.clear();
     for (const controllers of typedControllers.values()) {

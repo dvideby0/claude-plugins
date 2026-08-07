@@ -10,6 +10,14 @@ Future precise references and deeper program analysis follow the
 compiler/language-server, or Code Property Graph outputs and concentrate SDLC
 work on orchestration, evidence-backed fusion, retrieval, and product workflows.
 
+Implementation update, 2026-08-06: the official SCIP TypeScript indexer is now
+available through a bounded evaluation path. Its protobuf output is decoded and
+hashed in Rust, its artifacts live in app-owned storage, and its capabilities
+and comparison results appear in the desktop. These runs are intentionally
+`unverified` because they inspect a mutable working tree; they do not replace
+the current syntax/reference facts. Joern is capability-detected only and still
+requires the planned bounded control/data-flow evaluation.
+
 ## Executive assessment
 
 The repository already validates the most important architectural choice: a reusable local engine, a daemon-served interface, a desktop supervisor, and thin tool integrations can be packaged as one system. The project is beyond a throwaway proof of concept. It has a meaningful schema, native parsing, a working MCP surface, a useful initial UI, packaging automation, and a healthy TypeScript test suite.
@@ -24,7 +32,7 @@ The other structural risk is storage. The engine currently writes a `sql.js` dat
 | --- | --- | --- |
 | App/engine/integration separation | Strong foundation | The package boundaries match the product direction. |
 | File and symbol indexing | Functional prototype | Fast native TS/JS/Python extraction with a TypeScript fallback. |
-| Precise references | Partial | TypeScript enrichment improves results; fallback has no reference extraction and language coverage is narrow. |
+| Precise references | Partial | TypeScript enrichment improves results; official SCIP output can now be evaluated but is not yet imported from an immutable snapshot. |
 | Execution and data flow | Early | The current “flow” is a call graph with heuristic roots, not entry-to-effect program flow. |
 | Human-readable system map | Promising | Components and ordered flows exist, but they are authored overlays rather than evidence-derived semantic objects. |
 | Incremental recomputation | Basic | Content hashes avoid some database rewrites, but invalidation is file-level and native scans still revisit the repository. |
@@ -33,7 +41,7 @@ The other structural risk is storage. The engine currently writes a `sql.js` dat
 | Desktop experience | Functional shell | Useful maps and operational views exist, but it is not yet a complete code-intelligence workspace. |
 | Claude/Codex installation | Partial | MCP connection exists; complete plugin/skill lifecycle and supported Codex configuration are missing. |
 | Packaging and CI | Promising | Desktop packaging, native build matrices, smoke scripts, and plugin validation are present. |
-| Quality measurement | Mixed | Unit coverage is useful; Rust unit tests, golden analysis corpora, system benchmarks, and retrieval/product evals are absent. |
+| Quality measurement | Mixed | Unit coverage is useful; Rust SCIP tests and one golden analysis fixture now exist, but a real scoring harness and retrieval/product evals are absent. |
 
 ## What exists today
 
@@ -73,6 +81,19 @@ Important limits:
 - Stable symbol identity includes source position, so unrelated line movement can create avoidable churn.
 - “Incremental” currently limits database replacement, but repository walking, hashing, and native parsing are not yet a fine-grained persistent incremental pipeline.
 - Recursive filesystem watching has platform-dependent behavior and can silently fall back to no watcher.
+
+The provider evaluation layer now packages `@sourcegraph/scip-typescript`,
+runs it with time/output bounds, retains five app-owned runs, and uses the
+official Rust SCIP types to summarize definitions, references, relationships,
+and artifact provenance. It is a measurement path rather than a production fact
+source: mutable inputs are labeled unverified, and provider failure leaves the
+Tree-sitter index available. It discovers both `tsconfig.json` and
+`jsconfig.json`, reports invalid or skipped projects and oversized-source skips
+as partial output, and passes project paths through a hardened argument boundary
+so legal flag-like directory names cannot become provider options. Provider
+preflight validates bounded config text without expanding project globs on the
+daemon thread; solution-style roots are passed through so SCIP can follow their
+custom-named project references under its own process bounds.
 
 ### Graph, flow, and gap handling
 
@@ -116,6 +137,31 @@ The `brief` implementation is a good beginning: it assembles nearby symbols, imp
 The desktop app can supervise the daemon, add/index projects, inspect overview/map/flow/graph/findings/memory views, draw maps, and show integration status. This makes the architecture tangible.
 
 Today it remains primarily an operational viewer. The next product step is a question-centered workspace with global search, source display, precise navigation, callers/callees, saved paths, synchronized code and graph views, change comparison, knowledge editing, and index-health explanations. The engine already has a cross-search endpoint that is not yet elevated into the main UI.
+
+A live desktop walkthrough on 2026-08-06 confirmed that repository validation,
+deterministic rescanning, findings drill-down, stale-memory display, Claude and
+Codex MCP connection, SCIP evaluation, cross-window provider refresh, and
+component/file drill-down all work. Agent-authored map generation completed for
+this repository and produced useful components and operational narratives. The
+same workflow initially exited before finalization on a larger Python
+repository because Claude deferred the app's MCP tools while the unattended
+runner intentionally disabled built-in tools. The app now eagerly loads its
+small allowlisted MCP surface. A resumed run completed with 12 named components,
+five operational flows, and 98% coverage; a subsequent maintenance run refreshed
+six drifted components and left every component and flow clean. Finalization now
+rejects retained stale evidence, and maintenance completion no longer requires a
+new-map marker. Interrupted work is therefore preserved and resumable, though
+the product still needs cancellation UX, richer progress, and broader stress
+coverage. The whole-repository graph became an unreadable dense cluster, while
+the Flow view remained the bounded call-graph prototype described above.
+
+The walkthrough also exposed an input-boundary defect: packaging output under
+`release/` entered the source inventory and appeared as an unexplained file in
+the newly drawn map. Native and fallback scanners intentionally share the same
+hard-coded exclusions, but neither currently applies the repository's ignored
+generated-file policy. Source inclusion/exclusion must become deterministic,
+explainable, and identical across full scans and watch refreshes before map
+coverage is a trustworthy product metric.
 
 ### Tool integration
 

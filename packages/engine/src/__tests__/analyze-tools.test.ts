@@ -27,6 +27,8 @@ describe("TypeScript project discovery", () => {
 
     const result = await findTsConfigs(root);
     expect(result.capped).toBe(false);
+    expect(result.configs).toHaveLength(3);
+    expect(result.issues).toEqual([]);
     expect(result.roots).toEqual([
       root,
       join(root, "packages", "api"),
@@ -47,5 +49,45 @@ describe("TypeScript project discovery", () => {
     const result = await findTsConfigs(root, 2);
     expect(result.roots).toHaveLength(2);
     expect(result.capped).toBe(true);
+    expect(result.found).toBe(3);
+  });
+
+  it("reports an invalid config instead of treating the repository as configless", async () => {
+    root = await makeProject({
+      "tsconfig.json": "{ invalid json",
+      "index.ts": "export {};",
+    });
+
+    const result = await findTsConfigs(root);
+    expect(result.found).toBe(1);
+    expect(result.roots).toEqual([]);
+    expect(result.issues).toHaveLength(1);
+    expect(result.issues[0]?.config).toBe(join(root, "tsconfig.json"));
+  });
+
+  it("can validate solution configs without expanding their file globs", async () => {
+    root = await makeProject({
+      "tsconfig.json": JSON.stringify({
+        files: [],
+        references: [{ path: "./tsconfig.app.json" }],
+      }),
+      "tsconfig.app.json": config,
+      "index.ts": "export {};",
+    });
+
+    const result = await findTsConfigs(root, 64, undefined, ["tsconfig.json"], false);
+    expect(result.configs).toEqual([join(root, "tsconfig.json")]);
+    expect(result.issues).toEqual([]);
+  });
+
+  it("honors cancellation before traversing project configs", async () => {
+    root = await makeProject({
+      "tsconfig.json": config,
+      "index.ts": "export {};",
+    });
+    const controller = new AbortController();
+    controller.abort(new Error("cancel discovery"));
+
+    await expect(findTsConfigs(root, 64, controller.signal)).rejects.toThrow(/cancel discovery/);
   });
 });

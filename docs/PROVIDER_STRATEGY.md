@@ -86,6 +86,41 @@ compiler's complete input dependency graph inside the query path.
 5. Keep, replace, or supplement providers based on measured gaps. Write custom
    analyzers only for product-specific relations or proven provider gaps.
 
+## Implementation status
+
+As of 2026-08-06, the first evaluation boundary exists:
+
+- the official `@sourcegraph/scip-typescript` 0.4.0 indexer is bundled for
+  TypeScript and JavaScript evaluation;
+- the app runs it under the existing bounded process supervisor and writes its
+  output and manifest under app-owned provider storage;
+- the Rust native core decodes the official SCIP protobuf, applies a bounded
+  input limit, hashes the artifact, deduplicates documents emitted by
+  overlapping project configs for comparison, and returns aggregates;
+- configless JavaScript/TypeScript evaluation uses an app-owned config built
+  from the deterministic source inventory; it never invokes the upstream
+  `--infer-tsconfig` mode that writes into the source repository;
+- Settings reports provider capabilities and the project Overview can run and
+  inspect a SCIP comparison without replacing the existing syntax facts;
+- mutable-working-tree runs are deliberately labeled `unverified`, never
+  `exact`, and only the five most recent evaluation artifacts are retained;
+- provider discovery, execution, and decode waits honor removal/shutdown
+  cancellation, while successful indexes with skipped project configs remain
+  inspectable but are explicitly labeled `partial`;
+- both `tsconfig.json` and `jsconfig.json` are discovered; invalid configs,
+  oversized-source skips, and mixed valid/invalid project sets are surfaced as
+  failed or partial instead of silently appearing complete, and flag-like legal
+  project paths are passed as paths rather than CLI options;
+- config preflight is bounded and syntax-only; it does not expand TypeScript
+  globs on the daemon thread, and solution-style roots remain intact so the
+  provider can follow custom-named project references itself;
+- Joern capability detection exists, but no Joern adapter is enabled or bundled
+  yet. Its first use remains the bounded EVAL-001 control/data-flow spike.
+
+This completes an evaluation slice, not PROV-001. Immutable input staging,
+attested input manifests, stale/current transitions, provider-neutral fact
+import, and evaluation across the full golden corpus remain open.
+
 ## Guardrails
 
 - Search for mature, battle-tested implementations before designing a custom

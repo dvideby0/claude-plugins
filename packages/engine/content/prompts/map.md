@@ -15,7 +15,9 @@ You are running unattended. Do not ask questions; make the call and record it.
 Call `map_drift` first.
 
 - **`complete: false`** → the first drawing is new or was interrupted. Do the
-  whole of §2–§5, preserving any useful boxes or flows already present.
+  whole of §2–§5, preserving any useful boxes or flows already present. Any
+  retained item listed in `map_drift.components` or `map_drift.flows` must be
+  re-described against the current index so its evidence snapshot is fresh.
 - **`complete: true` and `clean: false`** → a drawing exists and the code moved
   under it. Do **only**
   §6, then stop. Redrawing what has not changed wastes the work that produced it.

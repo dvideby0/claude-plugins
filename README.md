@@ -82,6 +82,26 @@ Start the app, which starts the engine:
 npm run desktop
 ```
 
+In the desktop app, **Settings** now shows the available code-intelligence
+providers. Add and index a TypeScript/JavaScript project, open its **Overview**,
+and choose **Evaluate SCIP** to compare the current prototype's document,
+symbol, and reference coverage with the bundled official SCIP indexer. The
+comparison is an evaluation signal, not a precision score, and is labeled
+**unverified** because it reads the mutable working tree. It does not replace
+the project's trusted facts. Repositories without a TypeScript config are
+evaluated through an app-owned inferred config; evaluation never creates a
+`tsconfig.json` in the source repository. If the upstream indexer skips one of
+several project configs, the usable comparison is retained and labeled
+**partial** instead of being presented as a complete success. JavaScript
+projects using `jsconfig.json` are discovered as well; invalid configs and
+oversized files are reported rather than silently broadening or completing the
+evaluation. Solution-style roots remain supported, with SCIP—not SDLC—resolving
+their referenced project configs under the provider's process bounds.
+
+Tree-sitter remains available if SCIP fails. Joern is shown only when its
+`joern-parse` command is installed; detection does not yet enable or bundle the
+planned control/data-flow adapter.
+
 Or run the engine on its own, headless:
 
 ```bash
