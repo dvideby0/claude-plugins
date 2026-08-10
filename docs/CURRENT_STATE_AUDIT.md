@@ -73,6 +73,12 @@ The schema in [`packages/engine/src/db/schema.ts`](../packages/engine/src/db/sch
 
 That is a good substrate for evolving toward base facts and derived overlays. The missing piece is an explicit, consistent provenance and dependency model across every fact type.
 
+The first versioned provider-neutral envelope is now documented in
+[`FACT_MODEL.md`](FACT_MODEL.md), and the legacy deterministic/asserted tables
+can be projected into it without changing their authority. SCIP facts are not
+yet projected or persisted through that contract, and dependency ownership is
+still incomplete.
+
 ### Scanning and reference resolution
 
 The scanner hashes files, extracts symbols/imports/references, and supports full and changed-file updates. Changing the extractor version forces a refresh. The Rust path is materially faster than the TypeScript path on the current repository.

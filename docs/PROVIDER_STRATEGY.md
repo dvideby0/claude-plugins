@@ -48,6 +48,10 @@ SDLC's differentiated work is the product and knowledge-fusion layer:
   memories, and change understanding;
 - budgeted context delivery through MCP and supported Claude/Codex connectors.
 
+The versioned minimum envelope is documented in
+[`FACT_MODEL.md`](FACT_MODEL.md). Provider-native SCIP and CPG detail remains
+available behind that boundary rather than being reimplemented in the envelope.
+
 SDLC does not own language package-resolution edge cases, compiler-grade symbol
 identity, or mature universal program-analysis algorithms. Provider adapters
 translate those results into SDLC's envelope without pretending SDLC produced

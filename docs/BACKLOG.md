@@ -91,6 +91,14 @@ Acceptance criteria:
 - Versioned schema documentation includes compatibility and migration rules.
 - Existing symbols/imports/refs and asserted relations can be projected into the contract.
 
+Progress (2026-08-10): schema version 1 now defines the minimum producer,
+generation, ownership, certainty, freshness, evidence, endpoint, node, and edge
+envelope plus the initial relation vocabulary. The existing files, symbols,
+imports, references, and authored relations project into it without replacing
+their prototype tables; missing legacy import ranges and unresolved endpoints
+remain explicit. Official SCIP projection, provider-run ownership persistence,
+and broader query adoption remain open.
+
 ### EVAL-001: Golden corpus and measurement harness
 
 Create small checked-in repositories or fixtures that exercise direct calls, aliases, overloads, callbacks, conditions, exceptions, async work, HTTP registration, events, database effects, and unresolved dynamic behavior. Include expected symbols, relations, entry points, paths, and uncertainty.

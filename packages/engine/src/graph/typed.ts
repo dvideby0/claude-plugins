@@ -28,6 +28,7 @@ import type { Db } from "../db/db.js";
  * fail, and null out the very rows the typed pass just established.
  */
 export const TYPED_SPECIFIER = "typed";
+export const TYPED_GENERATION_META_KEY = "typed_workspace_generation";
 
 /** Destination identity participates in the existing refs primary key. */
 export function typedSpecifier(destination: string, line: number, column: number): string {
@@ -571,6 +572,10 @@ export function applyTypedAnalysis(db: Db, analysis: TypedAnalysis): TypedResult
       db.run("UPDATE files SET ref_coverage = 'typed' WHERE path = ?", [src]);
     }
     db.refreshReferenceIdentity();
+    db.run("INSERT OR REPLACE INTO meta(key, value) VALUES(?, ?)", [
+      TYPED_GENERATION_META_KEY,
+      typedWorkspaceGeneration(db),
+    ]);
   });
 
   const after = db.count("SELECT COUNT(*) AS n FROM refs WHERE dst_path IS NOT NULL");
