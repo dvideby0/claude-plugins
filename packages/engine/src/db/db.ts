@@ -63,6 +63,7 @@ export class Db {
     { table: "symbols", column: "start_column", type: "INTEGER NOT NULL DEFAULT 0" },
     { table: "symbols", column: "end_column", type: "INTEGER NOT NULL DEFAULT 0" },
     { table: "files", column: "ref_coverage", type: "TEXT NOT NULL DEFAULT 'none'" },
+    { table: "files", column: "ref_generation", type: "TEXT" },
     { table: "components", column: "member_digest", type: "TEXT" },
     { table: "flow_steps", column: "content_sha", type: "TEXT" },
   ];

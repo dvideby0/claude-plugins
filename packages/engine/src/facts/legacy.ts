@@ -1,10 +1,6 @@
 import { createHash } from "node:crypto";
 import type { Db } from "../db/db.js";
-import {
-  TYPED_GENERATION_META_KEY,
-  TYPED_SPECIFIER,
-  typedWorkspaceGeneration,
-} from "../graph/typed.js";
+import { TYPED_SPECIFIER, typedWorkspaceGeneration } from "../graph/typed.js";
 import { EXTRACTION_VERSION } from "../scan/scan.js";
 import { indexedSourceSignature } from "../scan/signature.js";
 import {
@@ -74,12 +70,12 @@ function assertionKind(kind: string): FactEdgeKind {
   return kinds[kind] ?? "reference";
 }
 
-function compilerFreshness(db: Db): FreshnessState {
-  const generation = db.get<{ value: string }>("SELECT value FROM meta WHERE key = ?", [
-    TYPED_GENERATION_META_KEY,
-  ])?.value;
-  if (!generation) return "unverified";
-  return generation === typedWorkspaceGeneration(db) ? "current" : "stale";
+function compilerFreshness(
+  recordedGeneration: string | null,
+  currentGeneration: string,
+): FreshnessState {
+  if (!recordedGeneration) return "unverified";
+  return recordedGeneration === currentGeneration ? "current" : "stale";
 }
 
 function sourceRef(
@@ -119,7 +115,7 @@ function sourceRef(
 export function projectLegacyFacts(db: Db, options: LegacyFactOptions): FactBatch {
   const generatedAt = options.generatedAt ?? new Date().toISOString();
   const generation: FactGeneration = { sourceSignature: indexedSourceSignature(db) };
-  const typedFreshness = compilerFreshness(db);
+  const currentTypedGeneration = typedWorkspaceGeneration(db);
   const nodes: FactNode[] = [];
   const edges: FactEdge[] = [];
 
@@ -242,14 +238,21 @@ export function projectLegacyFacts(db: Db, options: LegacyFactOptions): FactBatc
     dst_line: number | null;
     dst_column: number | null;
     dst_symbol_id: string | null;
+    ref_generation: string | null;
   }>(
     `SELECT src_path, src_line, src_column, src_symbol, src_symbol_id, name, specifier,
-            dst_path, dst_line, dst_column, dst_symbol_id
-       FROM refs ORDER BY src_path, src_line, src_column, name`,
+            dst_path, dst_line, dst_column, dst_symbol_id, f.ref_generation
+       FROM refs r
+       LEFT JOIN files f ON f.path = r.src_path AND f.present = 1
+       ORDER BY src_path, src_line, src_column, name`,
   )) {
     const typed =
       reference.specifier === TYPED_SPECIFIER ||
       reference.specifier.startsWith(`${TYPED_SPECIFIER}:`);
+    const typedFreshness = compilerFreshness(
+      reference.ref_generation,
+      currentTypedGeneration,
+    );
     const anchor: FactAnchor = {
       path: reference.src_path,
       ...(reference.src_symbol ? { symbol: reference.src_symbol } : {}),

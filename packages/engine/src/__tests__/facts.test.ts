@@ -182,4 +182,32 @@ describe("provider-neutral fact contract", () => {
       )?.freshness,
     ).toBe("stale");
   });
+
+  it("does not bless compiler facts from files omitted by a later partial pass", async () => {
+    root = await makeProject({
+      "tsconfig.json": JSON.stringify({ files: ["src/main.ts", "src/store.ts"] }),
+      "src/main.ts":
+        'import { save } from "./store";\nexport function run() { return save(); }\n',
+      "src/store.ts": "export function save() { return true; }\n",
+      "src/other.ts": "export const value = 1;\nconsole.log(value);\n",
+    });
+    await scan(root, { full: true, kind: "fact-contract-partial-generation-test" });
+    const db = await getDb(root);
+    expect(resolveTypes(db, root).resolved).toBe(1);
+
+    await writeFile(
+      join(root, "tsconfig.json"),
+      JSON.stringify({ files: ["src/other.ts"] }),
+    );
+    await scan(root, { kind: "fact-contract-partial-generation-test" });
+    expect(resolveTypes(db, root).resolved).toBe(1);
+
+    const references = projectLegacyFacts(db, { workspaceId: "workspace-1" }).edges.filter(
+      (edge) => edge.kind === "reference" && edge.producer.kind === "compiler",
+    );
+    expect(references.find((edge) => edge.source.path === "src/main.ts")?.freshness).toBe("stale");
+    expect(references.find((edge) => edge.source.path === "src/other.ts")?.freshness).toBe(
+      "current",
+    );
+  });
 });

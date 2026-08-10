@@ -71,9 +71,10 @@ relations without changing their authoritative tables. It deliberately records
 that legacy import edges lack source ranges, keeps import-resolved references
 `inferred`, keeps compiler-resolved references distinct, and keeps agent
 relations `asserted`. A successful legacy compiler pass records the indexed
-workspace generation it resolved; projected compiler facts are `current` only
-while that generation still matches, `stale` after a source change, and
-`unverified` for older stores that have no attestation.
+workspace generation for each source file whose references it replaced;
+projected compiler facts are `current` only while that generation still
+matches, `stale` after a source or project-coverage change, and `unverified`
+for older stores that have no attestation.
 
 The next provider slice projects official SCIP occurrences and relationships
 into the same envelope for measured comparison. Persistence waits for

@@ -164,14 +164,16 @@ async function doScan(projectRoot: string, options: ScanOptions = {}): Promise<S
         refreshed && engine === "native" && parseable(file.path, file.lang) ? "import" : "none";
 
       db.run(
-        `INSERT INTO files(path, lang, loc, bytes, content_sha, churn, is_test, parsed, ref_coverage, present,
+        `INSERT INTO files(path, lang, loc, bytes, content_sha, churn, is_test, parsed,
+                           ref_coverage, ref_generation, present,
                            first_seen_run, last_seen_run)
-         VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
+         VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 1, ?, ?)
          ON CONFLICT(path) DO UPDATE SET
            lang = excluded.lang, loc = excluded.loc, bytes = excluded.bytes,
            content_sha = excluded.content_sha, churn = excluded.churn,
            is_test = excluded.is_test,
            ref_coverage = CASE WHEN ? = 1 THEN excluded.ref_coverage ELSE files.ref_coverage END,
+           ref_generation = CASE WHEN ? = 1 THEN NULL ELSE files.ref_generation END,
            present = 1, last_seen_run = excluded.last_seen_run`,
         [
           file.path,
@@ -185,6 +187,7 @@ async function doScan(projectRoot: string, options: ScanOptions = {}): Promise<S
           referenceCoverage,
           runId,
           runId,
+          refreshed ? 1 : 0,
           refreshed ? 1 : 0,
         ],
       );
