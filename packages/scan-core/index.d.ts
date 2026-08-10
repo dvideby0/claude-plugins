@@ -25,8 +25,28 @@ export interface NativeScipSummary {
   sha256: string
   sampleDocuments: Array<NativeScipDocument>
 }
+export interface NativeStagedSnapshot {
+  sourceSignature: string
+  files: number
+  bytes: number
+}
+export interface NativeSnapshotEntry {
+  path: string
+  bytes: number
+  sha256: string
+}
+export interface NativeSnapshotManifest {
+  inputSignature: string
+  files: number
+  bytes: number
+  entries: Array<NativeSnapshotEntry>
+}
 /** Decode and summarize a SCIP protobuf without blocking the Node event loop. */
 export declare function inspectScip(path: string): Promise<NativeScipSummary>
+/** Copy the indexed source inventory into a private, immutable-for-the-run view. */
+export declare function stageSourceSnapshot(root: string, destination: string, expectedSignature: string): Promise<NativeStagedSnapshot>
+/** Hash every staged provider input before and after execution. */
+export declare function snapshotManifest(root: string): Promise<NativeSnapshotManifest>
 export interface NativeSymbol {
   kind: string
   name: string

@@ -15,9 +15,14 @@ import { findTsConfigs } from "../analyze/tools.js";
 import type { Db } from "../db/db.js";
 import { exec, spawnEnv, which } from "../lib/exec.js";
 import { resolveWorkspacePath } from "../lib/workspace-path.js";
-import { loadNative, type NativeScipSummary } from "../scan/source.js";
+import {
+  loadNative,
+  type NativeScipSummary,
+  type NativeSnapshotManifest,
+} from "../scan/source.js";
+import { indexedSourceSignature } from "../scan/signature.js";
 
-export type ProviderTrust = "syntax" | "unverified" | "exact";
+export type ProviderTrust = "syntax" | "unverified" | "exact" | "stale";
 
 export interface ProviderStatus {
   id: "tree-sitter" | "scip-typescript" | "joern";
@@ -41,9 +46,14 @@ export interface ScipEvaluation {
   provider: "scip-typescript";
   providerVersion: string;
   status: "ok" | "partial" | "failed";
-  trust: "unverified";
-  exact: false;
-  reason: "mutable_working_tree";
+  trust: "unverified" | "exact" | "stale";
+  exact: boolean;
+  reason:
+    | "mutable_working_tree"
+    | "immutable_staged_snapshot"
+    | "working_tree_changed"
+    | "provider_failed"
+    | "staged_input_changed";
   startedAt: string;
   finishedAt: string;
   durationMs: number;
@@ -52,6 +62,13 @@ export interface ScipEvaluation {
   /** Repository-relative project roots, or the app-owned inferred-input marker. */
   projects: string[];
   baseline: ScipBaseline;
+  input: {
+    sourceSignature: string;
+    inputSignature: string;
+    files: number;
+    bytes: number;
+    entries: NativeSnapshotManifest["entries"];
+  } | null;
   scip: NativeScipSummary | null;
   error: string | null;
 }
@@ -94,6 +111,9 @@ export async function detectProviders(refresh = false): Promise<ProviderStatus[]
 
   const scip = bundledScip();
   const native = loadNative();
+  const scipRuntime = Boolean(
+    native?.inspectScip && native.stageSourceSnapshot && native.snapshotManifest,
+  );
   const joern = await which("joern-parse", spawnEnv());
   const providers: ProviderStatus[] = [
     {
@@ -109,16 +129,16 @@ export async function detectProviders(refresh = false): Promise<ProviderStatus[]
     {
       id: "scip-typescript",
       name: "SCIP TypeScript",
-      available: Boolean(scip && native?.inspectScip),
+      available: Boolean(scip && scipRuntime),
       bundled: Boolean(scip),
       version: scip?.version ?? null,
       capabilities: ["definitions", "references", "implementations", "symbol-identity"],
       trust: "unverified",
       detail: !scip
         ? "Bundled indexer is missing."
-        : !native?.inspectScip
-          ? "Native SCIP importer is unavailable; syntax indexing still works."
-          : "Ready for an evaluation run. Exact imports require immutable staging.",
+        : !scipRuntime
+          ? "Native SCIP snapshot/import support is unavailable; syntax indexing still works."
+          : "Ready to evaluate against an app-owned, attested source snapshot.",
     },
     {
       id: "joern",
@@ -193,8 +213,8 @@ interface ScipProjects {
  *
  * scip-typescript's --infer-tsconfig writes <workspace>/tsconfig.json. For a
  * configless JavaScript/TypeScript project, give it an app-owned config whose
- * exact file list comes from the deterministic index instead. The run remains
- * unverified because those files are still read from the mutable working tree.
+ * exact file list comes from the deterministic index instead. This function
+ * runs only after `root` has become the private staged input view.
  */
 async function scipProjects(
   root: string,
@@ -267,7 +287,8 @@ async function scipProjects(
     };
   }
 
-  const configPath = join(artifactDir, "inferred-tsconfig.json");
+  const configPath = join(artifactDir, ".sdlc-provider", "inferred-tsconfig.json");
+  await mkdir(dirname(configPath), { recursive: true, mode: 0o700 });
   await writeFile(
     configPath,
     JSON.stringify(
@@ -279,7 +300,7 @@ async function scipProjects(
           noEmit: true,
           skipLibCheck: true,
         },
-        files,
+        files: files.map((path) => toPosix(relative(dirname(configPath), path))),
       },
       null,
       2,
@@ -307,6 +328,26 @@ function incompleteDiagnostic(stdout: string, stderr: string): string | null {
     );
   if (diagnostics.length === 0) return null;
   return `SCIP skipped or could not fully index at least one project:\n${diagnostics.join("\n").slice(0, 4_000)}`;
+}
+
+function withCurrentSourceState(
+  evaluation: ScipEvaluation,
+  currentSourceSignature?: string,
+): ScipEvaluation {
+  if (
+    !currentSourceSignature ||
+    !evaluation.exact ||
+    !evaluation.input ||
+    evaluation.input.sourceSignature === currentSourceSignature
+  ) {
+    return evaluation;
+  }
+  return {
+    ...evaluation,
+    trust: "stale",
+    exact: false,
+    reason: "working_tree_changed",
+  };
 }
 
 /** Stop waiting for native work even when the underlying worker cannot be preempted. */
@@ -342,10 +383,13 @@ async function evaluateScip(
   const scip = bundledScip();
   const native = loadNative();
   if (!scip) throw new Error("The bundled SCIP TypeScript indexer is unavailable.");
-  if (!native?.inspectScip) throw new Error("The native SCIP importer is unavailable.");
+  if (!native?.inspectScip || !native.stageSourceSnapshot || !native.snapshotManifest) {
+    throw new Error("The native SCIP snapshot/import runtime is unavailable.");
+  }
 
   const id = runId();
   const artifactDir = join(artifactsRoot, workspaceId, "scip-typescript", id);
+  const snapshotRoot = join(artifactDir, "input");
   const indexPath = join(artifactDir, "index.scip");
   const manifestPath = join(artifactDir, "manifest.json");
   await mkdir(artifactDir, { recursive: true, mode: 0o700 });
@@ -353,6 +397,27 @@ async function evaluateScip(
   const startedAt = new Date().toISOString();
   const started = Date.now();
   const base = baseline(db);
+  const expectedSourceSignature = indexedSourceSignature(db);
+
+  // The provider never reads the mutable workspace. Rust walks the same
+  // deterministic source boundary as the indexer, refuses a generation that
+  // no longer matches the DB, and writes a private app-owned input view.
+  let staged;
+  try {
+    staged = await native.stageSourceSnapshot(root, snapshotRoot, expectedSourceSignature);
+  } catch (cause) {
+    await rm(artifactDir, { recursive: true, force: true });
+    throw cause;
+  }
+  if (signal.aborted) {
+    await rm(artifactDir, { recursive: true, force: true });
+    throw signal.reason ?? new Error("SCIP evaluation cancelled.");
+  }
+  if (indexedSourceSignature(db) !== staged.sourceSignature) {
+    await rm(artifactDir, { recursive: true, force: true });
+    throw new Error("The source index changed while SCIP inputs were staged. Run the evaluation again.");
+  }
+
   // scip-typescript treats a positional cwd as one project. That fails for
   // ordinary npm monorepos whose configs live under packages/ and apps/, so
   // reuse the repository's bounded project discovery and pass every real
@@ -365,7 +430,7 @@ async function evaluateScip(
     AbortSignal.timeout(SCIP_DISCOVERY_TIMEOUT_MS),
   ]);
   try {
-    selectedProjects = await scipProjects(root, db, artifactDir, discoverySignal);
+    selectedProjects = await scipProjects(snapshotRoot, db, snapshotRoot, discoverySignal);
   } catch (cause) {
     if (signal.aborted) {
       await rm(artifactDir, { recursive: true, force: true });
@@ -384,10 +449,18 @@ async function evaluateScip(
     }
   }
   const projects = selectedProjects.recorded;
+  let inputManifest: NativeSnapshotManifest;
+  try {
+    inputManifest = await native.snapshotManifest(snapshotRoot);
+  } catch (cause) {
+    await rm(artifactDir, { recursive: true, force: true });
+    throw cause;
+  }
 
   let summary: NativeScipSummary | null = null;
   let error: string | null = selectedProjects.error;
   let incomplete: string | null = selectedProjects.incomplete;
+  let reason: ScipEvaluation["reason"] = "provider_failed";
   if (!error) {
     let command;
     try {
@@ -403,14 +476,14 @@ async function evaluateScip(
             project.startsWith("-") ? `./${project}` : project,
           ),
           "--cwd",
-          root,
+          snapshotRoot,
           "--output",
           indexPath,
           "--no-progress-bar",
           "--no-global-caches",
         ],
         {
-          cwd: root,
+          cwd: snapshotRoot,
           timeout: SCIP_TIMEOUT_MS,
           maxBuffer: MAX_PROVIDER_OUTPUT,
           maxFileSize: { path: indexPath, bytes: MAX_SCIP_INDEX_BYTES },
@@ -440,8 +513,16 @@ async function evaluateScip(
     } else {
       const reported = incompleteDiagnostic(command.stdout, command.stderr);
       incomplete = [incomplete, reported].filter(Boolean).join("\n") || null;
+      let after: NativeSnapshotManifest;
       try {
-        summary = await abortable(native.inspectScip(indexPath), signal);
+        after = await native.snapshotManifest(snapshotRoot);
+        if (after.inputSignature !== inputManifest.inputSignature) {
+          error = "SCIP changed its staged input view; the output was discarded.";
+          reason = "staged_input_changed";
+        } else {
+          summary = await abortable(native.inspectScip(indexPath), signal);
+          reason = "immutable_staged_snapshot";
+        }
       } catch (cause) {
         if (signal.aborted) {
           await rm(artifactDir, { recursive: true, force: true });
@@ -457,14 +538,20 @@ async function evaluateScip(
     throw signal.reason ?? new Error("SCIP evaluation cancelled.");
   }
 
+  // The manifest is the durable evidence; retaining a complete source copy in
+  // each of the five evaluation runs would multiply private data and disk use.
+  await rm(snapshotRoot, { recursive: true, force: true });
+
+  const exact = summary !== null && error === null;
+
   const evaluation: ScipEvaluation = {
     runId: id,
     provider: "scip-typescript",
     providerVersion: scip.version,
     status: error ? "failed" : incomplete ? "partial" : "ok",
-    trust: "unverified",
-    exact: false,
-    reason: "mutable_working_tree",
+    trust: exact ? "exact" : "unverified",
+    exact,
+    reason,
     startedAt,
     finishedAt: new Date().toISOString(),
     durationMs: Date.now() - started,
@@ -472,6 +559,13 @@ async function evaluateScip(
     indexPath: summary ? indexPath : null,
     projects,
     baseline: base,
+    input: {
+      sourceSignature: staged.sourceSignature,
+      inputSignature: inputManifest.inputSignature,
+      files: inputManifest.files,
+      bytes: inputManifest.bytes,
+      entries: inputManifest.entries,
+    },
     scip: summary,
     error: error ?? incomplete,
   };
@@ -480,7 +574,7 @@ async function evaluateScip(
   // Provider artifacts are app-owned diagnostics, not an unbounded history.
   // A pruning failure must not discard an otherwise valid evaluation.
   await pruneOldRuns(join(artifactsRoot, workspaceId, "scip-typescript")).catch(() => {});
-  return evaluation;
+  return withCurrentSourceState(evaluation, indexedSourceSignature(db));
 }
 
 /** One SCIP process per workspace. Repeated callers share the same run. */
@@ -519,11 +613,16 @@ export function cancelAllScipEvaluations(): void {
   }
 }
 
+export interface LatestScipEvaluationOptions {
+  artifactsRoot?: string;
+  currentSourceSignature?: string;
+}
+
 export async function latestScipEvaluation(
   workspaceId: string,
-  artifactsRoot = providersDir(),
+  options: LatestScipEvaluationOptions = {},
 ): Promise<ScipEvaluation | null> {
-  const root = join(artifactsRoot, workspaceId, "scip-typescript");
+  const root = join(options.artifactsRoot ?? providersDir(), workspaceId, "scip-typescript");
   try {
     const runs = (await readdir(root, { withFileTypes: true }))
       .filter((entry) => entry.isDirectory())
@@ -532,7 +631,10 @@ export async function latestScipEvaluation(
       .reverse();
     for (const run of runs) {
       try {
-        return JSON.parse(await readFile(join(root, run, "manifest.json"), "utf-8")) as ScipEvaluation;
+        const evaluation = JSON.parse(
+          await readFile(join(root, run, "manifest.json"), "utf-8"),
+        ) as ScipEvaluation;
+        return withCurrentSourceState(evaluation, options.currentSourceSignature);
       } catch {
         // Ignore an interrupted or corrupt run and try the preceding manifest.
       }

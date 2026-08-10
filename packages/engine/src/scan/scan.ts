@@ -16,6 +16,7 @@ import { TYPED_SPECIFIER } from "../graph/typed.js";
 import { collectFiles } from "./source.js";
 import { isNoise } from "./walk.js";
 import { canonicalWorkspaceRoot, workspaceIdentityKey } from "../lib/workspace-path.js";
+import { sourceSignature } from "./signature.js";
 
 /**
  * Bumped whenever the parsers start producing something they did not before.
@@ -301,6 +302,9 @@ async function doScan(projectRoot: string, options: ScanOptions = {}): Promise<S
     String(EXTRACTION_VERSION),
   ]);
   db.run("INSERT OR REPLACE INTO meta(key, value) VALUES('extraction_engine', ?)", [engine]);
+  db.run("INSERT OR REPLACE INTO meta(key, value) VALUES('source_signature', ?)", [
+    sourceSignature(files),
+  ]);
 
   db.run(
     "UPDATE runs SET finished_at = ?, files_total = ?, files_changed = ? WHERE id = ?",

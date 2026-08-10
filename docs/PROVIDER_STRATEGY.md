@@ -102,8 +102,10 @@ As of 2026-08-06, the first evaluation boundary exists:
   `--infer-tsconfig` mode that writes into the source repository;
 - Settings reports provider capabilities and the project Overview can run and
   inspect a SCIP comparison without replacing the existing syntax facts;
-- mutable-working-tree runs are deliberately labeled `unverified`, never
-  `exact`, and only the five most recent evaluation artifacts are retained;
+- the Rust core stages the deterministic source inventory under app ownership,
+  requires it to match the indexed source signature, records a hash manifest,
+  and verifies the input view after SCIP exits; later index generations expose
+  the retained result as stale, and only the five most recent artifacts remain;
 - provider discovery, execution, and decode waits honor removal/shutdown
   cancellation, while successful indexes with skipped project configs remain
   inspectable but are explicitly labeled `partial`;
@@ -117,9 +119,8 @@ As of 2026-08-06, the first evaluation boundary exists:
 - Joern capability detection exists, but no Joern adapter is enabled or bundled
   yet. Its first use remains the bounded EVAL-001 control/data-flow spike.
 
-This completes an evaluation slice, not PROV-001. Immutable input staging,
-attested input manifests, stale/current transitions, provider-neutral fact
-import, and evaluation across the full golden corpus remain open.
+This completes immutable evaluation provenance, not PROV-001. Provider-neutral
+fact import and evaluation across the full golden corpus remain open.
 
 ## Guardrails
 

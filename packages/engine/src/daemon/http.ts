@@ -21,6 +21,7 @@ import type { EngineStatus, WorkspaceStatus } from "@sdlc/protocol";
 import { closeDb, getDb, getExistingDb } from "../db/db.js";
 import { loadPlan } from "../plan/risk.js";
 import { scan } from "../scan/scan.js";
+import { indexedSourceSignature } from "../scan/signature.js";
 import { createMcpServer, ENGINE_VERSION } from "../mcp/server.js";
 import { checkOrigin, checkToken, checkUiBootstrap } from "./auth.js";
 import { connectHarness, detectHarnesses, disconnectHarness, type BridgeCommand } from "./harnesses.js";
@@ -597,11 +598,14 @@ export function createHttpServer(options: HttpServerOptions): HttpServerHandle {
       }
 
       if (method === "GET") {
+        const db = await getDb(workspace.root);
         sendJson(res, 200, {
           providers: await detectProviders(),
           scip: {
             running: scipEvaluationRunning(id),
-            latest: await latestScipEvaluation(id),
+            latest: await latestScipEvaluation(id, {
+              currentSourceSignature: indexedSourceSignature(db),
+            }),
           },
         });
         return true;

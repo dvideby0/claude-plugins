@@ -13,6 +13,7 @@ import {
 } from "../providers/index.js";
 import { scan } from "../scan/scan.js";
 import { loadNative } from "../scan/source.js";
+import { indexedSourceSignature } from "../scan/signature.js";
 
 const roots: string[] = [];
 
@@ -36,7 +37,7 @@ describe("provider boundary", () => {
     ]);
     expect(providers[0]).toMatchObject({ available: true, bundled: true, trust: "syntax" });
     expect(providers[1]).toMatchObject({ bundled: true, version: "0.4.0", trust: "unverified" });
-    expect(providers[1]?.detail).toMatch(/immutable|importer is unavailable/);
+    expect(providers[1]?.detail).toMatch(/snapshot|support is unavailable/);
     expect(providers[2]).toMatchObject({ bundled: false, trust: "unverified" });
   });
 
@@ -53,12 +54,16 @@ describe("provider boundary", () => {
     await writeFile(join(root, "2026-01-01", "manifest.json"), JSON.stringify(fixture));
     await writeFile(join(root, "2026-01-02", "manifest.json"), "not json");
 
-    await expect(latestScipEvaluation("abcdef123456", state)).resolves.toMatchObject({
+    await expect(
+      latestScipEvaluation("abcdef123456", { artifactsRoot: state }),
+    ).resolves.toMatchObject({
       runId: "2026-01-01",
     });
   });
 
-  const nativeIt = loadNative()?.inspectScip ? it : it.skip;
+  const native = loadNative();
+  const nativeIt =
+    native?.inspectScip && native.stageSourceSnapshot && native.snapshotManifest ? it : it.skip;
   nativeIt("runs and decodes the bundled SCIP indexer without promoting its facts", async () => {
     const project = await temporary("sdlc-scip-project-");
     const artifacts = await temporary("sdlc-scip-artifacts-");
@@ -73,7 +78,7 @@ describe("provider boundary", () => {
       const db = await getDb(project);
       const evaluation = await runScipEvaluation("abcdef123456", project, db, artifacts);
 
-      expect(evaluation).toMatchObject({ status: "ok", trust: "unverified", exact: false });
+      expect(evaluation).toMatchObject({ status: "ok", trust: "exact", exact: true });
       expect(evaluation.projects).toEqual(["."]);
       expect(evaluation.scip?.documents).toBe(oracle.scip.documents);
       expect(evaluation.scip?.definitions).toBeGreaterThanOrEqual(oracle.scip.minimumDefinitions);
@@ -82,7 +87,14 @@ describe("provider boundary", () => {
       const manifest = JSON.parse(
         await readFile(join(evaluation.artifactDir, "manifest.json"), "utf-8"),
       );
-      expect(manifest.reason).toBe("mutable_working_tree");
+      expect(manifest.reason).toBe("immutable_staged_snapshot");
+      expect(manifest.input.sourceSignature).toBe(indexedSourceSignature(db));
+      expect(manifest.input.inputSignature).toMatch(/^[a-f0-9]{64}$/);
+      expect(manifest.input.entries.some((entry: { path: string }) => entry.path === "src/main.ts"))
+        .toBe(true);
+      await expect(readdir(join(evaluation.artifactDir, "input"))).rejects.toMatchObject({
+        code: "ENOENT",
+      });
     } finally {
       await closeDb(project);
     }
@@ -173,9 +185,15 @@ describe("provider boundary", () => {
       await expect(readFile(join(project, "tsconfig.json"), "utf-8")).rejects.toMatchObject({
         code: "ENOENT",
       });
-      await expect(
-        readFile(join(evaluation.artifactDir, "inferred-tsconfig.json"), "utf-8"),
-      ).resolves.toContain("src/index.js");
+      const manifest = JSON.parse(
+        await readFile(join(evaluation.artifactDir, "manifest.json"), "utf-8"),
+      );
+      expect(
+        manifest.input.entries.some(
+          (entry: { path: string }) =>
+            entry.path === ".sdlc-provider/inferred-tsconfig.json",
+        ),
+      ).toBe(true);
     } finally {
       await closeDb(project);
     }
@@ -357,6 +375,7 @@ describe("provider boundary", () => {
     const workspaceId = "012345fedcba";
 
     try {
+      await scan(project, { full: true, kind: "provider-cancel-test" });
       const db = await getDb(project);
       const running = runScipEvaluation(workspaceId, project, db, artifacts);
       const cancelling = cancelScipEvaluation(workspaceId);
@@ -366,6 +385,36 @@ describe("provider boundary", () => {
       await expect(
         readdir(join(artifacts, workspaceId, "scip-typescript")),
       ).resolves.toEqual([]);
+    } finally {
+      await closeDb(project);
+    }
+  });
+
+  nativeIt("marks an exact provider result stale after the indexed source changes", async () => {
+    const project = await temporary("sdlc-scip-stale-");
+    const artifacts = await temporary("sdlc-scip-stale-artifacts-");
+    await writeFile(join(project, "tsconfig.json"), JSON.stringify({ files: ["index.ts"] }));
+    await writeFile(join(project, "index.ts"), "export const value = 1;\n");
+    const workspaceId = "aaaaffff1111";
+
+    try {
+      await scan(project, { full: true, kind: "provider-stale-initial" });
+      const db = await getDb(project);
+      const evaluation = await runScipEvaluation(workspaceId, project, db, artifacts);
+      expect(evaluation).toMatchObject({ trust: "exact", exact: true });
+
+      await writeFile(join(project, "index.ts"), "export const value = 2;\n");
+      await scan(project, { kind: "provider-stale-refresh" });
+      await expect(
+        latestScipEvaluation(workspaceId, {
+          artifactsRoot: artifacts,
+          currentSourceSignature: indexedSourceSignature(db),
+        }),
+      ).resolves.toMatchObject({
+        trust: "stale",
+        exact: false,
+        reason: "working_tree_changed",
+      });
     } finally {
       await closeDb(project);
     }

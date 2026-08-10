@@ -630,17 +630,28 @@ function providerEvaluation(workspace, providerState) {
       </table>`
     : "";
   const outcome = evaluation
-    ? evaluation.status === "ok"
+    ? evaluation.trust === "stale"
+      ? `<div class="notice">
+          Last evaluation ${relative(evaluation.finishedAt)} is <b>stale</b>: the indexed source has changed.
+          Run it again before comparing or importing these results.
+        </div>${rows}`
+      : evaluation.trust !== "exact" && evaluation.status !== "failed"
+        ? `<div class="notice">
+            Last evaluation ${relative(evaluation.finishedAt)} is <b>unverified</b> because it predates
+            immutable source staging. Run it again before comparing or importing these results.
+          </div>${rows}`
+      : evaluation.status === "ok"
       ? `<div class="notice">
           Last evaluation ${relative(evaluation.finishedAt)} in ${num(evaluation.durationMs)} ms.
           ${num(evaluation.projects?.length || 1)} project${(evaluation.projects?.length || 1) === 1 ? "" : "s"} evaluated.
-          <b>Unverified:</b> it ran over the mutable working tree and has not replaced trusted facts.
+          <b>Snapshot verified:</b> SCIP read an app-owned input view matching the current source index.
+          Its output remains evaluation-only and has not replaced trusted facts.
         </div>${rows}`
       : evaluation.status === "partial"
         ? `<div class="notice">
             Last evaluation ${relative(evaluation.finishedAt)} in ${num(evaluation.durationMs)} ms.
-            <b>Incomplete:</b> one or more of the ${num(evaluation.projects?.length || 1)} requested projects was skipped,
-            so these unverified counts are partial. ${esc(evaluation.error)}
+            <b>Snapshot verified, output incomplete:</b> one or more of the ${num(evaluation.projects?.length || 1)} requested projects was skipped,
+            so these counts are partial. ${esc(evaluation.error)}
           </div>${rows}`
         : `<div class="notice error">Last SCIP evaluation failed: ${esc(evaluation.error)}</div>`
     : `<p class="sub">No comparison has been run for this project yet.</p>`;
@@ -721,7 +732,7 @@ async function evaluateScip(workspace, button) {
       method: "POST",
     });
     await refreshScipOverview(workspace);
-    toast("SCIP evaluation finished. Results remain unverified until immutable staging lands.");
+    toast("SCIP evaluation finished against an app-owned source snapshot.");
   } catch (error) {
     toast(error.message);
     await refreshScipOverview(workspace);

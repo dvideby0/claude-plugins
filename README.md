@@ -86,9 +86,11 @@ In the desktop app, **Settings** now shows the available code-intelligence
 providers. Add and index a TypeScript/JavaScript project, open its **Overview**,
 and choose **Evaluate SCIP** to compare the current prototype's document,
 symbol, and reference coverage with the bundled official SCIP indexer. The
-comparison is an evaluation signal, not a precision score, and is labeled
-**unverified** because it reads the mutable working tree. It does not replace
-the project's trusted facts. Repositories without a TypeScript config are
+comparison is an evaluation signal, not a precision score. The Rust core
+copies the indexed source generation into an app-owned input view and records
+an attested manifest before SCIP runs; the result is marked stale after the
+source index changes. It remains evaluation-only and does not replace the
+project's trusted facts. Repositories without a TypeScript config are
 evaluated through an app-owned inferred config; evaluation never creates a
 `tsconfig.json` in the source repository. If the upstream indexer skips one of
 several project configs, the usable comparison is retained and labeled

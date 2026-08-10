@@ -50,12 +50,15 @@ Acceptance criteria:
 - The implementation does not duplicate TypeScript project or package
   resolution inside SDLC.
 
-Progress (2026-08-06): the app now bundles the maintained SCIP TypeScript
+Progress (2026-08-10): the app now bundles the maintained SCIP TypeScript
 indexer, supervises bounded evaluation runs, decodes and hashes indexes in Rust,
 stores manifests outside source repositories, reports capabilities in the
-desktop, and preserves Tree-sitter fallback behavior. These initial runs read a
-mutable working tree and are explicitly `unverified`; immutable staging and
-provider-neutral fact import remain the acceptance-critical next steps. Joern
+desktop, and preserves Tree-sitter fallback behavior. Rust now copies the exact
+indexed source generation into a private app-owned view, rejects a generation
+mismatch, records every staged input and hash, verifies that view after the
+provider exits, and reports retained output as stale after the source signature
+changes. Provider-neutral fact import and broader golden-corpus comparison
+remain acceptance-critical next steps. Joern
 is detected but intentionally not bundled before its EVAL-001 spike. Configless
 evaluation now uses an app-owned config rather than allowing the upstream CLI
 to write `tsconfig.json` into the workspace, and Rust comparison aggregates

@@ -10,13 +10,16 @@ Future precise references and deeper program analysis follow the
 compiler/language-server, or Code Property Graph outputs and concentrate SDLC
 work on orchestration, evidence-backed fusion, retrieval, and product workflows.
 
-Implementation update, 2026-08-06: the official SCIP TypeScript indexer is now
+Implementation update, 2026-08-10: the official SCIP TypeScript indexer is now
 available through a bounded evaluation path. Its protobuf output is decoded and
 hashed in Rust, its artifacts live in app-owned storage, and its capabilities
-and comparison results appear in the desktop. These runs are intentionally
-`unverified` because they inspect a mutable working tree; they do not replace
-the current syntax/reference facts. Joern is capability-detected only and still
-requires the planned bounded control/data-flow evaluation.
+and comparison results appear in the desktop. It now runs against an app-owned
+source snapshot that must match the deterministic index generation, records a
+per-input manifest, verifies the input view after execution, and marks retained
+output stale when the indexed source generation changes. The output remains an
+evaluation and does not replace current syntax/reference facts. Joern is
+capability-detected only and still requires the planned bounded control/data-flow
+evaluation.
 
 ## Executive assessment
 
@@ -86,7 +89,8 @@ The provider evaluation layer now packages `@sourcegraph/scip-typescript`,
 runs it with time/output bounds, retains five app-owned runs, and uses the
 official Rust SCIP types to summarize definitions, references, relationships,
 and artifact provenance. It is a measurement path rather than a production fact
-source: mutable inputs are labeled unverified, and provider failure leaves the
+source: inputs are copied and attested in Rust before the provider runs, exact
+results are tied to that source signature, and provider failure leaves the
 Tree-sitter index available. It discovers both `tsconfig.json` and
 `jsconfig.json`, reports invalid or skipped projects and oversized-source skips
 as partial output, and passes project paths through a hardened argument boundary
