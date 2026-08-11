@@ -107,6 +107,7 @@ describe("provider boundary", () => {
     );
     await cp(fixture, project, { recursive: true });
     const oracle = JSON.parse(await readFile(join(project, "oracle.json"), "utf-8"));
+    const scipOracle = oracle.scip["scip-typescript"];
 
     try {
       await scan(project, { full: true, kind: "provider-test" });
@@ -116,9 +117,9 @@ describe("provider boundary", () => {
       expect(evaluation).toMatchObject({ status: "partial", trust: "unverified", exact: false });
       expect(evaluation.error).toMatch(/dependency and out-of-tree compiler inputs/i);
       expect(evaluation.projects).toEqual(["."]);
-      expect(evaluation.scip?.documents).toBe(oracle.scip.documents);
-      expect(evaluation.scip?.definitions).toBeGreaterThanOrEqual(oracle.scip.minimumDefinitions);
-      expect(evaluation.scip?.references).toBeGreaterThanOrEqual(oracle.scip.minimumReferences);
+      expect(evaluation.scip?.documents).toBe(scipOracle.documents);
+      expect(evaluation.scip?.definitions).toBeGreaterThanOrEqual(scipOracle.minimumDefinitions);
+      expect(evaluation.scip?.references).toBeGreaterThanOrEqual(scipOracle.minimumReferences);
       expect(evaluation.indexPath).toContain(artifacts);
       expect(evaluation.input?.entries).toBeUndefined();
       expect(evaluation.input?.pathAliasSignature).toMatch(/^[a-f0-9]{64}$/);

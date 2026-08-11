@@ -5,10 +5,11 @@ import { basename, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { exec, which } from "../lib/exec.js";
 import {
-  EVALUATION_PROVIDERS,
+  loadEvaluationOracle,
+  type EvaluationOracle,
   type EvaluationProvider,
-  type ProviderEvaluationReport,
-} from "./worker.js";
+} from "./model.js";
+import type { ProviderEvaluationReport } from "./worker.js";
 
 interface CliOptions {
   fixture: string | null;
@@ -73,24 +74,29 @@ async function scipCliStatus(options: CliOptions): Promise<ScipCliStatus> {
   };
 }
 
-async function fixtureRoots(selected: string | null): Promise<string[]> {
+interface EvaluationFixture {
+  path: string;
+  oracle: EvaluationOracle;
+}
+
+async function fixtureRoots(selected: string | null): Promise<EvaluationFixture[]> {
   const root = fileURLToPath(new URL("../../fixtures/eval/", import.meta.url));
   if (selected) {
     const path = isAbsolute(selected) ? selected : join(root, selected);
-    await access(join(path, "oracle.json"));
-    return [path];
+    return [{ path, oracle: await loadEvaluationOracle(join(path, "oracle.json")) }];
   }
   const entries = await readdir(root, { withFileTypes: true });
-  const fixtures: string[] = [];
+  const fixtures: EvaluationFixture[] = [];
   for (const entry of entries.sort((left, right) => left.name.localeCompare(right.name))) {
     if (!entry.isDirectory()) continue;
     const path = join(root, entry.name);
     try {
       await access(join(path, "oracle.json"));
-      fixtures.push(path);
     } catch {
       // Evaluation roots without an oracle are deliberately not runnable.
+      continue;
     }
+    fixtures.push({ path, oracle: await loadEvaluationOracle(join(path, "oracle.json")) });
   }
   if (fixtures.length === 0) throw new Error(`No evaluation fixtures found under ${root}.`);
   return fixtures;
@@ -108,7 +114,7 @@ async function runWorker(
   };
   const result = await exec(
     process.execPath,
-    [worker, provider, fixture, ...(provider === "scip-typescript" && scipCli ? [scipCli] : [])],
+    [worker, provider, fixture, ...(provider.startsWith("scip-") && scipCli ? [scipCli] : [])],
     {
       env,
       timeout: 20 * 60_000,
@@ -125,19 +131,32 @@ async function runWorker(
 
 async function main(): Promise<void> {
   const options = parseArgs(process.argv.slice(2));
-  const [fixtures, scip] = await Promise.all([
-    fixtureRoots(options.fixture),
-    scipCliStatus(options),
-  ]);
+  const fixtures = await fixtureRoots(options.fixture);
+  const requiresScip = fixtures.some((fixture) =>
+    fixture.oracle.providers.some((provider) => provider.startsWith("scip-")),
+  );
+  const scip = await scipCliStatus({
+    ...options,
+    requireScipCli: options.requireScipCli && requiresScip,
+  });
   const scenarios = [];
   for (const fixture of fixtures) {
     const providers: ProviderEvaluationReport[] = [];
-    for (const provider of EVALUATION_PROVIDERS) {
-      providers.push(await runWorker(provider, fixture, scip.available ? scip.path : null));
+    for (const provider of fixture.oracle.providers) {
+      providers.push(await runWorker(provider, fixture.path, scip.available ? scip.path : null));
     }
     scenarios.push({
-      scenario: providers[0]?.scenario ?? fixture,
-      fixture: basename(fixture),
+      scenario: providers[0]?.scenario ?? fixture.oracle.scenario,
+      fixture: basename(fixture.path),
+      languages: fixture.oracle.languages,
+      entryToEffectOracle: fixture.oracle.entryToEffect
+        ? {
+            entrypoints: fixture.oracle.entryToEffect.entrypoints.length,
+            relations: fixture.oracle.entryToEffect.relations.length,
+            paths: fixture.oracle.entryToEffect.paths.length,
+            scoring: "unmeasured" as const,
+          }
+        : null,
       passed: providers.every((provider) => provider.passed),
       providers,
     });
@@ -148,15 +167,16 @@ async function main(): Promise<void> {
       provider.failures.map((failure) => `${scenario.scenario}/${provider.provider}: ${failure}`),
     ),
   );
-  if (scip.required && !scip.available) {
+  if (requiresScip && scip.required && !scip.available) {
     failures.push("The official SCIP CLI is required but was not found or could not report a version.");
   }
   if (
+    requiresScip &&
     scip.required &&
     scenarios.some((scenario) =>
       scenario.providers.some(
         (provider) =>
-          provider.provider === "scip-typescript" &&
+          provider.provider.startsWith("scip-") &&
           provider.officialScipTest?.status !== "passed",
       ),
     )

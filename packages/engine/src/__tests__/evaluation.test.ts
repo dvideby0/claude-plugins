@@ -16,30 +16,27 @@ import {
   missingScipTestFiles,
   runEvaluationWorker,
   scipConstraintFailures,
+  scipDocumentFilter,
   scipTestAssertions,
 } from "../eval/worker.js";
 import { loadNative } from "../scan/source.js";
 
 const oracle: EvaluationOracle = evaluationOracleSchema.parse({
-  schemaVersion: 1,
+  schemaVersion: 2,
   scenario: "scorer-test",
+  languages: ["typescript"],
   features: ["symbol", "reference"],
+  providers: ["native-tree-sitter"],
   change: { path: "src/a.ts", append: "\n// change\n" },
   symbols: [{ path: "src/a.ts", name: "entry", startLine: 1 }],
   references: [
     { sourcePath: "src/a.ts", targetPath: "src/b.ts", targetSymbol: "target" },
   ],
   thresholds: {
-    fixture: {
+    "native-tree-sitter": {
       symbols: { minimumPrecision: 1, minimumRecall: 1 },
       references: { minimumPrecision: 1, minimumRecall: 1 },
     },
-  },
-  scip: {
-    documents: 2,
-    minimumDefinitions: 1,
-    minimumReferences: 1,
-    testFiles: ["src/a.ts"],
   },
 });
 
@@ -133,7 +130,7 @@ describe("evaluation scorer", () => {
     const scores = scoreFactBatch(batch([], []), oracle);
 
     expect(scores.symbols).toMatchObject({ precision: null, recall: 0, f1: null });
-    expect(thresholdFailures("fixture", scores, oracle)).toEqual([
+    expect(thresholdFailures("native-tree-sitter", scores, oracle)).toEqual([
       "symbols precision unavailable is below 1",
       "symbols recall 0 is below 1",
       "references precision unavailable is below 1",
@@ -146,7 +143,7 @@ describe("evaluation scorer", () => {
       new URL("../../fixtures/eval/typescript-entry-effect/oracle.json", import.meta.url),
     );
     await expect(loadEvaluationOracle(path)).resolves.toMatchObject({
-      schemaVersion: 1,
+      schemaVersion: 2,
       scenario: "typescript-entry-effect",
       symbols: expect.arrayContaining([
         expect.objectContaining({ path: "src/main.ts", name: "handleAccount" }),
@@ -155,8 +152,79 @@ describe("evaluation scorer", () => {
     expect(() => evaluationOracleSchema.parse({ ...oracle, unknownField: true })).toThrow();
   });
 
+  it("loads provider-scoped Python truth while keeping entry-to-effect scoring explicit", async () => {
+    const path = fileURLToPath(
+      new URL(
+        "../../fixtures/eval/python-langgraph-entry-effect/oracle.json",
+        import.meta.url,
+      ),
+    );
+
+    const loaded = await loadEvaluationOracle(path);
+    expect(loaded).toMatchObject({
+      schemaVersion: 2,
+      languages: ["python"],
+      providers: ["typescript-fallback", "native-tree-sitter", "scip-python"],
+      entryToEffect: {
+        entrypoints: [expect.objectContaining({ id: "subject-lookup" })],
+      },
+    });
+    expect(loaded.entryToEffect?.relations).toHaveLength(12);
+    expect(loaded.entryToEffect?.paths).toHaveLength(3);
+  });
+
+  it("rejects provider thresholds that are not selected by the fixture", () => {
+    expect(() =>
+      evaluationOracleSchema.parse({
+        ...oracle,
+        thresholds: {
+          ...oracle.thresholds,
+          "typescript-fallback": oracle.thresholds["native-tree-sitter"],
+        },
+      }),
+    ).toThrow("Threshold configured for unselected provider typescript-fallback");
+  });
+
+  it("rejects entry-to-effect paths that do not resolve to a terminal relation", () => {
+    expect(() =>
+      evaluationOracleSchema.parse({
+        ...oracle,
+        entryToEffect: {
+          entrypoints: [
+            {
+              id: "entry",
+              registration: { path: "src/a.ts", startLine: 1 },
+              target: { path: "src/a.ts", symbol: "entry" },
+            },
+          ],
+          relations: [
+            {
+              id: "call",
+              kind: "call",
+              source: { path: "src/a.ts", symbol: "entry" },
+              target: { path: "src/b.ts", symbol: "target" },
+              certainty: "exact",
+              evidence: { path: "src/a.ts", startLine: 2 },
+            },
+          ],
+          paths: [
+            {
+              id: "path",
+              entrypoint: "entry",
+              relations: ["call"],
+              terminalRelation: "call",
+              conditions: [],
+              certainty: "exact",
+            },
+          ],
+        },
+      }),
+    ).toThrow("must have kind terminal-effect");
+  });
+
   it("only credits references produced by the measured compiler generation", () => {
     const parsed = reference("parsed", "src/b.ts");
+    const parsedRead = { ...reference("parsed-read", "src/b.ts"), kind: "read" as const };
     const stale = {
       ...reference("stale", "src/b.ts"),
       producer: { id: "checker", version: "1", kind: "compiler" as const },
@@ -169,10 +237,24 @@ describe("evaluation scorer", () => {
       generation: { sourceSignature: "current" },
       freshness: "unverified" as const,
     };
+    const currentRead = { ...current, id: "current-read", kind: "read" as const };
 
-    const scoped = compilerPipelineFacts(batch([], [parsed, stale, current]), "current");
+    const scoped = compilerPipelineFacts(
+      batch([], [parsed, parsedRead, stale, current, currentRead]),
+      "current",
+    );
 
-    expect(scoped.edges.map((edge) => edge.id)).toEqual(["current"]);
+    expect(scoped.edges.map((edge) => edge.id)).toEqual(["current", "current-read"]);
+  });
+
+  it("credits resolved SCIP occurrence roles as references", () => {
+    const read = { ...reference("read", "src/b.ts"), kind: "read" as const };
+
+    expect(scoreFactBatch(batch([], [read]), oracle).references).toMatchObject({
+      truePositives: 1,
+      precision: 1,
+      recall: 1,
+    });
   });
 
   it("treats an unmatched official SCIP filter as missing validation", () => {
@@ -189,11 +271,26 @@ describe("evaluation scorer", () => {
     ]);
   });
 
+  it("uses provider-native SCIP document separators while comparing portable paths", () => {
+    expect(scipDocumentFilter("./arena/effects.py", "\\")).toBe("arena\\effects.py");
+    const assertions = scipTestAssertions("✓ arena\\effects.py (1 assertion)\n");
+    expect(assertions).toEqual([
+      { path: "arena/effects.py", count: 1 },
+    ]);
+    expect(missingScipTestFiles(["arena/effects.py"], assertions)).toEqual([]);
+  });
+
   it("enforces the SCIP count bounds declared by the oracle", () => {
     expect(
       scipConstraintFailures(
         { documents: 1, definitions: 0, references: 0 },
-        oracle.scip,
+        {
+          documents: 2,
+          minimumDefinitions: 1,
+          minimumReferences: 1,
+          commentSyntax: "//",
+          testFiles: ["src/a.ts"],
+        },
       ),
     ).toEqual([
       "SCIP indexed 1 documents; expected 2",
@@ -217,5 +314,15 @@ describe("evaluation scorer", () => {
     } finally {
       await rm(altered, { recursive: true, force: true });
     }
+  });
+
+  it("rejects a worker provider that the fixture did not select", async () => {
+    const fixture = fileURLToPath(
+      new URL("../../fixtures/eval/typescript-entry-effect/", import.meta.url),
+    );
+
+    await expect(runEvaluationWorker("scip-python", fixture, null)).rejects.toThrow(
+      "Provider scip-python is not selected",
+    );
   });
 });

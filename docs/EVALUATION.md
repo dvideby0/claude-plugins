@@ -5,13 +5,16 @@ Status: first executable EVAL-001 slice, 2026-08-11.
 ## Purpose
 
 Provider choice and product claims must be based on checked-in evidence rather
-than aggregate index counts. The evaluation command runs every fixture through
-the TypeScript fallback scanner, native Tree-sitter scanner, the native scanner
-plus existing TypeScript checker prototype, and official SCIP TypeScript
-provider. Each pipeline is isolated in its own process and scored through the
-same provider-neutral fact envelope. The checker pipeline only scores resolved
-references produced for the measured checker generation; it cannot receive
-credit for native baseline references or stale compiler rows.
+than aggregate index counts. Each fixture declares its languages and applicable
+providers, and the evaluation command runs only those pipelines. The current
+TypeScript fixture compares the fallback scanner, native Tree-sitter scanner,
+native scanner plus existing TypeScript checker prototype, and official SCIP
+TypeScript provider. The Python/LangGraph fixture compares the fallback and
+native scanners with pinned `@sourcegraph/scip-python` 0.6.6. Each pipeline is
+isolated in its own process and scored through the same provider-neutral fact
+envelope. The checker pipeline only scores resolved references produced for the
+measured checker generation; it cannot receive credit for native baseline
+references or stale compiler rows.
 
 Run the current corpus with:
 
@@ -49,6 +52,33 @@ The current oracle is targeted, not an exhaustive claim about every local or
 standard-library symbol. A provider can only be compared for facts explicitly
 inside the selected domain.
 
+Oracle schema version 2 can also record reviewed entrypoints, relations,
+terminal effects, conditions, and complete entry-to-effect paths. The report
+publishes their counts and labels their scoring `unmeasured`; merely checking
+flow truth into the repository does not grant a provider path credit.
+
+## Current Python result
+
+The small Python fixture is LangGraph-shaped and inspired by Agent Arena; it is
+not a claim that the full Agent Arena repository has been indexed. It records
+one manifest entrypoint, twelve framework/effect relations, and three expected
+entry-to-effect paths. On the selected nine-symbol/nine-reference domain:
+
+- the fallback scanner finds 9/9 symbols and no resolved references;
+- the native scanner finds 9/9 symbols and 8/9 references, missing the
+  same-file `build()` reference;
+- SCIP-Python finds 9/9 symbols and 9/9 references and passes official
+  upstream `scip test` assertions, but emits no framework, CFG, or
+  entry-to-effect relationships.
+
+SCIP-Python is therefore pinned as an evaluation-only development dependency,
+not promoted into the desktop or production provider catalog. The runner gives
+it a deterministic empty environment description, preventing its package-
+environment discovery phase from enumerating installed packages. This is not a
+filesystem sandbox. Its precise-reference benefit is real, but its Pyright fork
+and older transitive dependencies make it a weaker long-term production choice
+than an actively maintained compiler/CPG path.
+
 ## What remains unmeasured
 
 The JSON report explicitly labels gaps instead of encoding unavailable
@@ -68,7 +98,10 @@ behavior still need independently reviewed cases.
 ## Adding a fixture
 
 Create a directory under `packages/engine/fixtures/eval` containing its source,
-build metadata, and a strict schema-version-1 `oracle.json`. Define the selected
-symbols, resolved references, harmless one-file-change probe, per-provider
-thresholds, and SCIP test files. The command discovers it automatically. CI
-fails when a threshold or official SCIP assertion regresses.
+build metadata, and a strict schema-version-2 `oracle.json`. Declare languages,
+applicable providers, selected symbols, resolved references, a harmless
+one-file-change probe, and exactly one threshold block per selected provider.
+SCIP providers also require count bounds, source comment syntax, and official
+test files. Add reviewed `entryToEffect` truth when the fixture exercises flow.
+The command discovers the fixture automatically. CI fails when the schema,
+thresholds, count bounds, or official SCIP assertions regress.

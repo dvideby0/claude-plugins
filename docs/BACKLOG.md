@@ -127,10 +127,22 @@ machine-readable targeted symbol/reference precision and recall, cold/warm/
 one-file-change timing where supported, prototype-store/artifact size, worker
 peak RSS, missing facts, and threshold failures. CI pins the official SCIP
 v0.9.0 binary and reuses its golden-test format and validator rather than
-reimplementing occurrence truth. The corpus remains one narrow scenario; path
-and retrieval scoring, external-provider child memory, broader fixtures, and
-meaningful promotion thresholds are still open. See
+reimplementing occurrence truth. Path and retrieval scoring, external-provider
+child memory, broader fixtures, and meaningful promotion thresholds remain
+open. See
 [`EVALUATION.md`](EVALUATION.md).
+
+Progress (2026-08-11, Python slice): oracle schema version 2 now declares
+languages and applicable providers, enforces matching per-provider thresholds,
+and can hold reviewed entrypoint/relation/path truth without pretending it is
+already scored. A small Agent Arena-inspired LangGraph fixture records one
+manifest entrypoint, twelve framework/effect relations, and three expected paths.
+The native scanner measures 9/9 selected symbols and 8/9 references;
+evaluation-only SCIP-Python 0.6.6 measures 9/9 for both and passes upstream
+`scip test`, but emits no flow relationships. This supports a bounded Joern/CPG
+spike next; it does not justify promoting the older SCIP-Python/Pyright fork as
+a production provider. The corpus is now two deliberately small scenarios.
+Entry-to-effect and retrieval scoring remain open acceptance criteria.
 
 ### STORE-001: Move workspace state under app ownership
 

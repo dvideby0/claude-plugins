@@ -110,6 +110,17 @@ preflight validates bounded config text without expanding project globs on the
 daemon thread; solution-style roots are passed through so SCIP can follow their
 custom-named project references under its own process bounds.
 
+The measurement harness also pins `@sourcegraph/scip-python` 0.6.6 as a
+development-only comparator for a small LangGraph fixture. It runs with bounded
+output and a deterministic empty package-environment description, preventing
+its package-discovery phase from enumerating installed packages without
+claiming filesystem sandboxing. It then reuses the same Rust SCIP
+inspection/projection boundary. It improves the selected reference result from
+the native scanner's 8/9 to 9/9, but contributes no framework or entry-to-effect
+relations and is not exposed as a production app provider. Oracle schema version
+2 now scopes providers per fixture and records reviewed flow truth while
+reporting path quality as explicitly unmeasured.
+
 ### Graph, flow, and gap handling
 
 [`packages/engine/src/graph/flow.ts`](../packages/engine/src/graph/flow.ts) constructs layers of callable symbols from reference edges. An entry point is inferred as a callable symbol that has callees and no incoming call. [`packages/engine/src/graph/trace.ts`](../packages/engine/src/graph/trace.ts) performs related transitive traversal.

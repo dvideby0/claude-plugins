@@ -97,7 +97,7 @@ dependency/read closure, its useful comparison output remains `partial` and
 
 ## Implementation status
 
-As of 2026-08-06, the first evaluation boundary exists:
+As of 2026-08-11, the first evaluation boundary exists:
 
 - the official `@sourcegraph/scip-typescript` 0.4.0 indexer is bundled for
   TypeScript and JavaScript evaluation;
@@ -136,7 +136,14 @@ As of 2026-08-06, the first evaluation boundary exists:
   globs on the daemon thread, and solution-style roots remain intact so the
   provider can follow custom-named project references itself;
 - Joern capability detection exists, but no Joern adapter is enabled or bundled
-  yet. Its first use remains the bounded EVAL-001 control/data-flow spike.
+  yet. Its first use remains the bounded EVAL-001 control/data-flow spike;
+- a pinned, development-only SCIP-Python 0.6.6 comparator runs against the
+  Python/LangGraph oracle through the existing Rust SCIP decoder and common
+  fact projection. It reaches 9/9 selected symbols and references, compared
+  with 9/9 symbols and 8/9 references for the native syntax baseline, but emits
+  no entry-to-effect relationships. Its older Pyright fork is not promoted into
+  the desktop provider catalog; the next provider step remains the bounded
+  Joern/CPG flow evaluation.
 
 This completes attestation of the repository source view, not full immutable
 provider-input provenance or PROV-001. Dependency/read-closure confinement,

@@ -1,7 +1,8 @@
 import { createHash } from "node:crypto";
-import { appendFile, cp, mkdtemp, rm, stat } from "node:fs/promises";
+import { appendFile, cp, mkdtemp, realpath, rm, stat, writeFile } from "node:fs/promises";
+import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
 import { closeDb, getDb } from "../db/db.js";
 import type { FactBatch } from "../facts/model.js";
@@ -12,20 +13,31 @@ import { scan, type ScanResult } from "../scan/scan.js";
 import { loadNative } from "../scan/source.js";
 import { indexedSourceSignature } from "../scan/signature.js";
 import {
+  EVALUATION_PROVIDERS,
+  isResolvedReferenceKind,
   loadEvaluationOracle,
   scoreFactBatch,
   thresholdFailures,
+  type EvaluationProvider,
   type FactScores,
-  type EvaluationOracle,
+  type ScipOracle,
 } from "./model.js";
 
-export const EVALUATION_PROVIDERS = [
-  "typescript-fallback",
-  "native-tree-sitter",
-  "native-plus-typescript-checker",
-  "scip-typescript",
-] as const;
-export type EvaluationProvider = (typeof EVALUATION_PROVIDERS)[number];
+const nodeRequire = createRequire(import.meta.url);
+const MAX_SCIP_INDEX_BYTES = 128 * 1024 * 1024;
+
+interface ScipPythonPackage {
+  version: string;
+  bin: string | Record<string, string>;
+}
+
+function bundledScipPython(): { cli: string; version: string } {
+  const packagePath = nodeRequire.resolve("@sourcegraph/scip-python/package.json");
+  const pkg = nodeRequire(packagePath) as ScipPythonPackage;
+  const bin = typeof pkg.bin === "string" ? pkg.bin : pkg.bin["scip-python"];
+  if (!bin) throw new Error("The pinned SCIP-Python package has no scip-python executable.");
+  return { cli: join(dirname(packagePath), bin), version: pkg.version };
+}
 
 interface Timed<T> {
   value: T;
@@ -97,6 +109,11 @@ function portablePath(path: string): string {
   return path.replaceAll("\\", "/").replace(/^\.\//, "");
 }
 
+/** Match the separator spelling emitted by Node-based SCIP providers. */
+export function scipDocumentFilter(path: string, separator = sep): string {
+  return portablePath(path).replaceAll("/", separator);
+}
+
 /** Parse the stable one-line summaries emitted by the official SCIP tester. */
 export function scipTestAssertions(stdout: string): Array<{ path: string; count: number }> {
   const assertions = new Map<string, number>();
@@ -137,7 +154,7 @@ export function compilerPipelineFacts(batch: FactBatch, sourceSignature: string)
     ...batch,
     edges: batch.edges.filter(
       (edge) =>
-        edge.kind !== "reference" ||
+        !isResolvedReferenceKind(edge.kind) ||
         (edge.producer.kind === "compiler" &&
           edge.generation.sourceSignature === sourceSignature &&
           edge.freshness !== "stale"),
@@ -147,7 +164,7 @@ export function compilerPipelineFacts(batch: FactBatch, sourceSignature: string)
 
 export function scipConstraintFailures(
   counts: ScipCounts,
-  expected: EvaluationOracle["scip"],
+  expected: ScipOracle,
 ): string[] {
   const failures: string[] = [];
   if (counts.documents !== expected.documents) {
@@ -170,6 +187,7 @@ async function officialScipTest(
   scipCli: string | null,
   projectRoot: string,
   indexPath: string,
+  commentSyntax: string,
   testFiles: string[],
 ): Promise<OfficialScipTest> {
   if (!scipCli) {
@@ -190,7 +208,9 @@ async function officialScipTest(
     "test",
     "--from",
     indexPath,
-    ...testFiles.flatMap((path) => ["--filter", path]),
+    "--comment-syntax",
+    commentSyntax,
+    ...testFiles.flatMap((path) => ["--filter", scipDocumentFilter(path)]),
     "--check-documents",
     // v0.9.0 documents the invocation directory as implicit, but its command
     // passes an empty string to WalkDir unless a positional directory exists.
@@ -239,6 +259,9 @@ export async function runEvaluationWorker(
 ): Promise<ProviderEvaluationReport> {
   const fixture = resolve(fixtureRoot);
   const oracle = await loadEvaluationOracle(join(fixture, "oracle.json"));
+  if (!oracle.providers.includes(provider)) {
+    throw new Error(`Provider ${provider} is not selected by scenario ${oracle.scenario}.`);
+  }
   const project = await mkdtemp(join(tmpdir(), `sdlc-eval-${provider}-`));
   const artifacts = await mkdtemp(join(tmpdir(), `sdlc-eval-artifacts-${provider}-`));
   let dbOpened = false;
@@ -308,7 +331,11 @@ export async function runEvaluationWorker(
         changedFileMs: changed.durationMs,
         scope: "TypeScript checker prototype after syntax indexing",
       };
-    } else {
+    } else if (provider === "scip-typescript") {
+      const scipExpected = oracle.scip?.[provider];
+      if (!scipExpected) {
+        throw new Error("SCIP evaluation requires checked-in SCIP expectations.");
+      }
       const [{ projectScipFacts }, { runScipEvaluation }] = await Promise.all([
         import("../facts/scip.js"),
         import("../providers/index.js"),
@@ -336,7 +363,7 @@ export async function runEvaluationWorker(
         definitions: evaluation.scip.definitions,
         references: evaluation.scip.references,
       };
-      providerFailures.push(...scipConstraintFailures(scipCounts, oracle.scip));
+      providerFailures.push(...scipConstraintFailures(scipCounts, scipExpected));
       const indexPath = evaluation.indexPath;
       batch = await projectScipFacts(evaluation, {
         workspaceId: evaluation.workspaceId,
@@ -360,13 +387,20 @@ export async function runEvaluationWorker(
             scipCli,
             project,
             indexPath,
-            oracle.scip.testFiles,
+            scipExpected.commentSyntax,
+            scipExpected.testFiles,
           );
         } finally {
           await rm(validationRoot, { recursive: true, force: true });
         }
       } else {
-        official = await officialScipTest(null, project, indexPath, oracle.scip.testFiles);
+        official = await officialScipTest(
+          null,
+          project,
+          indexPath,
+          scipExpected.commentSyntax,
+          scipExpected.testFiles,
+        );
       }
       timings = {
         coldMs: evaluated.durationMs,
@@ -374,6 +408,102 @@ export async function runEvaluationWorker(
         changedFileMs: null,
         scope: "SCIP TypeScript provider run, excluding syntax-index setup",
       };
+    } else if (provider === "scip-python") {
+      const scipExpected = oracle.scip?.[provider];
+      if (!scipExpected) {
+        throw new Error("SCIP-Python evaluation requires checked-in SCIP expectations.");
+      }
+      const { scipProjectionFacts } = await import("../facts/scip.js");
+      const native = loadNative();
+      if (!native?.inspectScip || !native.projectScip) {
+        throw new Error("SCIP-Python evaluation requires the native SCIP projection runtime.");
+      }
+      const scanned = await scan(project, { full: true, kind: "evaluation-scip-python-setup" });
+      sourceEngine = scanned.engine;
+      if (sourceEngine !== "native") {
+        throw new Error("SCIP-Python evaluation requires the native syntax baseline.");
+      }
+      const db = await getDb(project);
+      dbOpened = true;
+      const sourceSignature = indexedSourceSignature(db);
+      const indexPath = join(artifacts, "index.scip");
+      const environmentPath = join(artifacts, "environment.json");
+      await writeFile(environmentPath, "[]\n", { mode: 0o600 });
+      const scipPython = bundledScipPython();
+      // SCIP-Python compares source paths with a string prefix instead of
+      // normalizing them. macOS exposes /var as a /private/var symlink, so a
+      // non-canonical cwd causes a successful but empty index.
+      const scipProject = await realpath(project);
+      const providerStarted = performance.now();
+      const command = await exec(
+        process.execPath,
+        [
+          scipPython.cli,
+          "index",
+          "--cwd",
+          scipProject,
+          "--project-name",
+          `sdlc-eval-${oracle.scenario}`,
+          "--project-version",
+          "HEAD",
+          "--environment",
+          environmentPath,
+          "--output",
+          indexPath,
+          "--quiet",
+        ],
+        {
+          cwd: scipProject,
+          timeout: 5 * 60_000,
+          maxBuffer: 2 * 1024 * 1024,
+          maxFileSize: { path: indexPath, bytes: MAX_SCIP_INDEX_BYTES },
+        },
+      );
+      if (
+        command.spawnFailed ||
+        command.timedOut ||
+        command.truncated ||
+        command.fileSizeExceeded ||
+        command.exitCode !== 0
+      ) {
+        throw new Error(
+          `SCIP-Python indexer failed: ${command.stderr || command.stdout || "no diagnostics"}`,
+        );
+      }
+      const summary = await native.inspectScip(indexPath);
+      scipCounts = {
+        documents: summary.documents,
+        definitions: summary.definitions,
+        references: summary.references,
+      };
+      providerFailures.push(...scipConstraintFailures(scipCounts, scipExpected));
+      const projection = await native.projectScip(indexPath, scipProject, []);
+      const providerColdMs = Number((performance.now() - providerStarted).toFixed(3));
+      batch = scipProjectionFacts(projection, {
+        workspaceId: workspaceId(oracle.scenario, provider),
+        producer: { id: "scip-python", version: scipPython.version, kind: "compiler" },
+        generation: { sourceSignature },
+        freshness: "unverified",
+        ownership: { scope: "artifact", key: projection.sha256 },
+        generatedAt: "1970-01-01T00:00:00.000Z",
+      });
+      providerArtifactBytes = await fileBytes(indexPath);
+      official = await officialScipTest(
+        scipCli,
+        scipProject,
+        indexPath,
+        scipExpected.commentSyntax,
+        scipExpected.testFiles,
+      );
+      timings = {
+        coldMs: providerColdMs,
+        warmMs: null,
+        changedFileMs: null,
+        scope: "SCIP-Python indexing, inspection, and projection, excluding syntax-index setup",
+      };
+    } else {
+      const unsupported: never = provider;
+      throw new Error(`Unsupported evaluation provider: ${unsupported}`);
     }
 
     const scores = scoreFactBatch(batch, oracle);
@@ -403,7 +533,7 @@ export async function runEvaluationWorker(
       memory: {
         runnerPeakRssBytes: process.resourceUsage().maxRSS * 1024,
         scope:
-          provider === "scip-typescript"
+          provider.startsWith("scip-")
             ? "isolated SDLC runner; the external SCIP child peak is not yet sampled"
             : "isolated provider worker",
       },
@@ -411,7 +541,7 @@ export async function runEvaluationWorker(
       scipCounts,
       sourceEngine,
       unmeasured:
-        provider === "scip-typescript"
+        provider.startsWith("scip-")
           ? [
               "warm and one-file-change provider indexing",
               "external SCIP child peak RSS",

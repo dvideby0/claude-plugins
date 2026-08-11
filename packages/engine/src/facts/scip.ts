@@ -27,6 +27,15 @@ export interface ScipFactOptions {
   currentSourceSignature: string;
 }
 
+export interface ScipProjectionFactOptions {
+  workspaceId: string;
+  producer: FactProducer;
+  generation: FactGeneration;
+  freshness: FreshnessState;
+  ownership: { scope: "file" | "workspace" | "provider-run" | "artifact"; key: string };
+  generatedAt: string;
+}
+
 function id(prefix: string, ...parts: string[]): string {
   return `${prefix}:${createHash("sha256").update(parts.join("\0")).digest("hex").slice(0, 24)}`;
 }
@@ -222,16 +231,37 @@ export async function projectScipFacts(
   const projection = await requireProjection(durable);
   validateProjection(durable, projection, inputs);
 
-  const factGeneration = generation(durable);
-  const freshness = factFreshness(durable, options.currentSourceSignature);
-  const generatedAt = durable.finishedAt;
-  const workspaceId = durable.workspaceId;
-  const producer: FactProducer = {
-    id: durable.provider,
-    version: durable.providerVersion,
-    kind: "compiler",
-  };
-  const ownership = { scope: "provider-run" as const, key: durable.runId };
+  return scipProjectionFacts(projection, {
+    workspaceId: durable.workspaceId,
+    producer: {
+      id: durable.provider,
+      version: durable.providerVersion,
+      kind: "compiler",
+    },
+    generation: generation(durable),
+    freshness: factFreshness(durable, options.currentSourceSignature),
+    ownership: { scope: "provider-run", key: durable.runId },
+    generatedAt: durable.finishedAt,
+  });
+}
+
+/**
+ * Translate an already validated official SCIP projection into the common
+ * evidence envelope. Provider runners remain responsible for provenance,
+ * input fencing, artifact bounds, and freshness before calling this boundary.
+ */
+export function scipProjectionFacts(
+  projection: NativeScipProjection,
+  options: ScipProjectionFactOptions,
+): FactBatch {
+  const {
+    workspaceId,
+    producer,
+    generation: factGeneration,
+    freshness,
+    ownership,
+    generatedAt,
+  } = options;
   const definitions = new Map<string, NativeScipOccurrence[]>();
   for (const occurrence of projection.occurrences) {
     if (occurrence.kind !== "definition") continue;
