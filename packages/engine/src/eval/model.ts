@@ -1,6 +1,26 @@
 import { readFile } from "node:fs/promises";
 import { z } from "zod";
-import type { FactBatch } from "../facts/model.js";
+import {
+  CERTAINTY_CLASSES,
+  EDGE_KINDS,
+  type FactBatch,
+  type FactEdge,
+} from "../facts/model.js";
+
+export const EVALUATION_PROVIDERS = [
+  "typescript-fallback",
+  "native-tree-sitter",
+  "native-plus-typescript-checker",
+  "scip-typescript",
+  "scip-python",
+] as const;
+export type EvaluationProvider = (typeof EVALUATION_PROVIDERS)[number];
+
+export function isResolvedReferenceKind(kind: FactEdge["kind"]): boolean {
+  return kind === "reference" || kind === "read" || kind === "write";
+}
+
+const evaluationProviderSchema = z.enum(EVALUATION_PROVIDERS);
 
 const metricThresholdSchema = z
   .object({
@@ -18,11 +38,155 @@ const providerThresholdSchema = z
   })
   .strict();
 
+const scipExpectationSchema = z
+  .object({
+    documents: z.number().int().nonnegative(),
+    minimumDefinitions: z.number().int().nonnegative(),
+    minimumReferences: z.number().int().nonnegative(),
+    commentSyntax: z.string().min(1),
+    testFiles: z.array(z.string().min(1)).min(1),
+  })
+  .strict();
+
+const flowEntitySchema = z.union([
+  z
+    .object({
+      path: z.string().min(1),
+      symbol: z.string().min(1).optional(),
+    })
+    .strict(),
+  z
+    .object({
+      external: z.string().min(1),
+    })
+    .strict(),
+]);
+
+const flowEvidenceSchema = z
+  .object({
+    path: z.string().min(1),
+    startLine: z.number().int().nonnegative(),
+    detail: z.string().min(1).optional(),
+  })
+  .strict();
+
+const entryToEffectSchema = z
+  .object({
+    entrypoints: z
+      .array(
+        z
+          .object({
+            id: z.string().min(1),
+            registration: flowEvidenceSchema,
+            target: flowEntitySchema,
+          })
+          .strict(),
+      )
+      .min(1),
+    relations: z
+      .array(
+        z
+          .object({
+            id: z.string().min(1),
+            kind: z.enum(EDGE_KINDS),
+            source: flowEntitySchema,
+            target: flowEntitySchema,
+            certainty: z.enum(CERTAINTY_CLASSES),
+            evidence: flowEvidenceSchema,
+          })
+          .strict(),
+      )
+      .min(1),
+    paths: z
+      .array(
+        z
+          .object({
+            id: z.string().min(1),
+            entrypoint: z.string().min(1),
+            relations: z.array(z.string().min(1)).min(1),
+            terminalRelation: z.string().min(1),
+            conditions: z.array(z.string().min(1)),
+            certainty: z.enum(CERTAINTY_CLASSES),
+          })
+          .strict(),
+      )
+      .min(1),
+  })
+  .strict()
+  .superRefine((flow, context) => {
+    const uniqueIds = (kind: string, ids: string[]): void => {
+      const seen = new Set<string>();
+      for (const [index, id] of ids.entries()) {
+        if (seen.has(id)) {
+          context.addIssue({
+            code: z.ZodIssueCode.custom,
+            message: `Duplicate ${kind} id: ${id}`,
+            path: [kind, index, "id"],
+          });
+        }
+        seen.add(id);
+      }
+    };
+    uniqueIds("entrypoints", flow.entrypoints.map((entrypoint) => entrypoint.id));
+    uniqueIds("relations", flow.relations.map((relation) => relation.id));
+    uniqueIds("paths", flow.paths.map((path) => path.id));
+
+    const entrypoints = new Set(flow.entrypoints.map((entrypoint) => entrypoint.id));
+    const relations = new Map(flow.relations.map((relation) => [relation.id, relation]));
+    for (const [pathIndex, path] of flow.paths.entries()) {
+      if (!entrypoints.has(path.entrypoint)) {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: `Unknown entrypoint id: ${path.entrypoint}`,
+          path: ["paths", pathIndex, "entrypoint"],
+        });
+      }
+      for (const [relationIndex, relation] of path.relations.entries()) {
+        if (!relations.has(relation)) {
+          context.addIssue({
+            code: z.ZodIssueCode.custom,
+            message: `Unknown relation id: ${relation}`,
+            path: ["paths", pathIndex, "relations", relationIndex],
+          });
+        }
+      }
+      const terminal = relations.get(path.terminalRelation);
+      if (!terminal) {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: `Unknown terminal relation id: ${path.terminalRelation}`,
+          path: ["paths", pathIndex, "terminalRelation"],
+        });
+      } else if (terminal.kind !== "terminal-effect") {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: `Terminal relation ${path.terminalRelation} must have kind terminal-effect.`,
+          path: ["paths", pathIndex, "terminalRelation"],
+        });
+      }
+      if (!path.relations.includes(path.terminalRelation)) {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: `Path must include its terminal relation: ${path.terminalRelation}`,
+          path: ["paths", pathIndex, "relations"],
+        });
+      } else if (path.relations.at(-1) !== path.terminalRelation) {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: `Path must end with its terminal relation: ${path.terminalRelation}`,
+          path: ["paths", pathIndex, "relations"],
+        });
+      }
+    }
+  });
+
 export const evaluationOracleSchema = z
   .object({
-    schemaVersion: z.literal(1),
+    schemaVersion: z.literal(2),
     scenario: z.string().min(1),
+    languages: z.array(z.string().min(1)).min(1),
     features: z.array(z.string().min(1)).min(1),
+    providers: z.array(evaluationProviderSchema).min(1),
     change: z
       .object({
         path: z.string().min(1),
@@ -50,18 +214,61 @@ export const evaluationOracleSchema = z
         .strict(),
     ),
     thresholds: z.record(z.string().min(1), providerThresholdSchema),
-    scip: z
-      .object({
-        documents: z.number().int().nonnegative(),
-        minimumDefinitions: z.number().int().nonnegative(),
-        minimumReferences: z.number().int().nonnegative(),
-        testFiles: z.array(z.string().min(1)).min(1),
-      })
-      .strict(),
+    scip: z.record(evaluationProviderSchema, scipExpectationSchema).optional(),
+    entryToEffect: entryToEffectSchema.optional(),
   })
-  .strict();
+  .strict()
+  .superRefine((oracle, context) => {
+    const providers = new Set(oracle.providers);
+    if (providers.size !== oracle.providers.length) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "Evaluation providers must be unique.",
+        path: ["providers"],
+      });
+    }
+    const thresholdProviders = new Set(Object.keys(oracle.thresholds));
+    for (const provider of providers) {
+      if (!thresholdProviders.has(provider)) {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: `Missing threshold for provider ${provider}.`,
+          path: ["thresholds"],
+        });
+      }
+    }
+    for (const provider of thresholdProviders) {
+      if (!providers.has(provider as EvaluationProvider)) {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: `Threshold configured for unselected provider ${provider}.`,
+          path: ["thresholds", provider],
+        });
+      }
+    }
+    const scipProviders = [...providers].filter((provider) => provider.startsWith("scip-"));
+    for (const provider of scipProviders) {
+      if (!oracle.scip?.[provider]) {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: `SCIP expectations are required when ${provider} is selected.`,
+          path: ["scip", provider],
+        });
+      }
+    }
+    for (const provider of Object.keys(oracle.scip ?? {})) {
+      if (!provider.startsWith("scip-") || !providers.has(provider as EvaluationProvider)) {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: `SCIP expectations configured for unselected provider ${provider}.`,
+          path: ["scip", provider],
+        });
+      }
+    }
+  });
 
 export type EvaluationOracle = z.infer<typeof evaluationOracleSchema>;
+export type ScipOracle = NonNullable<NonNullable<EvaluationOracle["scip"]>[EvaluationProvider]>;
 export type MetricThreshold = z.infer<typeof metricThresholdSchema>;
 export type ProviderThreshold = z.infer<typeof providerThresholdSchema>;
 export type ExpectedSymbol = EvaluationOracle["symbols"][number];
@@ -170,7 +377,7 @@ export function scoreFactBatch(batch: FactBatch, oracle: EvaluationOracle): Fact
     const targetPath = edge.target.path;
     const targetSymbol = edge.target.symbol;
     if (
-      edge.kind !== "reference" ||
+      !isResolvedReferenceKind(edge.kind) ||
       !sourcePath ||
       !targetPath ||
       !targetSymbol ||

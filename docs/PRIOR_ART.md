@@ -62,6 +62,19 @@ across providers. Joern remains an optional evaluation dependency: its CPG/CFG/P
 exports are promising, but the JVM/JDK footprint and graph translation cost
 must earn their place against the golden corpus before bundling.
 
+The MIT-licensed
+[`@sourcegraph/scip-python`](https://www.npmjs.com/package/@sourcegraph/scip-python)
+0.6.6 package is pinned only as an EVAL-001 development comparator. On the
+Python/LangGraph fixture it materially improves selected reference recall over
+the native syntax baseline (9/9 versus 8/9) and reuses SDLC's maintained Rust
+SCIP decoder and fact projection. It does not emit SCIP relationships or model
+LangGraph registration, branching, or terminal effects. The package is roughly
+20 MB unpacked, is a Sourcegraph fork of Pyright that trails active upstream
+Pyright development, and still carries deprecated `glob`/`inflight`
+transitives. Those maintenance and capability gaps rule it out as the default
+production Python provider today; retaining a reproducible evaluator lets a
+future maintained replacement prove that it is at least as accurate.
+
 ## Integration research
 
 [Codex plugin documentation](https://developers.openai.com/plugins/build/plugins) describes bundles containing a `.codex-plugin/plugin.json` manifest plus skills, apps/MCP registrations, hooks, and related resources. Its marketplace workflow supports local and Git-backed sources. [Codex MCP documentation](https://developers.openai.com/codex/mcp/) describes supported CLI configuration rather than requiring direct TOML editing.

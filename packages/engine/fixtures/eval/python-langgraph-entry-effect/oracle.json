@@ -1,0 +1,269 @@
+{
+  "schemaVersion": 2,
+  "scenario": "python-langgraph-entry-effect",
+  "languages": ["python"],
+  "features": [
+    "langgraph-manifest-entrypoint",
+    "framework-registration",
+    "conditional-branch",
+    "cross-file-call",
+    "external-tool-call",
+    "terminal-write",
+    "entry-to-effect-path"
+  ],
+  "providers": ["typescript-fallback", "native-tree-sitter", "scip-python"],
+  "change": {
+    "path": "arena/nodes.py",
+    "append": "\n# EVAL-001 Python incremental-change probe\n"
+  },
+  "symbols": [
+    { "path": "arena/effects.py", "name": "search_web", "startLine": 3 },
+    { "path": "arena/effects.py", "name": "persist_result", "startLine": 8 },
+    { "path": "arena/graph.py", "name": "build", "startLine": 14 },
+    { "path": "arena/nodes.py", "name": "classify", "startLine": 5 },
+    { "path": "arena/nodes.py", "name": "route_after_classify", "startLine": 10 },
+    { "path": "arena/nodes.py", "name": "research", "startLine": 14 },
+    { "path": "arena/nodes.py", "name": "consolidate", "startLine": 18 },
+    { "path": "arena/nodes.py", "name": "route_after_consolidate", "startLine": 22 },
+    { "path": "arena/nodes.py", "name": "finalize", "startLine": 26 }
+  ],
+  "references": [
+    {
+      "sourcePath": "arena/graph.py",
+      "targetPath": "arena/nodes.py",
+      "targetSymbol": "classify"
+    },
+    {
+      "sourcePath": "arena/graph.py",
+      "targetPath": "arena/nodes.py",
+      "targetSymbol": "research"
+    },
+    {
+      "sourcePath": "arena/graph.py",
+      "targetPath": "arena/nodes.py",
+      "targetSymbol": "consolidate"
+    },
+    {
+      "sourcePath": "arena/graph.py",
+      "targetPath": "arena/nodes.py",
+      "targetSymbol": "finalize"
+    },
+    {
+      "sourcePath": "arena/graph.py",
+      "targetPath": "arena/nodes.py",
+      "targetSymbol": "route_after_classify"
+    },
+    {
+      "sourcePath": "arena/graph.py",
+      "targetPath": "arena/nodes.py",
+      "targetSymbol": "route_after_consolidate"
+    },
+    {
+      "sourcePath": "arena/nodes.py",
+      "targetPath": "arena/effects.py",
+      "targetSymbol": "search_web"
+    },
+    {
+      "sourcePath": "arena/nodes.py",
+      "targetPath": "arena/effects.py",
+      "targetSymbol": "persist_result"
+    },
+    {
+      "sourcePath": "arena/graph.py",
+      "targetPath": "arena/graph.py",
+      "targetSymbol": "build"
+    }
+  ],
+  "thresholds": {
+    "typescript-fallback": {
+      "symbols": { "minimumPrecision": 1, "minimumRecall": 1 },
+      "references": { "minimumRecall": 0, "maximumFalsePositives": 0 }
+    },
+    "native-tree-sitter": {
+      "symbols": { "minimumPrecision": 1, "minimumRecall": 1 },
+      "references": { "minimumPrecision": 1, "maximumMissing": 1 }
+    },
+    "scip-python": {
+      "symbols": { "minimumPrecision": 1, "minimumRecall": 1 },
+      "references": { "minimumPrecision": 1, "minimumRecall": 1 }
+    }
+  },
+  "scip": {
+    "scip-python": {
+      "documents": 4,
+      "minimumDefinitions": 9,
+      "minimumReferences": 9,
+      "commentSyntax": "#",
+      "testFiles": ["arena/effects.py", "arena/graph.py", "arena/nodes.py"]
+    }
+  },
+  "entryToEffect": {
+    "entrypoints": [
+      {
+        "id": "subject-lookup",
+        "registration": {
+          "path": "langgraph.json",
+          "startLine": 4,
+          "detail": "LangGraph deployment manifest registers the compiled graph."
+        },
+        "target": { "path": "arena/graph.py", "symbol": "graph" }
+      }
+    ],
+    "relations": [
+      {
+        "id": "manifest-entry",
+        "kind": "register",
+        "source": { "path": "langgraph.json", "symbol": "subject_lookup" },
+        "target": { "path": "arena/graph.py", "symbol": "graph" },
+        "certainty": "exact",
+        "evidence": { "path": "langgraph.json", "startLine": 4 }
+      },
+      {
+        "id": "start-classify",
+        "kind": "dispatch",
+        "source": { "path": "arena/graph.py", "symbol": "graph" },
+        "target": { "path": "arena/nodes.py", "symbol": "classify" },
+        "certainty": "exact",
+        "evidence": { "path": "arena/graph.py", "startLine": 21 }
+      },
+      {
+        "id": "classify-route",
+        "kind": "dispatch",
+        "source": { "path": "arena/nodes.py", "symbol": "classify" },
+        "target": { "path": "arena/nodes.py", "symbol": "route_after_classify" },
+        "certainty": "exact",
+        "evidence": { "path": "arena/graph.py", "startLine": 22 }
+      },
+      {
+        "id": "classify-research",
+        "kind": "branch",
+        "source": { "path": "arena/nodes.py", "symbol": "route_after_classify" },
+        "target": { "path": "arena/nodes.py", "symbol": "research" },
+        "certainty": "exact",
+        "evidence": { "path": "arena/graph.py", "startLine": 22 }
+      },
+      {
+        "id": "classify-end",
+        "kind": "terminal-effect",
+        "source": { "path": "arena/nodes.py", "symbol": "route_after_classify" },
+        "target": { "external": "langgraph:END" },
+        "certainty": "exact",
+        "evidence": { "path": "arena/graph.py", "startLine": 22 }
+      },
+      {
+        "id": "research-search",
+        "kind": "call",
+        "source": { "path": "arena/nodes.py", "symbol": "research" },
+        "target": { "path": "arena/effects.py", "symbol": "search_web" },
+        "certainty": "exact",
+        "evidence": { "path": "arena/nodes.py", "startLine": 15 }
+      },
+      {
+        "id": "research-consolidate",
+        "kind": "dispatch",
+        "source": { "path": "arena/nodes.py", "symbol": "research" },
+        "target": { "path": "arena/nodes.py", "symbol": "consolidate" },
+        "certainty": "exact",
+        "evidence": { "path": "arena/graph.py", "startLine": 23 }
+      },
+      {
+        "id": "consolidate-route",
+        "kind": "dispatch",
+        "source": { "path": "arena/nodes.py", "symbol": "consolidate" },
+        "target": {
+          "path": "arena/nodes.py",
+          "symbol": "route_after_consolidate"
+        },
+        "certainty": "exact",
+        "evidence": { "path": "arena/graph.py", "startLine": 24 }
+      },
+      {
+        "id": "consolidate-finalize",
+        "kind": "branch",
+        "source": { "path": "arena/nodes.py", "symbol": "route_after_consolidate" },
+        "target": { "path": "arena/nodes.py", "symbol": "finalize" },
+        "certainty": "exact",
+        "evidence": { "path": "arena/graph.py", "startLine": 24 }
+      },
+      {
+        "id": "consolidate-end",
+        "kind": "terminal-effect",
+        "source": { "path": "arena/nodes.py", "symbol": "route_after_consolidate" },
+        "target": { "external": "langgraph:END" },
+        "certainty": "exact",
+        "evidence": { "path": "arena/graph.py", "startLine": 24 }
+      },
+      {
+        "id": "finalize-persist",
+        "kind": "call",
+        "source": { "path": "arena/nodes.py", "symbol": "finalize" },
+        "target": { "path": "arena/effects.py", "symbol": "persist_result" },
+        "certainty": "exact",
+        "evidence": { "path": "arena/nodes.py", "startLine": 28 }
+      },
+      {
+        "id": "persist-write",
+        "kind": "terminal-effect",
+        "source": { "path": "arena/effects.py", "symbol": "persist_result" },
+        "target": { "external": "result-store" },
+        "certainty": "asserted",
+        "evidence": {
+          "path": "arena/effects.py",
+          "startLine": 8,
+          "detail": "Fixture boundary models the application-owned persistence effect."
+        }
+      }
+    ],
+    "paths": [
+      {
+        "id": "successful-result",
+        "entrypoint": "subject-lookup",
+        "relations": [
+          "manifest-entry",
+          "start-classify",
+          "classify-route",
+          "classify-research",
+          "research-search",
+          "research-consolidate",
+          "consolidate-route",
+          "consolidate-finalize",
+          "finalize-persist",
+          "persist-write"
+        ],
+        "terminalRelation": "persist-write",
+        "conditions": ["classification succeeds", "research yields at least one source"],
+        "certainty": "asserted"
+      },
+      {
+        "id": "classification-exhausted",
+        "entrypoint": "subject-lookup",
+        "relations": [
+          "manifest-entry",
+          "start-classify",
+          "classify-route",
+          "classify-end"
+        ],
+        "terminalRelation": "classify-end",
+        "conditions": ["classification yields no category"],
+        "certainty": "asserted"
+      },
+      {
+        "id": "research-exhausted",
+        "entrypoint": "subject-lookup",
+        "relations": [
+          "manifest-entry",
+          "start-classify",
+          "classify-route",
+          "classify-research",
+          "research-search",
+          "research-consolidate",
+          "consolidate-route",
+          "consolidate-end"
+        ],
+        "terminalRelation": "consolidate-end",
+        "conditions": ["classification succeeds", "research yields no sources"],
+        "certainty": "asserted"
+      }
+    ]
+  }
+}

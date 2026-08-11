@@ -1,6 +1,7 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "scenario": "typescript-entry-effect",
+  "languages": ["typescript"],
   "features": [
     "cross-file-call",
     "branch",
@@ -8,6 +9,12 @@
     "throw",
     "await",
     "terminal-response"
+  ],
+  "providers": [
+    "typescript-fallback",
+    "native-tree-sitter",
+    "native-plus-typescript-checker",
+    "scip-typescript"
   ],
   "change": {
     "path": "src/store.ts",
@@ -45,9 +52,12 @@
     }
   },
   "scip": {
-    "documents": 2,
-    "minimumDefinitions": 4,
-    "minimumReferences": 5,
-    "testFiles": ["src/main.ts", "src/store.ts"]
+    "scip-typescript": {
+      "documents": 2,
+      "minimumDefinitions": 4,
+      "minimumReferences": 5,
+      "commentSyntax": "//",
+      "testFiles": ["src/main.ts", "src/store.ts"]
+    }
   }
 }
