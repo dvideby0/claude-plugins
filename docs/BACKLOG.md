@@ -119,11 +119,18 @@ Acceptance criteria:
 - Results are machine-readable and CI fails on agreed correctness regressions.
 - Benchmarks clearly separate cold, warm, and one-file-change runs.
 
-Progress (2026-08-06): the first checked-in TypeScript fixture covers a
+Progress (2026-08-11): the first checked-in TypeScript fixture covers a
 cross-file call, condition, early return, throw, await, and terminal HTTP
-response, with a machine-readable oracle and a real SCIP integration test. The
-fixture set, precision/recall scorer, incremental measurements, peak-memory
-capture, and CI thresholds are still open.
+response. `npm run eval` now runs the fallback scanner, native scanner,
+native scanner plus TypeScript checker prototype, and SCIP provider in isolated workers; it emits
+machine-readable targeted symbol/reference precision and recall, cold/warm/
+one-file-change timing where supported, prototype-store/artifact size, worker
+peak RSS, missing facts, and threshold failures. CI pins the official SCIP
+v0.9.0 binary and reuses its golden-test format and validator rather than
+reimplementing occurrence truth. The corpus remains one narrow scenario; path
+and retrieval scoring, external-provider child memory, broader fixtures, and
+meaningful promotion thresholds are still open. See
+[`EVALUATION.md`](EVALUATION.md).
 
 ### STORE-001: Move workspace state under app ownership
 

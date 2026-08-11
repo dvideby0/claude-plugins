@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import type { Db } from "../db/db.js";
-import { TYPED_SPECIFIER, typedWorkspaceGeneration } from "../graph/typed.js";
+import { TYPED_SPECIFIER, typedWorkspaceGeneration } from "../graph/typed-contract.js";
 import { EXTRACTION_VERSION } from "../scan/scan.js";
 import { indexedSourceSignature } from "../scan/signature.js";
 import {

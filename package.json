@@ -15,6 +15,7 @@
     "build": "npm run build -w @sdlc/protocol && npm run build -w @sdlc/scan-core && npm run build -w @sdlc/engine && npm run build -w @sdlc/mcp-bridge && npm run build -w @sdlc/desktop",
     "typecheck": "npm run build -w @sdlc/protocol && npm run typecheck --workspaces --if-present",
     "test": "npm run build -w @sdlc/protocol && npm run test --workspaces --if-present",
+    "eval": "npm run build -w @sdlc/protocol && npm run build -w @sdlc/scan-core && npm run build -w @sdlc/engine && npm run eval -w @sdlc/engine --",
     "daemon": "npm run start -w @sdlc/engine",
     "desktop": "npm run start -w @sdlc/desktop"
   },

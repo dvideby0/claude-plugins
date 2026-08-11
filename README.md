@@ -106,6 +106,17 @@ Tree-sitter remains available if SCIP fails. Joern is shown only when its
 `joern-parse` command is installed; detection does not yet enable or bundle the
 planned control/data-flow adapter.
 
+The checked-in provider corpus is separate from the desktop's live comparison.
+It reports targeted precision/recall and performance for every current provider
+and records unsupported measurements explicitly:
+
+```bash
+npm run --silent eval -- --json
+```
+
+See [Code-intelligence evaluation](docs/EVALUATION.md) for the oracle boundary,
+official SCIP golden tests, current thresholds, and remaining coverage gaps.
+
 Or run the engine on its own, headless:
 
 ```bash

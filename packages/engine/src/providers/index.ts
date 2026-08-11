@@ -8,7 +8,7 @@
 
 import { createRequire } from "node:module";
 import { randomBytes } from "node:crypto";
-import { mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, realpath, rename, rm, writeFile } from "node:fs/promises";
 import { dirname, join, relative, sep } from "node:path";
 import { providersDir } from "@sdlc/protocol";
 import { findTsConfigs } from "../analyze/tools.js";
@@ -483,6 +483,12 @@ async function evaluateScip(
     await rm(artifactDir, { recursive: true, force: true });
     throw new Error("The source index changed while SCIP inputs were staged. Run the evaluation again.");
   }
+  // macOS exposes /var through the /private/var symlink. Passing the lexical
+  // staging path as --cwd while TypeScript canonicalizes source files through
+  // realpath makes SCIP emit ../../-escaped document paths. Bind every provider
+  // operation to the canonical staged root so upstream `scip test` and SDLC's
+  // projection agree on portable repository-relative document paths.
+  const providerRoot = await realpath(snapshotRoot);
 
   // scip-typescript treats a positional cwd as one project. That fails for
   // ordinary npm monorepos whose configs live under packages/ and apps/, so
@@ -496,7 +502,7 @@ async function evaluateScip(
     AbortSignal.timeout(SCIP_DISCOVERY_TIMEOUT_MS),
   ]);
   try {
-    selectedProjects = await scipProjects(snapshotRoot, db, snapshotRoot, discoverySignal);
+    selectedProjects = await scipProjects(providerRoot, db, providerRoot, discoverySignal);
   } catch (cause) {
     if (signal.aborted) {
       await rm(artifactDir, { recursive: true, force: true });
@@ -517,7 +523,7 @@ async function evaluateScip(
   const projects = selectedProjects.recorded;
   let inputManifest: NativeSnapshotManifest;
   try {
-    const manifestingInput = native.snapshotManifest(snapshotRoot);
+    const manifestingInput = native.snapshotManifest(providerRoot);
     inputManifest = await abortableArtifactWork(manifestingInput, signal, artifactDir);
   } catch (cause) {
     if (signal.aborted) throw signal.reason ?? cause;
@@ -548,14 +554,14 @@ async function evaluateScip(
             project.startsWith("-") ? `./${project}` : project,
           ),
           "--cwd",
-          snapshotRoot,
+          providerRoot,
           "--output",
           indexPath,
           "--no-progress-bar",
           "--no-global-caches",
         ],
         {
-          cwd: snapshotRoot,
+          cwd: providerRoot,
           timeout: SCIP_TIMEOUT_MS,
           maxBuffer: MAX_PROVIDER_OUTPUT,
           maxFileSize: { path: indexPath, bytes: MAX_SCIP_INDEX_BYTES },
@@ -587,7 +593,7 @@ async function evaluateScip(
       incomplete = [incomplete, reported].filter(Boolean).join("\n") || null;
       let after: NativeSnapshotManifest;
       try {
-        const manifestingOutput = native.snapshotManifest(snapshotRoot);
+        const manifestingOutput = native.snapshotManifest(providerRoot);
         after = await abortableArtifactWork(manifestingOutput, signal, artifactDir);
         if (after.inputSignature !== inputManifest.inputSignature) {
           error = "SCIP changed its staged input view; the output was discarded.";
@@ -597,7 +603,7 @@ async function evaluateScip(
           const inspected = await abortableArtifactWork(inspecting, signal, artifactDir);
           if (native.projectScip) {
             try {
-              const projecting = native.projectScip(indexPath, snapshotRoot, []);
+              const projecting = native.projectScip(indexPath, providerRoot, []);
               const projection = await abortableArtifactWork(projecting, signal, artifactDir);
               const inputs = new Set(inputManifest.entries.map((entry) => entry.path));
               const unattested = projection.documents.find(

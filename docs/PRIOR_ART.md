@@ -55,7 +55,10 @@ The first concrete adoption is the Apache-2.0
 indexer plus the official Apache-2.0
 [`scip` Rust bindings](https://crates.io/crates/scip). This reuses TypeScript
 project/package resolution and the SCIP protocol rather than reproducing either
-inside SDLC. Joern remains an optional evaluation dependency: its CPG/CFG/PDG
+inside SDLC. EVAL-001 also uses the official pinned `scip test` binary and its
+human-readable golden assertion format for occurrence validation; SDLC only
+scores the provider-neutral relations that the upstream tool does not compare
+across providers. Joern remains an optional evaluation dependency: its CPG/CFG/PDG
 exports are promising, but the JVM/JDK footprint and graph translation cost
 must earn their place against the golden corpus before bundling.
 

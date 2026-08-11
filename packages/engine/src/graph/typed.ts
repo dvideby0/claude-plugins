@@ -22,18 +22,8 @@ import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "nod
 import ts from "typescript";
 import type { Db } from "../db/db.js";
 import { indexedSourceSignature } from "../scan/signature.js";
-
-/**
- * Marks a ref as already resolved by the type checker. The import resolver
- * must leave these alone — it would try to resolve this as a module path,
- * fail, and null out the very rows the typed pass just established.
- */
-export const TYPED_SPECIFIER = "typed";
-
-/** Destination identity participates in the existing refs primary key. */
-export function typedSpecifier(destination: string, line: number, column: number): string {
-  return `${TYPED_SPECIFIER}:${destination}:${line}:${column}`;
-}
+import { typedSpecifier, typedWorkspaceGeneration } from "./typed-contract.js";
+export { TYPED_SPECIFIER, typedSpecifier, typedWorkspaceGeneration } from "./typed-contract.js";
 
 export interface TypedResult {
   ran: boolean;
@@ -69,23 +59,6 @@ export interface TypedAnalysis {
   /** Complete indexed workspace generation captured before analysis began. */
   workspaceGeneration?: string;
   durationMs: number;
-}
-
-/**
- * A cheap generation fence for the worker result.
- *
- * Individual input hashes prove files that existed at worker start did not
- * change. This digest also covers the set of indexed paths, so an overlapping
- * scan that adds or removes a source/config file invalidates the old result.
- */
-export function typedWorkspaceGeneration(db: Db): string {
-  const files = db.all<{ path: string; content_sha: string }>(
-    "SELECT path, content_sha FROM files WHERE present = 1 ORDER BY path",
-  );
-  return createHash("sha256")
-    .update(files.map((file) => `${file.path}:${file.content_sha}`).join("|"))
-    .digest("hex")
-    .slice(0, 20);
 }
 
 function toPosix(path: string): string {

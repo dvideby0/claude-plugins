@@ -46,7 +46,7 @@ The other structural risk is storage. The engine currently writes a `sql.js` dat
 | Desktop experience | Functional shell | Useful maps and operational views exist, but it is not yet a complete code-intelligence workspace. |
 | Claude/Codex installation | Partial | MCP connection exists; complete plugin/skill lifecycle and supported Codex configuration are missing. |
 | Packaging and CI | Promising | Desktop packaging, native build matrices, smoke scripts, and plugin validation are present. |
-| Quality measurement | Mixed | Unit coverage is useful; Rust SCIP tests and one golden analysis fixture now exist, but a real scoring harness and retrieval/product evals are absent. |
+| Quality measurement | Emerging | One command now scores a narrow fixture across fallback, native, compiler-prototype, and SCIP facts with official SCIP golden assertions; broader path/retrieval corpora and provider-child resource measurement remain absent. |
 
 ## What exists today
 
@@ -145,7 +145,7 @@ The MCP server in [`packages/engine/src/mcp/server.ts`](../packages/engine/src/m
 
 The breadth proves the engine has useful primitives. It also creates overlap and discovery cost for an agent. A smaller intent-oriented query surface could compose these primitives internally, return evidence and uncertainty consistently, and enforce an explicit context budget.
 
-The `brief` implementation is a good beginning: it assembles nearby symbols, impact, tests, memories, findings, and recommended files. Relevance is still mostly based on explicit targets and keyword matches rather than evaluated lexical/graph/semantic ranking.
+The `brief` implementation is a good beginning: it assembles nearby symbols, impact, tests, memories, findings, and recommended files. Relevance is still mostly based on explicit targets and keyword matches rather than evaluated lexical/graph/semantic ranking. The first EVAL-001 command deliberately reports retrieval and entry-to-effect path quality as unmeasured rather than treating the new symbol/reference fixture as evidence for either claim.
 
 ### Desktop application
 
