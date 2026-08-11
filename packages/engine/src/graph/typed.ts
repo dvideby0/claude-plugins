@@ -21,6 +21,7 @@ import { Worker } from "node:worker_threads";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import ts from "typescript";
 import type { Db } from "../db/db.js";
+import { indexedSourceSignature } from "../scan/signature.js";
 
 /**
  * Marks a ref as already resolved by the type checker. The import resolver
@@ -52,6 +53,8 @@ export interface TypedReference {
   dst: string;
   dstLine: number;
   dstColumn: number;
+  dstEndLine: number;
+  dstEndColumn: number;
 }
 
 export interface TypedAnalysis {
@@ -411,6 +414,10 @@ export function analyseTypes(projectRoot: string): TypedAnalysis {
                 declFile,
                 declaredNode?.getStart() ?? declaration.getStart(),
               );
+              const destinationEndPosition = utf8Position(
+                declFile,
+                declaredNode?.getEnd() ?? declaration.getEnd(),
+              );
               found.push({
                 src,
                 line: sourcePosition.line,
@@ -420,6 +427,8 @@ export function analyseTypes(projectRoot: string): TypedAnalysis {
                 dst,
                 dstLine: destinationPosition.line,
                 dstColumn: destinationPosition.column,
+                dstEndLine: destinationEndPosition.line,
+                dstEndColumn: destinationEndPosition.column,
               });
             }
           }
@@ -541,6 +550,7 @@ export function applyTypedAnalysis(db: Db, analysis: TypedAnalysis): TypedResult
       .map((symbol) => `${symbol.path}\0${symbol.name}`),
   );
   const factGeneration = typedWorkspaceGeneration(db);
+  const factSourceSignature = indexedSourceSignature(db);
   const seen = new Set<string>();
   db.transaction(() => {
     for (const [src, refs] of refsBySrc) {
@@ -553,13 +563,14 @@ export function applyTypedAnalysis(db: Db, analysis: TypedAnalysis): TypedResult
         const name = defaultSlots.has(`${reference.dst}\0${reference.name}`)
           ? "default"
           : reference.name;
-        const key = `${reference.src}|${reference.line}|${reference.column}|${reference.endColumn}|${name}|${reference.dst}|${reference.dstLine}|${reference.dstColumn}`;
+        const key = `${reference.src}|${reference.line}|${reference.column}|${reference.endColumn}|${name}|${reference.dst}|${reference.dstLine}|${reference.dstColumn}|${reference.dstEndLine}|${reference.dstEndColumn}`;
         if (seen.has(key)) continue;
         seen.add(key);
         db.run(
           `INSERT OR REPLACE INTO refs(src_path, src_line, src_column, src_end_column, name,
-                                      specifier, dst_path, dst_line, dst_column)
-           VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                                      specifier, dst_path, dst_line, dst_column, dst_end_line,
+                                      dst_end_column)
+           VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           [
             reference.src,
             reference.line,
@@ -570,13 +581,17 @@ export function applyTypedAnalysis(db: Db, analysis: TypedAnalysis): TypedResult
             reference.dst,
             reference.dstLine,
             reference.dstColumn,
+            reference.dstEndLine,
+            reference.dstEndColumn,
           ],
         );
       }
-      db.run("UPDATE files SET ref_coverage = 'typed', ref_generation = ? WHERE path = ?", [
-        factGeneration,
-        src,
-      ]);
+      db.run(
+        `UPDATE files
+            SET ref_coverage = 'typed', ref_generation = ?, ref_source_signature = ?
+          WHERE path = ?`,
+        [factGeneration, factSourceSignature, src],
+      );
     }
     db.refreshReferenceIdentity();
   });

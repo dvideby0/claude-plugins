@@ -72,10 +72,44 @@ function assertionKind(kind: string): FactEdgeKind {
 
 function compilerFreshness(
   recordedGeneration: string | null,
+  recordedSourceSignature: string | null,
   currentGeneration: string,
 ): FreshnessState {
-  if (!recordedGeneration) return "unverified";
+  if (!recordedGeneration || !recordedSourceSignature) return "unverified";
   return recordedGeneration === currentGeneration ? "current" : "stale";
+}
+
+interface LegacyReferenceRow {
+  src_path: string;
+  src_line: number;
+  src_column: number;
+  src_end_column: number | null;
+  src_symbol: string | null;
+  src_symbol_id: string | null;
+  name: string;
+  specifier: string;
+  dst_path: string | null;
+  dst_line: number | null;
+  dst_column: number | null;
+  dst_end_line: number | null;
+  dst_end_column: number | null;
+  dst_symbol_id: string | null;
+  ref_generation: string | null;
+  ref_source_signature: string | null;
+}
+
+function isTypedReference(reference: LegacyReferenceRow): boolean {
+  return (
+    reference.specifier === TYPED_SPECIFIER ||
+    reference.specifier.startsWith(`${TYPED_SPECIFIER}:`)
+  );
+}
+
+function compilerGeneration(reference: LegacyReferenceRow): FactGeneration {
+  return {
+    sourceSignature: reference.ref_source_signature,
+    ...(reference.ref_generation ? { inputSignature: reference.ref_generation } : {}),
+  };
 }
 
 function sourceRef(
@@ -225,33 +259,151 @@ export function projectLegacyFacts(db: Db, options: LegacyFactOptions): FactBatc
     });
   }
 
-  const emittedNodeIds = new Set(nodes.map((node) => node.id));
-  for (const reference of db.all<{
-    src_path: string;
-    src_line: number;
-    src_column: number;
-    src_end_column: number | null;
-    src_symbol: string | null;
-    src_symbol_id: string | null;
-    name: string;
-    specifier: string;
-    dst_path: string | null;
-    dst_line: number | null;
-    dst_column: number | null;
-    dst_symbol_id: string | null;
-    ref_generation: string | null;
-  }>(
+  const references = db.all<LegacyReferenceRow>(
     `SELECT src_path, src_line, src_column, src_end_column, src_symbol, src_symbol_id, name, specifier,
-            dst_path, dst_line, dst_column, dst_symbol_id, f.ref_generation
+            dst_path, dst_line, dst_column, dst_end_line, dst_end_column, dst_symbol_id,
+            f.ref_generation, f.ref_source_signature
        FROM refs r
        LEFT JOIN files f ON f.path = r.src_path AND f.present = 1
        ORDER BY src_path, src_line, src_column, name`,
+  );
+
+  // A compiler-only declaration can be referenced by rows from several typed
+  // generations. Resolve its fact once from the complete group so source-path
+  // ordering cannot make a current declaration stale (or vice versa).
+  const syntheticDeclarations = new Map<
+    string,
+    {
+      nativeId: string;
+      path: string;
+      name: string;
+      line: number;
+      column: number;
+      endLine: number | null;
+      endColumn: number | null;
+      candidates: Array<{ freshness: FreshnessState; generation: FactGeneration }>;
+    }
+  >();
+  for (const reference of references) {
+    if (
+      !isTypedReference(reference) ||
+      reference.dst_symbol_id ||
+      !reference.dst_path ||
+      reference.dst_line === null ||
+      reference.dst_column === null
+    ) {
+      continue;
+    }
+    const nativeId = typedDeclarationNativeId(
+      reference.dst_path,
+      reference.dst_line,
+      reference.dst_column,
+      reference.name,
+    );
+    const nodeId = symbolId(nativeId);
+    const candidate = {
+      freshness: compilerFreshness(
+        reference.ref_generation,
+        reference.ref_source_signature,
+        currentTypedGeneration,
+      ),
+      generation: compilerGeneration(reference),
+    };
+    const existing = syntheticDeclarations.get(nodeId);
+    if (existing) {
+      existing.candidates.push(candidate);
+      if (
+        (existing.endLine === null || existing.endColumn === null) &&
+        reference.dst_end_line !== null &&
+        reference.dst_end_column !== null
+      ) {
+        existing.endLine = reference.dst_end_line;
+        existing.endColumn = reference.dst_end_column;
+      }
+    } else {
+      syntheticDeclarations.set(nodeId, {
+        nativeId,
+        path: reference.dst_path,
+        name: reference.name,
+        line: reference.dst_line,
+        column: reference.dst_column,
+        endLine: reference.dst_end_line,
+        endColumn: reference.dst_end_column,
+        candidates: [candidate],
+      });
+    }
+  }
+
+  for (const [nodeId, declaration] of [...syntheticDeclarations].sort(([left], [right]) =>
+    left.localeCompare(right),
   )) {
-    const typed =
-      reference.specifier === TYPED_SPECIFIER ||
-      reference.specifier.startsWith(`${TYPED_SPECIFIER}:`);
+    const current = declaration.candidates.find((candidate) => candidate.freshness === "current");
+    const attested = declaration.candidates.filter(
+      (candidate) => candidate.generation.sourceSignature !== null,
+    );
+    const attestedGenerations = new Set(
+      attested.map(
+        (candidate) =>
+          `${candidate.generation.sourceSignature}\0${candidate.generation.inputSignature ?? ""}`,
+      ),
+    );
+    const selected = current ?? (attestedGenerations.size === 1 ? attested[0] : undefined);
+    const freshness: FreshnessState = current
+      ? "current"
+      : selected && declaration.candidates.every((candidate) => candidate.freshness === "stale")
+        ? "stale"
+        : "unverified";
+    const declarationAnchor: FactAnchor = {
+      path: declaration.path,
+      symbol: declaration.name,
+      ...(declaration.endLine !== null && declaration.endColumn !== null
+        ? {
+            positionEncoding: "utf-8" as const,
+            range: {
+              startLine: zeroBased(declaration.line),
+              startColumn: declaration.column,
+              endLine: zeroBased(declaration.endLine),
+              endColumn: declaration.endColumn,
+            },
+          }
+        : {}),
+    };
+    nodes.push({
+      schemaVersion: FACT_SCHEMA_VERSION,
+      type: "node",
+      id: nodeId,
+      workspaceId: options.workspaceId,
+      kind: "symbol",
+      nativeKind: "local-declaration",
+      name: declaration.name,
+      anchor: declarationAnchor,
+      producer: COMPILER_PRODUCER,
+      generation:
+        freshness === "unverified"
+          ? { sourceSignature: null }
+          : (selected?.generation ?? { sourceSignature: null }),
+      certainty: "exact",
+      freshness,
+      ownership: { scope: "file", key: declaration.path },
+      evidence: [
+        declarationAnchor.range
+          ? { kind: "source", anchor: declarationAnchor }
+          : {
+              kind: "source",
+              anchor: declarationAnchor,
+              unavailableReason:
+                "The legacy compiler row did not preserve the declaration token end.",
+            },
+      ],
+      createdAt: generatedAt,
+    });
+  }
+
+  for (const reference of references) {
+    const typed = isTypedReference(reference);
     const typedFreshness = compilerFreshness(
       reference.ref_generation,
+      reference.ref_source_signature,
       currentTypedGeneration,
     );
     const sourceRange =
@@ -301,40 +453,6 @@ export function projectLegacyFacts(db: Db, options: LegacyFactOptions): FactBatc
               symbol: reference.name,
               unresolvedReason: "The legacy reference did not resolve to an indexed declaration.",
             };
-    if (typedDeclarationId && reference.dst_path && !reference.dst_symbol_id) {
-      const declarationNodeId = symbolId(typedDeclarationId);
-      if (!emittedNodeIds.has(declarationNodeId)) {
-        const declarationAnchor: FactAnchor = {
-          path: reference.dst_path,
-          symbol: reference.name,
-          positionEncoding: "utf-8",
-          range: {
-            startLine: zeroBased(reference.dst_line!),
-            startColumn: reference.dst_column!,
-            endLine: zeroBased(reference.dst_line!),
-            endColumn: reference.dst_column! + Buffer.byteLength(reference.name, "utf-8"),
-          },
-        };
-        nodes.push({
-          schemaVersion: FACT_SCHEMA_VERSION,
-          type: "node",
-          id: declarationNodeId,
-          workspaceId: options.workspaceId,
-          kind: "symbol",
-          nativeKind: "local-declaration",
-          name: reference.name,
-          anchor: declarationAnchor,
-          producer: COMPILER_PRODUCER,
-          generation,
-          certainty: "exact",
-          freshness: typedFreshness,
-          ownership: { scope: "file", key: reference.dst_path },
-          evidence: [{ kind: "source", anchor: declarationAnchor }],
-          createdAt: generatedAt,
-        });
-        emittedNodeIds.add(declarationNodeId);
-      }
-    }
     edges.push({
       schemaVersion: FACT_SCHEMA_VERSION,
       type: "edge",
@@ -351,7 +469,7 @@ export function projectLegacyFacts(db: Db, options: LegacyFactOptions): FactBatc
       source: sourceRef(db, reference.src_path, reference.src_symbol_id, reference.src_symbol),
       target,
       producer: typed ? COMPILER_PRODUCER : PARSED_PRODUCER,
-      generation,
+      generation: typed ? compilerGeneration(reference) : generation,
       certainty: reference.dst_path ? (typed ? "exact" : "inferred") : "unknown",
       freshness: typed ? typedFreshness : "current",
       ownership: { scope: "file", key: reference.src_path },

@@ -101,9 +101,19 @@ describe("database migrations", () => {
       ),
     ).toBe(true);
     expect(
+      db.all<{ name: string }>("PRAGMA table_info(files)").some(
+        (column) => column.name === "ref_source_signature",
+      ),
+    ).toBe(true);
+    expect(
       db.get<{ ref_generation: string | null }>(
         "SELECT ref_generation FROM files WHERE path = 'src/app.ts'",
       )?.ref_generation,
+    ).toBeNull();
+    expect(
+      db.get<{ ref_source_signature: string | null }>(
+        "SELECT ref_source_signature FROM files WHERE path = 'src/app.ts'",
+      )?.ref_source_signature,
     ).toBeNull();
     expect(db.get<{ value: string }>("SELECT value FROM meta WHERE key = 'schema_version'")?.value)
       .toBe(String(SCHEMA_VERSION));

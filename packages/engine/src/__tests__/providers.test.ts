@@ -61,6 +61,36 @@ describe("provider boundary", () => {
     });
   });
 
+  it("preserves failed diagnostics when their staged source generation is old", async () => {
+    const state = await temporary("sdlc-provider-failed-state-");
+    const root = join(state, "111122223333", "scip-typescript", "2026-01-01");
+    await mkdir(root, { recursive: true });
+    const fixture = {
+      runId: "2026-01-01",
+      provider: "scip-typescript",
+      status: "failed",
+      trust: "unverified",
+      exact: false,
+      reason: "provider_failed",
+      input: { sourceSignature: "old-source" },
+      scip: null,
+      error: "SCIP could not parse the project config.",
+    } as ScipEvaluation;
+    await writeFile(join(root, "manifest.json"), JSON.stringify(fixture));
+
+    await expect(
+      latestScipEvaluation("111122223333", {
+        artifactsRoot: state,
+        currentSourceSignature: "new-source",
+      }),
+    ).resolves.toMatchObject({
+      status: "failed",
+      trust: "unverified",
+      reason: "provider_failed",
+      error: "SCIP could not parse the project config.",
+    });
+  });
+
   const native = loadNative();
   const nativeIt =
     native?.inspectScip && native.stageSourceSnapshot && native.snapshotManifest ? it : it.skip;
@@ -456,6 +486,59 @@ describe("provider boundary", () => {
         readdir(join(artifacts, workspaceId, "scip-typescript")),
       ).resolves.toEqual([]);
     } finally {
+      await closeDb(project);
+    }
+  });
+
+  nativeIt("cancels promptly while native snapshot manifesting is still settling", async () => {
+    const project = await temporary("sdlc-scip-manifest-cancel-");
+    const artifacts = await temporary("sdlc-scip-manifest-cancel-artifacts-");
+    await writeFile(join(project, "tsconfig.json"), JSON.stringify({ files: ["index.ts"] }));
+    await writeFile(join(project, "index.ts"), "export const value = 1;\n");
+    const workspaceId = "123456abcdef";
+    const runtime = loadNative()!;
+    const originalManifest = runtime.snapshotManifest!;
+    let enteredResolve!: () => void;
+    let releaseResolve!: () => void;
+    const entered = new Promise<void>((resolve) => {
+      enteredResolve = resolve;
+    });
+    const release = new Promise<void>((resolve) => {
+      releaseResolve = resolve;
+    });
+
+    try {
+      await scan(project, { full: true, kind: "provider-manifest-cancel-test" });
+      const db = await getDb(project);
+      runtime.snapshotManifest = async (path) => {
+        enteredResolve();
+        await release;
+        return originalManifest(path);
+      };
+
+      const running = runScipEvaluation(workspaceId, project, db, artifacts);
+      const rejected = running.then(
+        () => null,
+        (error: unknown) => error,
+      );
+      await entered;
+      const cancelling = cancelScipEvaluation(workspaceId);
+      const settledPromptly = await Promise.race([
+        cancelling.then(() => true),
+        new Promise<false>((resolve) => setTimeout(() => resolve(false), 100)),
+      ]);
+
+      expect(settledPromptly).toBe(true);
+      expect(String(await rejected)).toMatch(/cancelled/i);
+
+      releaseResolve();
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      await expect(
+        readdir(join(artifacts, workspaceId, "scip-typescript")),
+      ).resolves.toEqual([]);
+    } finally {
+      runtime.snapshotManifest = originalManifest;
+      releaseResolve();
       await closeDb(project);
     }
   });

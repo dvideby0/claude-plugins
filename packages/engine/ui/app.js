@@ -630,7 +630,9 @@ function providerEvaluation(workspace, providerState) {
       </table>`
     : "";
   const outcome = evaluation
-    ? evaluation.trust === "stale"
+    ? evaluation.status === "failed"
+      ? `<div class="notice error">Last SCIP evaluation failed: ${esc(evaluation.error)}</div>`
+      : evaluation.trust === "stale"
       ? `<div class="notice">
           Last evaluation ${relative(evaluation.finishedAt)} is <b>stale</b>: the indexed source has changed.
           Run it again before comparing or importing these results.
@@ -655,7 +657,7 @@ function providerEvaluation(workspace, providerState) {
             <b>Snapshot verified, output incomplete:</b> one or more of the ${num(evaluation.projects?.length || 1)} requested projects was skipped,
             so these counts are partial. ${esc(evaluation.error)}
           </div>${rows}`
-        : `<div class="notice error">Last SCIP evaluation failed: ${esc(evaluation.error)}</div>`
+        : ""
     : `<p class="sub">No comparison has been run for this project yet.</p>`;
 
   return `<div class="block" data-provider-evaluation="${workspace.id}">

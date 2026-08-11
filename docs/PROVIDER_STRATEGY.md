@@ -129,8 +129,10 @@ As of 2026-08-06, the first evaluation boundary exists:
 - Joern capability detection exists, but no Joern adapter is enabled or bundled
   yet. Its first use remains the bounded EVAL-001 control/data-flow spike.
 
-This completes immutable evaluation provenance, not PROV-001. Provider-neutral
-fact import and evaluation across the full golden corpus remain open.
+This completes attestation of the repository source view, not full immutable
+provider-input provenance or PROV-001. Dependency/read-closure confinement,
+provider-neutral fact import, and evaluation across the full golden corpus
+remain open.
 
 ## Guardrails
 

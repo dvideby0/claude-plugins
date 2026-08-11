@@ -59,12 +59,15 @@ export class Db {
     { table: "refs", column: "src_symbol_id", type: "TEXT" },
     { table: "refs", column: "dst_line", type: "INTEGER" },
     { table: "refs", column: "dst_column", type: "INTEGER" },
+    { table: "refs", column: "dst_end_line", type: "INTEGER" },
+    { table: "refs", column: "dst_end_column", type: "INTEGER" },
     { table: "refs", column: "dst_symbol_id", type: "TEXT" },
     { table: "symbols", column: "default_export", type: "INTEGER NOT NULL DEFAULT 0" },
     { table: "symbols", column: "start_column", type: "INTEGER NOT NULL DEFAULT 0" },
     { table: "symbols", column: "end_column", type: "INTEGER NOT NULL DEFAULT 0" },
     { table: "files", column: "ref_coverage", type: "TEXT NOT NULL DEFAULT 'none'" },
     { table: "files", column: "ref_generation", type: "TEXT" },
+    { table: "files", column: "ref_source_signature", type: "TEXT" },
     { table: "components", column: "member_digest", type: "TEXT" },
     { table: "flow_steps", column: "content_sha", type: "TEXT" },
   ];
@@ -114,15 +117,19 @@ export class Db {
         src_symbol_id TEXT,
         dst_line INTEGER,
         dst_column INTEGER,
+        dst_end_line INTEGER,
+        dst_end_column INTEGER,
         dst_symbol_id TEXT,
         PRIMARY KEY (src_path, src_line, src_column, name, specifier)
       )`);
       this.run(`INSERT OR REPLACE INTO refs_v12(
           src_path, src_line, src_column, src_end_column, name, specifier, dst_path,
-          src_symbol, src_symbol_id, dst_line, dst_column, dst_symbol_id
+          src_symbol, src_symbol_id, dst_line, dst_column, dst_end_line, dst_end_column,
+          dst_symbol_id
         )
         SELECT src_path, src_line, src_column, src_end_column, name, specifier, dst_path,
-               src_symbol, src_symbol_id, dst_line, dst_column, dst_symbol_id
+               src_symbol, src_symbol_id, dst_line, dst_column, dst_end_line, dst_end_column,
+               dst_symbol_id
           FROM refs`);
       this.run("DROP TABLE refs");
       this.run("ALTER TABLE refs_v12 RENAME TO refs");

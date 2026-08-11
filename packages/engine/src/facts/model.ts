@@ -55,8 +55,8 @@ export interface FactProducer {
 }
 
 export interface FactGeneration {
-  /** Signature of the deterministic source inventory. */
-  sourceSignature: string;
+  /** Signature of the deterministic source inventory, null for unattested legacy facts. */
+  sourceSignature: string | null;
   /** Exact provider input view when it differs from the source inventory. */
   inputSignature?: string;
   /** Provider run, runtime observation, or authored-artifact generation. */

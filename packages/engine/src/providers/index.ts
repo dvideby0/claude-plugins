@@ -339,6 +339,8 @@ function withCurrentSourceState(
   if (
     !currentSourceSignature ||
     !evaluation.input ||
+    evaluation.status === "failed" ||
+    !evaluation.scip ||
     evaluation.input.sourceSignature === currentSourceSignature
   ) {
     return evaluation;
@@ -371,6 +373,30 @@ function abortable<T>(work: Promise<T>, signal: AbortSignal): Promise<T> {
       },
     );
   });
+}
+
+/**
+ * Race a non-preemptible napi task with cancellation without deleting files it
+ * may still be reading or writing. The unique run directory is reclaimed as
+ * soon as the native task actually settles.
+ */
+async function abortableArtifactWork<T>(
+  work: Promise<T>,
+  signal: AbortSignal,
+  artifactDir: string,
+): Promise<T> {
+  try {
+    return await abortable(work, signal);
+  } catch (cause) {
+    if (!signal.aborted) throw cause;
+    void work
+      .then(
+        () => rm(artifactDir, { recursive: true, force: true }),
+        () => rm(artifactDir, { recursive: true, force: true }),
+      )
+      .catch(() => {});
+    throw signal.reason ?? cause;
+  }
 }
 
 async function evaluateScip(
@@ -407,21 +433,12 @@ async function evaluateScip(
     await rm(artifactDir, { recursive: true, force: true });
     throw signal.reason ?? new Error("SCIP evaluation cancelled.");
   }
-  const staging = native.stageSourceSnapshot(root, snapshotRoot, expectedSourceSignature);
   let staged;
   try {
-    staged = await abortable(staging, signal);
+    const staging = native.stageSourceSnapshot(root, snapshotRoot, expectedSourceSignature);
+    staged = await abortableArtifactWork(staging, signal, artifactDir);
   } catch (cause) {
     if (signal.aborted) {
-      // napi AsyncTask work cannot be preempted once libuv starts it. Return
-      // cancellation promptly, but consume the task and delete its unique run
-      // directory only after it can no longer write there.
-      void staging
-        .then(
-          () => rm(artifactDir, { recursive: true, force: true }),
-          () => rm(artifactDir, { recursive: true, force: true }),
-        )
-        .catch(() => {});
       throw signal.reason ?? cause;
     }
     await rm(artifactDir, { recursive: true, force: true });
@@ -469,8 +486,10 @@ async function evaluateScip(
   const projects = selectedProjects.recorded;
   let inputManifest: NativeSnapshotManifest;
   try {
-    inputManifest = await native.snapshotManifest(snapshotRoot);
+    const manifestingInput = native.snapshotManifest(snapshotRoot);
+    inputManifest = await abortableArtifactWork(manifestingInput, signal, artifactDir);
   } catch (cause) {
+    if (signal.aborted) throw signal.reason ?? cause;
     await rm(artifactDir, { recursive: true, force: true });
     throw cause;
   }
@@ -535,17 +554,18 @@ async function evaluateScip(
       incomplete = [incomplete, reported].filter(Boolean).join("\n") || null;
       let after: NativeSnapshotManifest;
       try {
-        after = await native.snapshotManifest(snapshotRoot);
+        const manifestingOutput = native.snapshotManifest(snapshotRoot);
+        after = await abortableArtifactWork(manifestingOutput, signal, artifactDir);
         if (after.inputSignature !== inputManifest.inputSignature) {
           error = "SCIP changed its staged input view; the output was discarded.";
           reason = "staged_input_changed";
         } else {
-          summary = await abortable(native.inspectScip(indexPath), signal);
+          const inspecting = native.inspectScip(indexPath);
+          summary = await abortableArtifactWork(inspecting, signal, artifactDir);
           reason = "immutable_staged_snapshot";
         }
       } catch (cause) {
         if (signal.aborted) {
-          await rm(artifactDir, { recursive: true, force: true });
           throw signal.reason ?? cause;
         }
         error = cause instanceof Error ? cause.message : String(cause);

@@ -28,7 +28,9 @@ Every node and edge carries:
 - `schemaVersion`, stable fact id, workspace id, and creation time;
 - producer id, version, and method (`parsed`, `compiler`, `framework`,
   `runtime`, `human`, or `llm`);
-- source and optional exact provider-input signatures plus a run id;
+- source and optional exact provider-input signatures plus a run id; an older
+  legacy fact whose producing source generation was never recorded uses a null
+  source signature and must remain `unverified`;
 - an ownership scope identifying the unit a producer may replace;
 - a certainty class (`exact`, `inferred`, `observed`, `asserted`, `ambiguous`,
   or `unknown`);
@@ -71,13 +73,17 @@ relations without changing their authoritative tables. It deliberately records
 that legacy import edges lack source ranges, keeps import-resolved references
 `inferred`, keeps compiler-resolved references distinct, and keeps agent
 relations `asserted`. A successful legacy compiler pass records the indexed
-workspace generation for each source file whose references it replaced;
+workspace generation and deterministic source signature for each source file
+whose references it replaced;
 projected compiler facts are `current` only while that generation still
 matches, `stale` after a source or project-coverage change, and `unverified`
 for older stores that have no attestation.
-Compiler reference ranges use the UTF-8 byte coordinates stored by the typed
-prototype. Older and parser-derived reference rows that did not preserve the
-local token end remain navigable by file/symbol but omit an invented range.
+Compiler reference and compiler-only declaration ranges use the UTF-8 byte
+coordinates stored by the typed prototype, including the actual source token
+end for escaped identifiers. Older and parser-derived reference rows that did
+not preserve an end coordinate remain navigable by file/symbol but omit an
+invented range. Shared compiler-only declarations are grouped before projection
+so their freshness does not depend on source-row order.
 
 The next provider slice projects official SCIP occurrences and relationships
 into the same envelope for measured comparison. Persistence waits for

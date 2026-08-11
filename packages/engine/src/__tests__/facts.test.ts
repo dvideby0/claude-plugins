@@ -196,20 +196,23 @@ describe("provider-neutral fact contract", () => {
     await scan(root, { full: true, kind: "fact-contract-freshness-test" });
     const db = await getDb(root);
     expect(resolveTypes(db, root).resolved).toBe(1);
-    expect(
-      projectLegacyFacts(db, { workspaceId: "workspace-1" }).edges.find(
-        (edge) => edge.kind === "reference" && edge.producer.kind === "compiler",
-      )?.freshness,
-    ).toBe("current");
+    const before = projectLegacyFacts(db, { workspaceId: "workspace-1" });
+    const current = before.edges.find(
+      (edge) => edge.kind === "reference" && edge.producer.kind === "compiler",
+    );
+    expect(current?.freshness).toBe("current");
+    expect(current?.generation.sourceSignature).toBe(before.generation.sourceSignature);
 
     await writeFile(join(root, "src/store.ts"), "export function renamed() { return true; }\n");
     await scan(root, { kind: "fact-contract-freshness-test" });
 
-    expect(
-      projectLegacyFacts(db, { workspaceId: "workspace-1" }).edges.find(
-        (edge) => edge.kind === "reference" && edge.producer.kind === "compiler",
-      )?.freshness,
-    ).toBe("stale");
+    const after = projectLegacyFacts(db, { workspaceId: "workspace-1" });
+    const stale = after.edges.find(
+      (edge) => edge.kind === "reference" && edge.producer.kind === "compiler",
+    );
+    expect(stale?.freshness).toBe("stale");
+    expect(stale?.generation).toEqual(current?.generation);
+    expect(stale?.generation.sourceSignature).not.toBe(after.generation.sourceSignature);
   });
 
   it("does not bless compiler facts from files omitted by a later partial pass", async () => {
@@ -238,5 +241,67 @@ describe("provider-neutral fact contract", () => {
     expect(references.find((edge) => edge.source.path === "src/other.ts")?.freshness).toBe(
       "current",
     );
+  });
+
+  it("projects the complete compiler declaration token for escaped identifiers", async () => {
+    const source = "export function run(\\u0061: number) { return a; }\n";
+    root = await makeProject({
+      "tsconfig.json": JSON.stringify({ files: ["src/main.ts"] }),
+      "src/main.ts": source,
+    });
+    await scan(root, { full: true, kind: "fact-contract-escaped-declaration-test" });
+    const db = await getDb(root);
+    expect(resolveTypes(db, root).resolved).toBe(1);
+
+    const declaration = projectLegacyFacts(db, { workspaceId: "workspace-1" }).nodes.find(
+      (node) => node.producer.kind === "compiler" && node.name === "a",
+    );
+    const startColumn = Buffer.byteLength(source.slice(0, source.indexOf("\\u0061")), "utf-8");
+    expect(declaration?.anchor).toMatchObject({
+      positionEncoding: "utf-8",
+      range: {
+        startLine: 0,
+        startColumn,
+        endLine: 0,
+        endColumn: startColumn + Buffer.byteLength("\\u0061", "utf-8"),
+      },
+    });
+  });
+
+  it("makes shared synthetic declaration freshness independent of reference order", async () => {
+    root = await makeProject({
+      "tsconfig.json": JSON.stringify({
+        files: ["src/types.ts", "src/a.ts", "src/z.ts"],
+      }),
+      "src/types.ts": "export interface T { value: number }\n",
+      "src/a.ts":
+        'import type { T } from "./types"; export const a = (input: T) => input.value;\n',
+      "src/z.ts":
+        'import type { T } from "./types"; export const z = (input: T) => input.value;\n',
+    });
+    await scan(root, { full: true, kind: "fact-contract-shared-declaration-test" });
+    const db = await getDb(root);
+    expect(resolveTypes(db, root).ran).toBe(true);
+
+    await writeFile(
+      join(root, "tsconfig.json"),
+      JSON.stringify({ files: ["src/types.ts", "src/z.ts"] }),
+    );
+    await scan(root, { kind: "fact-contract-shared-declaration-test" });
+    expect(resolveTypes(db, root).ran).toBe(true);
+
+    const facts = projectLegacyFacts(db, { workspaceId: "workspace-1" });
+    const references = facts.edges.filter(
+      (edge) => edge.producer.kind === "compiler" && edge.target.symbol === "value",
+    );
+    const stale = references.find((edge) => edge.source.path === "src/a.ts");
+    const current = references.find((edge) => edge.source.path === "src/z.ts");
+    expect(stale?.freshness).toBe("stale");
+    expect(current?.freshness).toBe("current");
+    expect(stale?.target.id).toBe(current?.target.id);
+
+    const declaration = facts.nodes.find((node) => node.id === current?.target.id);
+    expect(declaration?.freshness).toBe("current");
+    expect(declaration?.generation).toEqual(current?.generation);
   });
 });
