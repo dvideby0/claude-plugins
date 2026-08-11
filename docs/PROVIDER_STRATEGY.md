@@ -106,6 +106,15 @@ As of 2026-08-06, the first evaluation boundary exists:
 - the Rust native core decodes the official SCIP protobuf, applies a bounded
   input limit, hashes the artifact, deduplicates documents emitted by
   overlapping project configs for comparison, and returns aggregates;
+- the same official decoder now exposes a bounded occurrence/relationship
+  projection into the shared fact envelope. It verifies the retained digest,
+  recomputes the durable input manifest, binds the run to its workspace and
+  exact staged project root, confines portable document paths, bounds raw and
+  projected records, scopes conflicting local symbols safely, and preserves
+  ambiguous targets and unknown position encodings rather than guessing. It
+  digest-binds collision-safe manifest spelling for case aliases and accepts
+  local Windows UNC file roots through the maintained Rust URL implementation
+  after a pre-I/O authority check;
 - configless JavaScript/TypeScript evaluation uses an app-owned config built
   from the deterministic source inventory; it never invokes the upstream
   `--infer-tsconfig` mode that writes into the source repository;
@@ -131,8 +140,8 @@ As of 2026-08-06, the first evaluation boundary exists:
 
 This completes attestation of the repository source view, not full immutable
 provider-input provenance or PROV-001. Dependency/read-closure confinement,
-provider-neutral fact import, and evaluation across the full golden corpus
-remain open.
+evaluation across the full golden corpus, native fact persistence, and broader
+query adoption remain open.
 
 ## Guardrails
 
