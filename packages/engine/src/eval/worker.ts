@@ -1,0 +1,447 @@
+import { createHash } from "node:crypto";
+import { appendFile, cp, mkdtemp, rm, stat } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
+import { closeDb, getDb } from "../db/db.js";
+import type { FactBatch } from "../facts/model.js";
+import type { TypedResult } from "../graph/typed.js";
+import { exec, platformCommand } from "../lib/exec.js";
+import { resolveWorkspacePath } from "../lib/workspace-path.js";
+import { scan, type ScanResult } from "../scan/scan.js";
+import { loadNative } from "../scan/source.js";
+import { indexedSourceSignature } from "../scan/signature.js";
+import {
+  loadEvaluationOracle,
+  scoreFactBatch,
+  thresholdFailures,
+  type FactScores,
+  type EvaluationOracle,
+} from "./model.js";
+
+export const EVALUATION_PROVIDERS = [
+  "typescript-fallback",
+  "native-tree-sitter",
+  "native-plus-typescript-checker",
+  "scip-typescript",
+] as const;
+export type EvaluationProvider = (typeof EVALUATION_PROVIDERS)[number];
+
+interface Timed<T> {
+  value: T;
+  durationMs: number;
+}
+
+export interface EvaluationTimings {
+  coldMs: number;
+  warmMs: number | null;
+  changedFileMs: number | null;
+  scope: string;
+}
+
+export interface OfficialScipTest {
+  status: "passed" | "failed" | "unavailable";
+  command: string | null;
+  exitCode: number | null;
+  spawnFailed: boolean;
+  timedOut: boolean;
+  truncated: boolean;
+  stdout: string;
+  stderr: string;
+  assertions: Array<{ path: string; count: number }>;
+  missingFiles: string[];
+}
+
+export interface ScipCounts {
+  documents: number;
+  definitions: number;
+  references: number;
+}
+
+export interface ProviderEvaluationReport {
+  provider: EvaluationProvider;
+  scenario: string;
+  passed: boolean;
+  failures: string[];
+  scores: FactScores;
+  timings: EvaluationTimings;
+  storage: {
+    workspaceDbBytes: number;
+    providerArtifactBytes: number | null;
+  };
+  memory: {
+    runnerPeakRssBytes: number;
+    scope: string;
+  };
+  officialScipTest: OfficialScipTest | null;
+  scipCounts: ScipCounts | null;
+  sourceEngine: ScanResult["engine"];
+  unmeasured: string[];
+}
+
+async function timed<T>(action: () => T | Promise<T>): Promise<Timed<T>> {
+  const started = performance.now();
+  const value = await action();
+  return { value, durationMs: Number((performance.now() - started).toFixed(3)) };
+}
+
+async function fileBytes(path: string): Promise<number> {
+  return (await stat(path)).size;
+}
+
+function workspaceId(scenario: string, provider: string): string {
+  return createHash("sha256").update(`${scenario}\0${provider}`).digest("hex").slice(0, 12);
+}
+
+function portablePath(path: string): string {
+  return path.replaceAll("\\", "/").replace(/^\.\//, "");
+}
+
+/** Parse the stable one-line summaries emitted by the official SCIP tester. */
+export function scipTestAssertions(stdout: string): Array<{ path: string; count: number }> {
+  const assertions = new Map<string, number>();
+  for (const rawLine of stdout.split(/\r?\n/)) {
+    // Be tolerant of color if a future CLI decides to emit it without a TTY.
+    const line = rawLine.replace(/\u001b\[[0-9;]*m/g, "").trim();
+    const match = /^[✓✔]\s+(.+?)\s+\((\d+)\s+assertions?\)$/.exec(line);
+    if (!match) continue;
+    assertions.set(portablePath(match[1]!), Number(match[2]));
+  }
+  return [...assertions].map(([path, count]) => ({ path, count }));
+}
+
+export function missingScipTestFiles(
+  testFiles: string[],
+  assertions: Array<{ path: string; count: number }>,
+): string[] {
+  const assertionPaths = new Set(
+    assertions.filter((assertion) => assertion.count > 0).map((assertion) => assertion.path),
+  );
+  return testFiles.map(portablePath).filter((path) => !assertionPaths.has(path));
+}
+
+function requireTypedRun(label: string, result: TypedResult): void {
+  if (result.ran) return;
+  throw new Error(
+    `TypeScript checker ${label} did not run: ${result.reason ?? "no reason reported"}`,
+  );
+}
+
+/**
+ * The checker is an upgrade layered over the native syntax index. Symbols are
+ * therefore scored as a composite pipeline, while resolved references must be
+ * attributable to the checker run for the exact generation being measured.
+ */
+export function compilerPipelineFacts(batch: FactBatch, sourceSignature: string): FactBatch {
+  return {
+    ...batch,
+    edges: batch.edges.filter(
+      (edge) =>
+        edge.kind !== "reference" ||
+        (edge.producer.kind === "compiler" &&
+          edge.generation.sourceSignature === sourceSignature &&
+          edge.freshness !== "stale"),
+    ),
+  };
+}
+
+export function scipConstraintFailures(
+  counts: ScipCounts,
+  expected: EvaluationOracle["scip"],
+): string[] {
+  const failures: string[] = [];
+  if (counts.documents !== expected.documents) {
+    failures.push(`SCIP indexed ${counts.documents} documents; expected ${expected.documents}`);
+  }
+  if (counts.definitions < expected.minimumDefinitions) {
+    failures.push(
+      `SCIP indexed ${counts.definitions} definitions; minimum is ${expected.minimumDefinitions}`,
+    );
+  }
+  if (counts.references < expected.minimumReferences) {
+    failures.push(
+      `SCIP indexed ${counts.references} references; minimum is ${expected.minimumReferences}`,
+    );
+  }
+  return failures;
+}
+
+async function officialScipTest(
+  scipCli: string | null,
+  projectRoot: string,
+  indexPath: string,
+  testFiles: string[],
+): Promise<OfficialScipTest> {
+  if (!scipCli) {
+    return {
+      status: "unavailable",
+      command: null,
+      exitCode: null,
+      spawnFailed: false,
+      timedOut: false,
+      truncated: false,
+      stdout: "",
+      stderr: "",
+      assertions: [],
+      missingFiles: [],
+    };
+  }
+  const args = [
+    "test",
+    "--from",
+    indexPath,
+    ...testFiles.flatMap((path) => ["--filter", path]),
+    "--check-documents",
+    // v0.9.0 documents the invocation directory as implicit, but its command
+    // passes an empty string to WalkDir unless a positional directory exists.
+    ".",
+  ];
+  const command = platformCommand(scipCli, args);
+  const result = await exec(command.command, command.args, {
+    cwd: projectRoot,
+    timeout: 60_000,
+    maxBuffer: 2 * 1024 * 1024,
+    windowsVerbatimArguments: command.windowsVerbatimArguments,
+  });
+  const stdout = result.stdout.trim();
+  const assertions = scipTestAssertions(stdout);
+  const missingFiles = missingScipTestFiles(testFiles, assertions);
+  return {
+    status:
+      !result.spawnFailed &&
+      !result.timedOut &&
+      !result.truncated &&
+      result.exitCode === 0 &&
+      missingFiles.length === 0
+        ? "passed"
+        : "failed",
+    command: [scipCli, ...args].join(" "),
+    exitCode: result.exitCode,
+    spawnFailed: result.spawnFailed,
+    timedOut: result.timedOut,
+    truncated: result.truncated,
+    stdout,
+    stderr: result.stderr.trim(),
+    assertions,
+    missingFiles,
+  };
+}
+
+function expectedEngine(provider: EvaluationProvider): ScanResult["engine"] {
+  return provider === "typescript-fallback" ? "typescript" : "native";
+}
+
+/** Run one provider in an isolated process so its peak RSS is meaningful. */
+export async function runEvaluationWorker(
+  provider: EvaluationProvider,
+  fixtureRoot: string,
+  scipCli: string | null,
+): Promise<ProviderEvaluationReport> {
+  const fixture = resolve(fixtureRoot);
+  const oracle = await loadEvaluationOracle(join(fixture, "oracle.json"));
+  const project = await mkdtemp(join(tmpdir(), `sdlc-eval-${provider}-`));
+  const artifacts = await mkdtemp(join(tmpdir(), `sdlc-eval-artifacts-${provider}-`));
+  let dbOpened = false;
+  let batch: FactBatch;
+  let timings: EvaluationTimings;
+  let official: OfficialScipTest | null = null;
+  let scipCounts: ProviderEvaluationReport["scipCounts"] = null;
+  const providerFailures: string[] = [];
+  let providerArtifactBytes: number | null = null;
+  let sourceEngine: ScanResult["engine"] = "typescript";
+
+  await cp(fixture, project, { recursive: true });
+  try {
+    if (provider === "typescript-fallback" || provider === "native-tree-sitter") {
+      const { projectLegacyFacts } = await import("../facts/legacy.js");
+      const cold = await timed(() => scan(project, { full: true, kind: "evaluation-cold" }));
+      sourceEngine = cold.value.engine;
+      if (sourceEngine !== expectedEngine(provider)) {
+        throw new Error(`${provider} expected the ${expectedEngine(provider)} scanner, got ${sourceEngine}.`);
+      }
+      const warm = await timed(() => scan(project, { kind: "evaluation-warm" }));
+      await appendFile(resolveWorkspacePath(project, oracle.change.path), oracle.change.append);
+      const changed = await timed(() => scan(project, { kind: "evaluation-one-file-change" }));
+      const db = await getDb(project);
+      dbOpened = true;
+      batch = projectLegacyFacts(db, {
+        workspaceId: workspaceId(oracle.scenario, provider),
+        generatedAt: "1970-01-01T00:00:00.000Z",
+      });
+      timings = {
+        coldMs: cold.durationMs,
+        warmMs: warm.durationMs,
+        changedFileMs: changed.durationMs,
+        scope: "repository scan and transactional prototype-store update",
+      };
+    } else if (provider === "native-plus-typescript-checker") {
+      const [{ projectLegacyFacts }, { resolveTypes }] = await Promise.all([
+        import("../facts/legacy.js"),
+        import("../graph/typed.js"),
+      ]);
+      const scanned = await scan(project, { full: true, kind: "evaluation-compiler-setup" });
+      sourceEngine = scanned.engine;
+      if (sourceEngine !== "native") {
+        throw new Error("The compiler prototype evaluation requires the native syntax baseline.");
+      }
+      const db = await getDb(project);
+      dbOpened = true;
+      const cold = await timed(() => resolveTypes(db, project));
+      requireTypedRun("cold run", cold.value);
+      const warm = await timed(() => resolveTypes(db, project));
+      requireTypedRun("warm run", warm.value);
+      await appendFile(resolveWorkspacePath(project, oracle.change.path), oracle.change.append);
+      await scan(project, { kind: "evaluation-compiler-one-file-setup" });
+      const changed = await timed(() => resolveTypes(db, project));
+      requireTypedRun("one-file-change run", changed.value);
+      const sourceSignature = indexedSourceSignature(db);
+      batch = compilerPipelineFacts(
+        projectLegacyFacts(db, {
+          workspaceId: workspaceId(oracle.scenario, provider),
+          generatedAt: "1970-01-01T00:00:00.000Z",
+        }),
+        sourceSignature,
+      );
+      timings = {
+        coldMs: cold.durationMs,
+        warmMs: warm.durationMs,
+        changedFileMs: changed.durationMs,
+        scope: "TypeScript checker prototype after syntax indexing",
+      };
+    } else {
+      const [{ projectScipFacts }, { runScipEvaluation }] = await Promise.all([
+        import("../facts/scip.js"),
+        import("../providers/index.js"),
+      ]);
+      const scanned = await scan(project, { full: true, kind: "evaluation-scip-setup" });
+      sourceEngine = scanned.engine;
+      if (sourceEngine !== "native") {
+        throw new Error("SCIP evaluation requires the native snapshot and projection runtime.");
+      }
+      const db = await getDb(project);
+      dbOpened = true;
+      const sourceSignature = indexedSourceSignature(db);
+      const evaluated = await timed(() =>
+        runScipEvaluation(workspaceId(oracle.scenario, provider), project, db, artifacts),
+      );
+      const evaluation = evaluated.value;
+      if (!evaluation.indexPath) {
+        throw new Error("SCIP evaluation completed without a retained index artifact.");
+      }
+      if (!evaluation.scip) {
+        throw new Error("SCIP evaluation completed without a decoded index summary.");
+      }
+      scipCounts = {
+        documents: evaluation.scip.documents,
+        definitions: evaluation.scip.definitions,
+        references: evaluation.scip.references,
+      };
+      providerFailures.push(...scipConstraintFailures(scipCounts, oracle.scip));
+      const indexPath = evaluation.indexPath;
+      batch = await projectScipFacts(evaluation, {
+        workspaceId: evaluation.workspaceId,
+        currentSourceSignature: sourceSignature,
+      });
+      providerArtifactBytes = await fileBytes(indexPath);
+      if (scipCli) {
+        // The production runner deletes staged sources after recording their
+        // manifest. The official CLI resolves test files through the project
+        // root embedded in the index and offers no override on `scip test`, so
+        // recreate the same signed source generation only for validation and
+        // remove it immediately afterward.
+        const native = loadNative();
+        if (!native?.stageSourceSnapshot) {
+          throw new Error("Official SCIP validation requires the native snapshot runtime.");
+        }
+        const validationRoot = join(evaluation.artifactDir, "input");
+        await native.stageSourceSnapshot(project, validationRoot, sourceSignature);
+        try {
+          official = await officialScipTest(
+            scipCli,
+            project,
+            indexPath,
+            oracle.scip.testFiles,
+          );
+        } finally {
+          await rm(validationRoot, { recursive: true, force: true });
+        }
+      } else {
+        official = await officialScipTest(null, project, indexPath, oracle.scip.testFiles);
+      }
+      timings = {
+        coldMs: evaluated.durationMs,
+        warmMs: null,
+        changedFileMs: null,
+        scope: "SCIP TypeScript provider run, excluding syntax-index setup",
+      };
+    }
+
+    const scores = scoreFactBatch(batch, oracle);
+    const failures = [...thresholdFailures(provider, scores, oracle), ...providerFailures];
+    if (official?.status === "failed") {
+      const detail = official.missingFiles.length
+        ? `no assertions matched ${official.missingFiles.join(", ")}`
+        : official.stderr || official.stdout || "no diagnostics";
+      failures.push(
+        `Official scip test failed (exit ${official.exitCode ?? "none"}): ${detail}`,
+      );
+    }
+
+    if (dbOpened) {
+      await closeDb(project);
+      dbOpened = false;
+    }
+    const workspaceDbBytes = await fileBytes(join(project, "sdlc-audit", "audit.db"));
+    return {
+      provider,
+      scenario: oracle.scenario,
+      passed: failures.length === 0,
+      failures,
+      scores,
+      timings,
+      storage: { workspaceDbBytes, providerArtifactBytes },
+      memory: {
+        runnerPeakRssBytes: process.resourceUsage().maxRSS * 1024,
+        scope:
+          provider === "scip-typescript"
+            ? "isolated SDLC runner; the external SCIP child peak is not yet sampled"
+            : "isolated provider worker",
+      },
+      officialScipTest: official,
+      scipCounts,
+      sourceEngine,
+      unmeasured:
+        provider === "scip-typescript"
+          ? [
+              "warm and one-file-change provider indexing",
+              "external SCIP child peak RSS",
+              "entry-to-effect path precision and recall",
+              "retrieval quality",
+            ]
+          : ["entry-to-effect path precision and recall", "retrieval quality"],
+    };
+  } finally {
+    if (dbOpened) await closeDb(project).catch(() => false);
+    await Promise.all([
+      rm(project, { recursive: true, force: true }),
+      rm(artifacts, { recursive: true, force: true }),
+    ]);
+  }
+}
+
+async function main(): Promise<void> {
+  const provider = process.argv[2] as EvaluationProvider | undefined;
+  const fixture = process.argv[3];
+  const scipCli = process.argv[4] || null;
+  if (!provider || !EVALUATION_PROVIDERS.includes(provider) || !fixture) {
+    throw new Error("usage: worker <provider> <fixture> [scip-cli]");
+  }
+  process.stdout.write(`${JSON.stringify(await runEvaluationWorker(provider, fixture, scipCli))}\n`);
+}
+
+if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
+  void main().catch((error: unknown) => {
+    process.stderr.write(`${error instanceof Error ? error.stack ?? error.message : String(error)}\n`);
+    process.exitCode = 1;
+  });
+}

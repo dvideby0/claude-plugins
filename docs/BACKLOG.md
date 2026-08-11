@@ -59,7 +59,12 @@ mismatch, records every staged input and hash, verifies that view after the
 provider exits, and reports retained output as stale after the source signature
 changes. The app does not yet attest package dependencies or other compiler
 reads outside that source view, so the evaluation remains partial/unverified
-instead of claiming exact provenance. Provider-neutral fact import and broader golden-corpus comparison
+instead of claiming exact provenance. Official SCIP occurrences and
+relationships now project through the provider-neutral evidence envelope with
+artifact/input-manifest validation, workspace ownership, exact staged-root
+binding, portable path confinement, retained case-alias identities, bounded
+collection, conflict-safe local-symbol scope, and explicit ambiguity. Broader
+golden-corpus comparison and complete dependency/read-closure attestation
 remain acceptance-critical next steps. Joern
 is detected but intentionally not bundled before its EVAL-001 spike. Configless
 evaluation now uses an app-owned config rather than allowing the upstream CLI
@@ -98,8 +103,9 @@ generation, ownership, certainty, freshness, evidence, endpoint, node, and edge
 envelope plus the initial relation vocabulary. The existing files, symbols,
 imports, references, and authored relations project into it without replacing
 their prototype tables; missing legacy import ranges and unresolved endpoints
-remain explicit. Official SCIP projection, provider-run ownership persistence,
-and broader query adoption remain open.
+remain explicit. Official SCIP occurrences and relationships now project
+through the same envelope with durable workspace/run validation. Persisting
+provider-run ownership and broader query adoption remain open.
 
 ### EVAL-001: Golden corpus and measurement harness
 
@@ -113,11 +119,18 @@ Acceptance criteria:
 - Results are machine-readable and CI fails on agreed correctness regressions.
 - Benchmarks clearly separate cold, warm, and one-file-change runs.
 
-Progress (2026-08-06): the first checked-in TypeScript fixture covers a
+Progress (2026-08-11): the first checked-in TypeScript fixture covers a
 cross-file call, condition, early return, throw, await, and terminal HTTP
-response, with a machine-readable oracle and a real SCIP integration test. The
-fixture set, precision/recall scorer, incremental measurements, peak-memory
-capture, and CI thresholds are still open.
+response. `npm run eval` now runs the fallback scanner, native scanner,
+native scanner plus TypeScript checker prototype, and SCIP provider in isolated workers; it emits
+machine-readable targeted symbol/reference precision and recall, cold/warm/
+one-file-change timing where supported, prototype-store/artifact size, worker
+peak RSS, missing facts, and threshold failures. CI pins the official SCIP
+v0.9.0 binary and reuses its golden-test format and validator rather than
+reimplementing occurrence truth. The corpus remains one narrow scenario; path
+and retrieval scoring, external-provider child memory, broader fixtures, and
+meaningful promotion thresholds are still open. See
+[`EVALUATION.md`](EVALUATION.md).
 
 ### STORE-001: Move workspace state under app ownership
 

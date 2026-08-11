@@ -8,7 +8,7 @@
 
 import { createRequire } from "node:module";
 import { randomBytes } from "node:crypto";
-import { mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, realpath, rename, rm, writeFile } from "node:fs/promises";
 import { dirname, join, relative, sep } from "node:path";
 import { providersDir } from "@sdlc/protocol";
 import { findTsConfigs } from "../analyze/tools.js";
@@ -17,6 +17,7 @@ import { exec, spawnEnv, which } from "../lib/exec.js";
 import { resolveWorkspacePath } from "../lib/workspace-path.js";
 import {
   loadNative,
+  type NativeScipPathAlias,
   type NativeScipSummary,
   type NativeSnapshotManifest,
 } from "../scan/source.js";
@@ -42,6 +43,8 @@ export interface ScipBaseline {
 }
 
 export interface ScipEvaluation {
+  /** Stable app workspace that owns this run and every fact projected from it. */
+  workspaceId: string;
   runId: string;
   provider: "scip-typescript";
   providerVersion: string;
@@ -69,6 +72,10 @@ export interface ScipEvaluation {
     bytes: number;
     /** Durable manifests include entries; daemon responses deliberately omit them. */
     entries?: NativeSnapshotManifest["entries"];
+    /** Case aliases observed and canonicalized before the staged input was removed. */
+    pathAliases?: NativeScipPathAlias[];
+    /** Digest binding the ordered alias pairs to the provider run. */
+    pathAliasSignature?: string;
   } | null;
   scip: NativeScipSummary | null;
   error: string | null;
@@ -135,7 +142,13 @@ export async function detectProviders(refresh = false): Promise<ProviderStatus[]
       available: Boolean(scip && scipRuntime),
       bundled: Boolean(scip),
       version: scip?.version ?? null,
-      capabilities: ["definitions", "references", "implementations", "symbol-identity"],
+      capabilities: [
+        "definitions",
+        "references",
+        "implementations",
+        "symbol-identity",
+        ...(native?.projectScip && native.verifySnapshotManifest ? ["fact-projection"] : []),
+      ],
       trust: "unverified",
       detail: !scip
         ? "Bundled indexer is missing."
@@ -364,6 +377,9 @@ function withoutInputEntries(evaluation: ScipEvaluation): ScipEvaluation {
       inputSignature: evaluation.input.inputSignature,
       files: evaluation.input.files,
       bytes: evaluation.input.bytes,
+      ...(evaluation.input.pathAliasSignature
+        ? { pathAliasSignature: evaluation.input.pathAliasSignature }
+        : {}),
     },
   };
 }
@@ -467,6 +483,12 @@ async function evaluateScip(
     await rm(artifactDir, { recursive: true, force: true });
     throw new Error("The source index changed while SCIP inputs were staged. Run the evaluation again.");
   }
+  // macOS exposes /var through the /private/var symlink. Passing the lexical
+  // staging path as --cwd while TypeScript canonicalizes source files through
+  // realpath makes SCIP emit ../../-escaped document paths. Bind every provider
+  // operation to the canonical staged root so upstream `scip test` and SDLC's
+  // projection agree on portable repository-relative document paths.
+  const providerRoot = await realpath(snapshotRoot);
 
   // scip-typescript treats a positional cwd as one project. That fails for
   // ordinary npm monorepos whose configs live under packages/ and apps/, so
@@ -480,7 +502,7 @@ async function evaluateScip(
     AbortSignal.timeout(SCIP_DISCOVERY_TIMEOUT_MS),
   ]);
   try {
-    selectedProjects = await scipProjects(snapshotRoot, db, snapshotRoot, discoverySignal);
+    selectedProjects = await scipProjects(providerRoot, db, providerRoot, discoverySignal);
   } catch (cause) {
     if (signal.aborted) {
       await rm(artifactDir, { recursive: true, force: true });
@@ -501,7 +523,7 @@ async function evaluateScip(
   const projects = selectedProjects.recorded;
   let inputManifest: NativeSnapshotManifest;
   try {
-    const manifestingInput = native.snapshotManifest(snapshotRoot);
+    const manifestingInput = native.snapshotManifest(providerRoot);
     inputManifest = await abortableArtifactWork(manifestingInput, signal, artifactDir);
   } catch (cause) {
     if (signal.aborted) throw signal.reason ?? cause;
@@ -510,6 +532,8 @@ async function evaluateScip(
   }
 
   let summary: NativeScipSummary | null = null;
+  let pathAliases: NativeScipPathAlias[] = [];
+  let pathAliasSignature: string | undefined;
   let error: string | null = selectedProjects.error;
   let incomplete: string | null = [selectedProjects.incomplete, UNATTESTED_INPUT_CLOSURE]
     .filter(Boolean)
@@ -530,14 +554,14 @@ async function evaluateScip(
             project.startsWith("-") ? `./${project}` : project,
           ),
           "--cwd",
-          snapshotRoot,
+          providerRoot,
           "--output",
           indexPath,
           "--no-progress-bar",
           "--no-global-caches",
         ],
         {
-          cwd: snapshotRoot,
+          cwd: providerRoot,
           timeout: SCIP_TIMEOUT_MS,
           maxBuffer: MAX_PROVIDER_OUTPUT,
           maxFileSize: { path: indexPath, bytes: MAX_SCIP_INDEX_BYTES },
@@ -569,14 +593,38 @@ async function evaluateScip(
       incomplete = [incomplete, reported].filter(Boolean).join("\n") || null;
       let after: NativeSnapshotManifest;
       try {
-        const manifestingOutput = native.snapshotManifest(snapshotRoot);
+        const manifestingOutput = native.snapshotManifest(providerRoot);
         after = await abortableArtifactWork(manifestingOutput, signal, artifactDir);
         if (after.inputSignature !== inputManifest.inputSignature) {
           error = "SCIP changed its staged input view; the output was discarded.";
           reason = "staged_input_changed";
         } else {
           const inspecting = native.inspectScip(indexPath);
-          summary = await abortableArtifactWork(inspecting, signal, artifactDir);
+          const inspected = await abortableArtifactWork(inspecting, signal, artifactDir);
+          if (native.projectScip) {
+            try {
+              const projecting = native.projectScip(indexPath, providerRoot, []);
+              const projection = await abortableArtifactWork(projecting, signal, artifactDir);
+              const inputs = new Set(inputManifest.entries.map((entry) => entry.path));
+              const unattested = projection.documents.find(
+                (document) => !inputs.has(document.path),
+              );
+              if (unattested) {
+                throw new Error(
+                  `SCIP document was not present in the staged input manifest: ${unattested.path}`,
+                );
+              }
+              pathAliases = projection.pathAliases;
+              pathAliasSignature = projection.pathAliasSignature;
+            } catch (cause) {
+              if (signal.aborted) throw signal.reason ?? cause;
+              const detail = cause instanceof Error ? cause.message : String(cause);
+              incomplete = [incomplete, `SCIP fact projection is unavailable: ${detail}`]
+                .filter(Boolean)
+                .join("\n");
+            }
+          }
+          summary = inspected;
           reason = "immutable_staged_snapshot";
         }
       } catch (cause) {
@@ -600,6 +648,7 @@ async function evaluateScip(
   const exact = summary !== null && error === null && incomplete === null;
 
   const evaluation: ScipEvaluation = {
+    workspaceId,
     runId: id,
     provider: "scip-typescript",
     providerVersion: scip.version,
@@ -620,6 +669,8 @@ async function evaluateScip(
       files: inputManifest.files,
       bytes: inputManifest.bytes,
       entries: inputManifest.entries,
+      pathAliases,
+      ...(pathAliasSignature ? { pathAliasSignature } : {}),
     },
     scip: summary,
     error: error ?? incomplete,
@@ -689,6 +740,7 @@ export async function latestScipEvaluation(
         const evaluation = JSON.parse(
           await readFile(join(root, run, "manifest.json"), "utf-8"),
         ) as ScipEvaluation;
+        if (evaluation.workspaceId !== workspaceId) continue;
         return withoutInputEntries(
           withCurrentSourceState(evaluation, options.currentSourceSignature),
         );

@@ -12,7 +12,7 @@ import { getDb } from "../db/db.js";
 import { parseFile } from "./parse.js";
 import { createResolver, parseTsAliases, type TsPathAlias } from "./resolve.js";
 import { collectGit } from "./git.js";
-import { TYPED_SPECIFIER } from "../graph/typed.js";
+import { TYPED_SPECIFIER } from "../graph/typed-contract.js";
 import { collectFiles } from "./source.js";
 import { isNoise } from "./walk.js";
 import { canonicalWorkspaceRoot, workspaceIdentityKey } from "../lib/workspace-path.js";

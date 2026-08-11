@@ -46,7 +46,7 @@ The other structural risk is storage. The engine currently writes a `sql.js` dat
 | Desktop experience | Functional shell | Useful maps and operational views exist, but it is not yet a complete code-intelligence workspace. |
 | Claude/Codex installation | Partial | MCP connection exists; complete plugin/skill lifecycle and supported Codex configuration are missing. |
 | Packaging and CI | Promising | Desktop packaging, native build matrices, smoke scripts, and plugin validation are present. |
-| Quality measurement | Mixed | Unit coverage is useful; Rust SCIP tests and one golden analysis fixture now exist, but a real scoring harness and retrieval/product evals are absent. |
+| Quality measurement | Emerging | One command now scores a narrow fixture across fallback, native, compiler-prototype, and SCIP facts with official SCIP golden assertions; broader path/retrieval corpora and provider-child resource measurement remain absent. |
 
 ## What exists today
 
@@ -78,8 +78,11 @@ That is a good substrate for evolving toward base facts and derived overlays. Th
 The first versioned provider-neutral envelope is now documented in
 [`FACT_MODEL.md`](FACT_MODEL.md), and the legacy deterministic/asserted tables
 can be projected into it without changing their authority. SCIP facts are not
-yet projected or persisted through that contract, and dependency ownership is
-still incomplete.
+persisted through that contract, and dependency ownership is still incomplete.
+Official SCIP occurrences and relationships can now be projected in memory
+with workspace-bound provider-run ownership, artifact and input-manifest
+verification, exact staged-root/path confinement, bounded collection,
+conflict-safe document-local symbols, and explicit ambiguity.
 
 ### Scanning and reference resolution
 
@@ -96,7 +99,7 @@ Important limits:
 The provider evaluation layer now packages `@sourcegraph/scip-typescript`,
 runs it with time/output bounds, retains five app-owned runs, and uses the
 official Rust SCIP types to summarize definitions, references, relationships,
-and artifact provenance. It is a measurement path rather than a production fact
+artifact provenance, and provider-neutral facts. It is a measurement path rather than a production fact
 source: repository inputs are copied and attested in Rust before the provider
 runs, but the unmanifested dependency/read closure keeps results unverified;
 provider failure leaves the Tree-sitter index available. It discovers both `tsconfig.json` and
@@ -142,7 +145,7 @@ The MCP server in [`packages/engine/src/mcp/server.ts`](../packages/engine/src/m
 
 The breadth proves the engine has useful primitives. It also creates overlap and discovery cost for an agent. A smaller intent-oriented query surface could compose these primitives internally, return evidence and uncertainty consistently, and enforce an explicit context budget.
 
-The `brief` implementation is a good beginning: it assembles nearby symbols, impact, tests, memories, findings, and recommended files. Relevance is still mostly based on explicit targets and keyword matches rather than evaluated lexical/graph/semantic ranking.
+The `brief` implementation is a good beginning: it assembles nearby symbols, impact, tests, memories, findings, and recommended files. Relevance is still mostly based on explicit targets and keyword matches rather than evaluated lexical/graph/semantic ranking. The first EVAL-001 command deliberately reports retrieval and entry-to-effect path quality as unmeasured rather than treating the new symbol/reference fixture as evidence for either claim.
 
 ### Desktop application
 
