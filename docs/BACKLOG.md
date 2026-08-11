@@ -59,7 +59,12 @@ mismatch, records every staged input and hash, verifies that view after the
 provider exits, and reports retained output as stale after the source signature
 changes. The app does not yet attest package dependencies or other compiler
 reads outside that source view, so the evaluation remains partial/unverified
-instead of claiming exact provenance. Provider-neutral fact import and broader golden-corpus comparison
+instead of claiming exact provenance. Official SCIP occurrences and
+relationships now project through the provider-neutral evidence envelope with
+artifact/input-manifest validation, workspace ownership, exact staged-root
+binding, portable path confinement, retained case-alias identities, bounded
+collection, conflict-safe local-symbol scope, and explicit ambiguity. Broader
+golden-corpus comparison and complete dependency/read-closure attestation
 remain acceptance-critical next steps. Joern
 is detected but intentionally not bundled before its EVAL-001 spike. Configless
 evaluation now uses an app-owned config rather than allowing the upstream CLI
@@ -98,8 +103,9 @@ generation, ownership, certainty, freshness, evidence, endpoint, node, and edge
 envelope plus the initial relation vocabulary. The existing files, symbols,
 imports, references, and authored relations project into it without replacing
 their prototype tables; missing legacy import ranges and unresolved endpoints
-remain explicit. Official SCIP projection, provider-run ownership persistence,
-and broader query adoption remain open.
+remain explicit. Official SCIP occurrences and relationships now project
+through the same envelope with durable workspace/run validation. Persisting
+provider-run ownership and broader query adoption remain open.
 
 ### EVAL-001: Golden corpus and measurement harness
 

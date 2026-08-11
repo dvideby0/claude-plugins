@@ -83,6 +83,58 @@ export interface NativeScipSummary {
   sampleDocuments: NativeScipDocument[];
 }
 
+export interface NativeScipRange {
+  startLine: number;
+  startColumn: number;
+  endLine: number;
+  endColumn: number;
+}
+
+export interface NativeScipOccurrence {
+  path: string;
+  range?: NativeScipRange;
+  positionEncoding: string;
+  symbolKey: string;
+  symbol: string;
+  kind: "definition" | "import" | "reference" | "read" | "write";
+  nativeKind: string;
+  ambiguous: boolean;
+}
+
+export interface NativeScipProjection {
+  sha256: string;
+  pathAliases: NativeScipPathAlias[];
+  pathAliasSignature: string;
+  documents: Array<{ path: string; language: string }>;
+  symbols: Array<{
+    key: string;
+    symbol: string;
+    displayName: string;
+    kind: string;
+    path?: string;
+    external: boolean;
+    ambiguous: boolean;
+  }>;
+  occurrences: NativeScipOccurrence[];
+  relationships: Array<{
+    path?: string;
+    sourceKey: string;
+    sourceSymbol: string;
+    targetKey: string;
+    targetSymbol: string;
+    kind: "implement" | "reference";
+    nativeKind: string;
+    ambiguous: boolean;
+  }>;
+}
+
+export interface NativeScipPathAlias {
+  /** Lexically normalized document path emitted by the provider. */
+  providerPath: string;
+  /** Manifest spelling observed while the staged input still existed. */
+  path: string;
+}
+
 export interface NativeStagedSnapshot {
   sourceSignature: string;
   files: number;
@@ -100,12 +152,20 @@ export interface NativeSnapshotManifest {
   files: number;
   bytes: number;
   entries: NativeSnapshotEntry[];
+  pathAliases?: NativeScipPathAlias[];
+  pathAliasSignature?: string;
 }
 
 export interface NativeCore {
   scanRepo(root: string): Promise<{ files: NativeFile[]; walkMs: number; parseMs: number }>;
   /** Present in native cores that can consume official SCIP protobuf output. */
   inspectScip?(path: string): Promise<NativeScipSummary>;
+  /** Decode bounded semantic facts without exposing raw protobufs to Node. */
+  projectScip?(
+    path: string,
+    expectedSourceRoot: string,
+    pathAliases: NativeScipPathAlias[],
+  ): Promise<NativeScipProjection>;
   /** Freeze exactly the indexed source generation before an external provider reads it. */
   stageSourceSnapshot?(
     root: string,
@@ -114,6 +174,8 @@ export interface NativeCore {
   ): Promise<NativeStagedSnapshot>;
   /** Attest every input in a staged provider view before and after execution. */
   snapshotManifest?(root: string): Promise<NativeSnapshotManifest>;
+  /** Recompute counts and the signature of retained input-manifest entries. */
+  verifySnapshotManifest?(manifest: NativeSnapshotManifest): Promise<boolean>;
 }
 
 let nativeLookedUp = false;
