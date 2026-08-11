@@ -76,7 +76,10 @@ function compilerFreshness(
   currentGeneration: string,
 ): FreshnessState {
   if (!recordedGeneration || !recordedSourceSignature) return "unverified";
-  return recordedGeneration === currentGeneration ? "current" : "stale";
+  // The prototype tracks repository sources/configs but not TypeScript's full
+  // dependency, package-config, standard-library, or out-of-tree input closure.
+  // A matching repository generation is therefore useful but not attested.
+  return recordedGeneration === currentGeneration ? "unverified" : "stale";
 }
 
 interface LegacyReferenceRow {
@@ -106,10 +109,7 @@ function isTypedReference(reference: LegacyReferenceRow): boolean {
 }
 
 function compilerGeneration(reference: LegacyReferenceRow): FactGeneration {
-  return {
-    sourceSignature: reference.ref_source_signature,
-    ...(reference.ref_generation ? { inputSignature: reference.ref_generation } : {}),
-  };
+  return { sourceSignature: reference.ref_source_signature };
 }
 
 function sourceRef(
@@ -279,9 +279,13 @@ export function projectLegacyFacts(db: Db, options: LegacyFactOptions): FactBatc
       name: string;
       line: number;
       column: number;
-      endLine: number | null;
-      endColumn: number | null;
-      candidates: Array<{ freshness: FreshnessState; generation: FactGeneration }>;
+      candidates: Array<{
+        freshness: FreshnessState;
+        generation: FactGeneration;
+        matchesCurrentGeneration: boolean;
+        endLine: number | null;
+        endColumn: number | null;
+      }>;
     }
   >();
   for (const reference of references) {
@@ -308,18 +312,16 @@ export function projectLegacyFacts(db: Db, options: LegacyFactOptions): FactBatc
         currentTypedGeneration,
       ),
       generation: compilerGeneration(reference),
+      matchesCurrentGeneration:
+        reference.ref_generation !== null &&
+        reference.ref_source_signature !== null &&
+        reference.ref_generation === currentTypedGeneration,
+      endLine: reference.dst_end_line,
+      endColumn: reference.dst_end_column,
     };
     const existing = syntheticDeclarations.get(nodeId);
     if (existing) {
       existing.candidates.push(candidate);
-      if (
-        (existing.endLine === null || existing.endColumn === null) &&
-        reference.dst_end_line !== null &&
-        reference.dst_end_column !== null
-      ) {
-        existing.endLine = reference.dst_end_line;
-        existing.endColumn = reference.dst_end_column;
-      }
     } else {
       syntheticDeclarations.set(nodeId, {
         nativeId,
@@ -327,8 +329,6 @@ export function projectLegacyFacts(db: Db, options: LegacyFactOptions): FactBatc
         name: reference.name,
         line: reference.dst_line,
         column: reference.dst_column,
-        endLine: reference.dst_end_line,
-        endColumn: reference.dst_end_column,
         candidates: [candidate],
       });
     }
@@ -337,7 +337,9 @@ export function projectLegacyFacts(db: Db, options: LegacyFactOptions): FactBatc
   for (const [nodeId, declaration] of [...syntheticDeclarations].sort(([left], [right]) =>
     left.localeCompare(right),
   )) {
-    const current = declaration.candidates.find((candidate) => candidate.freshness === "current");
+    const current = declaration.candidates.find(
+      (candidate) => candidate.matchesCurrentGeneration,
+    );
     const attested = declaration.candidates.filter(
       (candidate) => candidate.generation.sourceSignature !== null,
     );
@@ -349,21 +351,28 @@ export function projectLegacyFacts(db: Db, options: LegacyFactOptions): FactBatc
     );
     const selected = current ?? (attestedGenerations.size === 1 ? attested[0] : undefined);
     const freshness: FreshnessState = current
-      ? "current"
+      ? "unverified"
       : selected && declaration.candidates.every((candidate) => candidate.freshness === "stale")
         ? "stale"
         : "unverified";
+    const selectedRange =
+      selected?.endLine !== null &&
+      selected?.endLine !== undefined &&
+      selected.endColumn !== null &&
+      selected.endColumn !== undefined
+        ? { endLine: selected.endLine, endColumn: selected.endColumn }
+        : null;
     const declarationAnchor: FactAnchor = {
       path: declaration.path,
       symbol: declaration.name,
-      ...(declaration.endLine !== null && declaration.endColumn !== null
+      ...(selectedRange
         ? {
             positionEncoding: "utf-8" as const,
             range: {
               startLine: zeroBased(declaration.line),
               startColumn: declaration.column,
-              endLine: zeroBased(declaration.endLine),
-              endColumn: declaration.endColumn,
+              endLine: zeroBased(selectedRange.endLine),
+              endColumn: selectedRange.endColumn,
             },
           }
         : {}),
@@ -378,10 +387,7 @@ export function projectLegacyFacts(db: Db, options: LegacyFactOptions): FactBatc
       name: declaration.name,
       anchor: declarationAnchor,
       producer: COMPILER_PRODUCER,
-      generation:
-        freshness === "unverified"
-          ? { sourceSignature: null }
-          : (selected?.generation ?? { sourceSignature: null }),
+      generation: selected?.generation ?? { sourceSignature: null },
       certainty: "exact",
       freshness,
       ownership: { scope: "file", key: declaration.path },
@@ -493,6 +499,7 @@ export function projectLegacyFacts(db: Db, options: LegacyFactOptions): FactBatc
     content_sha: string | null;
     current_sha: string | null;
     created_at: string;
+    updated_at: string;
   }>(
     `SELECT r.*, f.content_sha AS current_sha
        FROM relations r
@@ -534,12 +541,12 @@ export function projectLegacyFacts(db: Db, options: LegacyFactOptions): FactBatc
         version: "1",
         kind: relation.source === "agent" ? "llm" : "human",
       },
-      generation,
+      generation: { sourceSignature: null, runId: relation.updated_at },
       certainty: "asserted",
       freshness:
-        relation.content_sha !== null && relation.content_sha === relation.current_sha
-          ? "current"
-          : "stale",
+        relation.content_sha !== null && relation.content_sha !== relation.current_sha
+          ? "stale"
+          : "unverified",
       confidence: relation.confidence,
       ownership: { scope: "artifact", key: relation.id },
       evidence: [{ kind: "source", anchor, detail: relation.evidence }],

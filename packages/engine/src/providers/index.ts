@@ -67,7 +67,8 @@ export interface ScipEvaluation {
     inputSignature: string;
     files: number;
     bytes: number;
-    entries: NativeSnapshotManifest["entries"];
+    /** Durable manifests include entries; daemon responses deliberately omit them. */
+    entries?: NativeSnapshotManifest["entries"];
   } | null;
   scip: NativeScipSummary | null;
   error: string | null;
@@ -353,6 +354,20 @@ function withCurrentSourceState(
   };
 }
 
+/** Keep the durable evidence on disk without sending it in the polled API. */
+function withoutInputEntries(evaluation: ScipEvaluation): ScipEvaluation {
+  if (!evaluation.input?.entries) return evaluation;
+  return {
+    ...evaluation,
+    input: {
+      sourceSignature: evaluation.input.sourceSignature,
+      inputSignature: evaluation.input.inputSignature,
+      files: evaluation.input.files,
+      bytes: evaluation.input.bytes,
+    },
+  };
+}
+
 /** Stop waiting for native work even when the underlying worker cannot be preempted. */
 function abortable<T>(work: Promise<T>, signal: AbortSignal): Promise<T> {
   signal.throwIfAborted();
@@ -614,7 +629,7 @@ async function evaluateScip(
   // Provider artifacts are app-owned diagnostics, not an unbounded history.
   // A pruning failure must not discard an otherwise valid evaluation.
   await pruneOldRuns(join(artifactsRoot, workspaceId, "scip-typescript")).catch(() => {});
-  return withCurrentSourceState(evaluation, indexedSourceSignature(db));
+  return withoutInputEntries(withCurrentSourceState(evaluation, indexedSourceSignature(db)));
 }
 
 /** One SCIP process per workspace. Repeated callers share the same run. */
@@ -674,7 +689,9 @@ export async function latestScipEvaluation(
         const evaluation = JSON.parse(
           await readFile(join(root, run, "manifest.json"), "utf-8"),
         ) as ScipEvaluation;
-        return withCurrentSourceState(evaluation, options.currentSourceSignature);
+        return withoutInputEntries(
+          withCurrentSourceState(evaluation, options.currentSourceSignature),
+        );
       } catch {
         // Ignore an interrupted or corrupt run and try the preceding manifest.
       }

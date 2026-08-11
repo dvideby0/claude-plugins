@@ -94,7 +94,8 @@ describe("provider-neutral fact contract", () => {
     });
     expect(facts.edges.find((edge) => edge.kind === "register")).toMatchObject({
       certainty: "asserted",
-      freshness: "current",
+      freshness: "unverified",
+      generation: { sourceSignature: null, runId: expect.any(String) },
       confidence: "high",
       producer: { kind: "llm" },
       evidence: [{ detail: expect.stringContaining("registers save") }],
@@ -200,7 +201,7 @@ describe("provider-neutral fact contract", () => {
     const current = before.edges.find(
       (edge) => edge.kind === "reference" && edge.producer.kind === "compiler",
     );
-    expect(current?.freshness).toBe("current");
+    expect(current?.freshness).toBe("unverified");
     expect(current?.generation.sourceSignature).toBe(before.generation.sourceSignature);
 
     await writeFile(join(root, "src/store.ts"), "export function renamed() { return true; }\n");
@@ -239,7 +240,7 @@ describe("provider-neutral fact contract", () => {
     );
     expect(references.find((edge) => edge.source.path === "src/main.ts")?.freshness).toBe("stale");
     expect(references.find((edge) => edge.source.path === "src/other.ts")?.freshness).toBe(
-      "current",
+      "unverified",
     );
   });
 
@@ -273,7 +274,7 @@ describe("provider-neutral fact contract", () => {
       "tsconfig.json": JSON.stringify({
         files: ["src/types.ts", "src/a.ts", "src/z.ts"],
       }),
-      "src/types.ts": "export interface T { value: number }\n",
+      "src/types.ts": "export interface T { \\u0076alue: number }\n",
       "src/a.ts":
         'import type { T } from "./types"; export const a = (input: T) => input.value;\n',
       "src/z.ts":
@@ -287,6 +288,7 @@ describe("provider-neutral fact contract", () => {
       join(root, "tsconfig.json"),
       JSON.stringify({ files: ["src/types.ts", "src/z.ts"] }),
     );
+    await writeFile(join(root, "src/types.ts"), "export interface T { value: number }\n");
     await scan(root, { kind: "fact-contract-shared-declaration-test" });
     expect(resolveTypes(db, root).ran).toBe(true);
 
@@ -297,11 +299,45 @@ describe("provider-neutral fact contract", () => {
     const stale = references.find((edge) => edge.source.path === "src/a.ts");
     const current = references.find((edge) => edge.source.path === "src/z.ts");
     expect(stale?.freshness).toBe("stale");
-    expect(current?.freshness).toBe("current");
+    expect(current?.freshness).toBe("unverified");
     expect(stale?.target.id).toBe(current?.target.id);
 
     const declaration = facts.nodes.find((node) => node.id === current?.target.id);
-    expect(declaration?.freshness).toBe("current");
+    expect(declaration?.freshness).toBe("unverified");
     expect(declaration?.generation).toEqual(current?.generation);
+    expect(declaration?.anchor?.range).toEqual({
+      startLine: 0,
+      startColumn: 21,
+      endLine: 0,
+      endColumn: 26,
+    });
+  });
+
+  it("keeps authored relation generation stable when unrelated source changes", async () => {
+    root = await makeProject({
+      "src/a.ts": "export const a = 1;\n",
+      "src/b.ts": "export const b = 1;\n",
+    });
+    await scan(root, { full: true, kind: "fact-contract-relation-generation-test" });
+    const db = await getDb(root);
+    relate(db, {
+      kind: "calls",
+      srcPath: "src/a.ts",
+      dstPath: "src/b.ts",
+      evidence: "a calls b through fixture wiring",
+    });
+    const before = projectLegacyFacts(db, { workspaceId: "workspace-1" }).edges.find(
+      (edge) => edge.kind === "call" && edge.producer.kind === "llm",
+    );
+
+    await writeFile(join(root, "src/b.ts"), "export const b = 2;\n");
+    await scan(root, { kind: "fact-contract-relation-generation-test" });
+    const after = projectLegacyFacts(db, { workspaceId: "workspace-1" }).edges.find(
+      (edge) => edge.kind === "call" && edge.producer.kind === "llm",
+    );
+
+    expect(before?.generation).toEqual({ sourceSignature: null, runId: expect.any(String) });
+    expect(after?.generation).toEqual(before?.generation);
+    expect(after?.freshness).toBe("unverified");
   });
 });

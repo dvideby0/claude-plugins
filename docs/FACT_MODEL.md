@@ -75,15 +75,22 @@ that legacy import edges lack source ranges, keeps import-resolved references
 relations `asserted`. A successful legacy compiler pass records the indexed
 workspace generation and deterministic source signature for each source file
 whose references it replaced;
-projected compiler facts are `current` only while that generation still
-matches, `stale` after a source or project-coverage change, and `unverified`
-for older stores that have no attestation.
+projected compiler facts are `stale` after a source or project-coverage change.
+While that repository generation still matches they remain `unverified`, not
+`current`, because the prototype does not attest TypeScript's full dependency,
+package-config, standard-library, and out-of-tree input closure. Older stores
+without a recorded producing generation are also `unverified`.
 Compiler reference and compiler-only declaration ranges use the UTF-8 byte
 coordinates stored by the typed prototype, including the actual source token
 end for escaped identifiers. Older and parser-derived reference rows that did
 not preserve an end coordinate remain navigable by file/symbol but omit an
 invented range. Shared compiler-only declarations are grouped before projection
 so their freshness does not depend on source-row order.
+
+Legacy authored relations retain their authored-artifact generation through the
+relation update timestamp. They use a null source signature and remain
+`unverified` while their source anchor matches, or `stale` after it changes,
+rather than borrowing the source generation present when they are projected.
 
 The next provider slice projects official SCIP occurrences and relationships
 into the same envelope for measured comparison. Persistence waits for

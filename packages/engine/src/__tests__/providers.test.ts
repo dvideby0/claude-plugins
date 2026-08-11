@@ -115,6 +115,7 @@ describe("provider boundary", () => {
       expect(evaluation.scip?.definitions).toBeGreaterThanOrEqual(oracle.scip.minimumDefinitions);
       expect(evaluation.scip?.references).toBeGreaterThanOrEqual(oracle.scip.minimumReferences);
       expect(evaluation.indexPath).toContain(artifacts);
+      expect(evaluation.input?.entries).toBeUndefined();
       const manifest = JSON.parse(
         await readFile(join(evaluation.artifactDir, "manifest.json"), "utf-8"),
       );
@@ -148,9 +149,15 @@ describe("provider boundary", () => {
       expect(evaluation).toMatchObject({ status: "partial", trust: "unverified", exact: false });
       expect(evaluation.scip?.documents).toBe(1);
       expect(evaluation.error).toMatch(/out-of-tree compiler inputs/i);
-      expect(evaluation.input?.entries.some((entry) => entry.path.includes("external.ts"))).toBe(
-        false,
+      expect(evaluation.input?.entries).toBeUndefined();
+      const manifest = JSON.parse(
+        await readFile(join(evaluation.artifactDir, "manifest.json"), "utf-8"),
       );
+      expect(
+        manifest.input.entries.some((entry: { path: string }) =>
+          entry.path.includes("external.ts"),
+        ),
+      ).toBe(false);
     } finally {
       await closeDb(project);
     }
@@ -192,8 +199,14 @@ describe("provider boundary", () => {
 
       expect(evaluation).toMatchObject({ status: "partial", trust: "unverified", exact: false });
       expect(evaluation.error).toMatch(/dependency and out-of-tree compiler inputs/i);
+      expect(evaluation.input?.entries).toBeUndefined();
+      const manifest = JSON.parse(
+        await readFile(join(evaluation.artifactDir, "manifest.json"), "utf-8"),
+      );
       expect(
-        evaluation.input?.entries.some((entry) => entry.path.startsWith("node_modules/")),
+        manifest.input.entries.some((entry: { path: string }) =>
+          entry.path.startsWith("node_modules/"),
+        ),
       ).toBe(false);
     } finally {
       await closeDb(project);
