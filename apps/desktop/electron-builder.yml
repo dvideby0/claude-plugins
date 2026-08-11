@@ -44,6 +44,14 @@ files:
   # walker. Build intermediates and sources stay out.
   - "!node_modules/@sdlc/scan-core/target/**"
   - "!node_modules/@sdlc/engine/src/**"
+  # The upstream package publishes its development tree and golden snapshots.
+  # Ship the official compiled indexer, not its repository fixtures and tests.
+  - "!node_modules/@sourcegraph/scip-typescript/.github/**"
+  - "!node_modules/@sourcegraph/scip-typescript/.vscode/**"
+  - "!node_modules/@sourcegraph/scip-typescript/dev/**"
+  - "!node_modules/@sourcegraph/scip-typescript/snapshots/**"
+  - "!node_modules/@sourcegraph/scip-typescript/src/**"
+  - "!node_modules/@sourcegraph/scip-typescript/dist/src/*.test.js"
   # Keep declaration files while excluding implementation sources. The
   # onNodeModuleFile hook overrides electron-builder's unconditional default
   # `.d.ts` exclusion; these patterns still keep ordinary TypeScript source out.

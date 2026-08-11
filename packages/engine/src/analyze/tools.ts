@@ -6,7 +6,7 @@
  * as skipped, never as a clean run.
  */
 
-import { access, constants, readdir } from "node:fs/promises";
+import { access, constants, open, readdir } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative } from "node:path";
 import { exec, platformCommand, spawnEnv } from "../lib/exec.js";
 import type { Category, FindingInput, Severity } from "../findings/types.js";
@@ -185,17 +185,79 @@ async function runEslint(projectRoot: string, signal?: AbortSignal): Promise<Ana
 
 // --- TypeScript ------------------------------------------------------------
 
-/** Does this tsconfig actually check any files, per the compiler itself? */
-async function tsConfigHasFiles(dir: string): Promise<boolean> {
+interface ConfigInspection {
+  hasFiles: boolean;
+  issue: string | null;
+}
+
+const MAX_TSCONFIG_BYTES = 1024 * 1024;
+
+/** Read JSONC without letting syntax-only discovery allocate without bound. */
+async function readBoundedConfig(configPath: string, signal?: AbortSignal): Promise<string> {
+  signal?.throwIfAborted();
+  const file = await open(configPath, "r");
+  try {
+    const buffer = Buffer.alloc(MAX_TSCONFIG_BYTES + 1);
+    const { bytesRead } = await file.read(buffer, 0, buffer.length, 0);
+    signal?.throwIfAborted();
+    if (bytesRead > MAX_TSCONFIG_BYTES) {
+      throw new Error(`config exceeds the ${MAX_TSCONFIG_BYTES}-byte safety limit`);
+    }
+    return buffer.subarray(0, bytesRead).toString("utf-8");
+  } finally {
+    await file.close();
+  }
+}
+
+/** Does this TypeScript-family config actually check files, per the compiler itself? */
+async function inspectTsConfig(
+  configPath: string,
+  signal?: AbortSignal,
+  expandFiles = true,
+): Promise<ConfigInspection> {
+  signal?.throwIfAborted();
   try {
     const ts = await import("typescript");
-    const configPath = join(dir, "tsconfig.json");
+    signal?.throwIfAborted();
+    if (!expandFiles) {
+      // Precise providers own project/reference resolution. Validate only the
+      // bounded JSONC input here; expanding include globs with ts.sys would do
+      // an unbounded synchronous filesystem walk on the daemon thread.
+      const raw = ts.parseConfigFileTextToJson(
+        configPath,
+        await readBoundedConfig(configPath, signal),
+      );
+      return {
+        hasFiles: !raw.error,
+        issue: raw.error ? ts.flattenDiagnosticMessageText(raw.error.messageText, " ") : null,
+      };
+    }
     const raw = ts.readConfigFile(configPath, ts.sys.readFile);
-    if (raw.error) return false;
-    const parsed = ts.parseJsonConfigFileContent(raw.config, ts.sys, dir);
-    return parsed.fileNames.length > 0;
-  } catch {
-    return false;
+    if (raw.error) {
+      return {
+        hasFiles: false,
+        issue: ts.flattenDiagnosticMessageText(raw.error.messageText, " "),
+      };
+    }
+    const parsed = ts.parseJsonConfigFileContent(
+      raw.config,
+      ts.sys,
+      dirname(configPath),
+      undefined,
+      configPath,
+    );
+    signal?.throwIfAborted();
+    const blocking = parsed.errors.filter((error) => error.code !== 18003);
+    return {
+      hasFiles: parsed.fileNames.length > 0,
+      issue:
+        parsed.fileNames.length === 0 && blocking.length > 0
+          ? ts.flattenDiagnosticMessageText(blocking[0]!.messageText, " ")
+          : null,
+    };
+  } catch (error) {
+    signal?.throwIfAborted();
+    return { hasFiles: false, issue: error instanceof Error ? error.message : String(error) };
   }
 }
 
@@ -217,6 +279,12 @@ const TSC_DISCOVERY_SKIP = new Set([
 export interface TsConfigDiscovery {
   /** Directories containing configs that actually own source files. */
   roots: string[];
+  /** Exact config paths; providers need these to preserve jsconfig semantics. */
+  configs: string[];
+  /** Configs that could not be parsed or did not yield a valid project. */
+  issues: Array<{ config: string; message: string }>;
+  /** Number of candidate config files encountered, including empty/invalid ones. */
+  found: number;
   /** More projects exist than the checker can safely run in one pass. */
   capped: boolean;
 }
@@ -229,48 +297,79 @@ export interface TsConfigDiscovery {
 export async function findTsConfigs(
   projectRoot: string,
   limit = 64,
+  signal?: AbortSignal,
+  configNames: readonly string[] = ["tsconfig.json"],
+  expandFiles = true,
 ): Promise<TsConfigDiscovery> {
+  const roots: string[] = [];
   const configs: string[] = [];
+  const issues: Array<{ config: string; message: string }> = [];
+  const names = new Set(configNames);
+  let found = 0;
+  let capped = false;
 
   async function visit(dir: string): Promise<void> {
+    signal?.throwIfAborted();
+    if (capped) return;
     let entries;
     try {
       entries = await readdir(dir, { withFileTypes: true });
     } catch {
+      signal?.throwIfAborted();
       return;
     }
 
     entries.sort((a, b) => a.name.localeCompare(b.name));
     for (const entry of entries) {
-      if (entry.isFile() && entry.name === "tsconfig.json") {
-        configs.push(join(dir, entry.name));
+      signal?.throwIfAborted();
+      if (entry.isFile() && names.has(entry.name)) {
+        found++;
+        if (found > limit) {
+          capped = true;
+          return;
+        }
+        const configPath = join(dir, entry.name);
+        // Solution-style configs with only references check no files
+        // themselves; their referenced child configs are discovered below.
+        const inspection = await inspectTsConfig(configPath, signal, expandFiles);
+        if (inspection.hasFiles) {
+          roots.push(dir);
+          configs.push(configPath);
+        } else if (inspection.issue) {
+          issues.push({ config: configPath, message: inspection.issue });
+        }
       } else if (entry.isDirectory() && !TSC_DISCOVERY_SKIP.has(entry.name)) {
         await visit(join(dir, entry.name));
+        if (capped) return;
       }
     }
   }
 
   await visit(projectRoot);
-  const roots: string[] = [];
-  for (const config of configs) {
-    const dir = dirname(config);
-    // Solution-style configs with only references check no files themselves;
-    // their referenced child configs are discovered independently above.
-    if (await tsConfigHasFiles(dir)) roots.push(dir);
-  }
-
   roots.sort((a, b) => {
     if (a === projectRoot) return -1;
     if (b === projectRoot) return 1;
     return a.localeCompare(b);
   });
-  return { roots: roots.slice(0, limit), capped: roots.length > limit };
+  configs.sort((a, b) => {
+    if (dirname(a) === projectRoot) return -1;
+    if (dirname(b) === projectRoot) return 1;
+    return a.localeCompare(b);
+  });
+  issues.sort((a, b) => a.config.localeCompare(b.config));
+  return { roots, configs, issues, found, capped };
 }
 
 async function runTsc(projectRoot: string, signal?: AbortSignal): Promise<AnalyzerOutcome> {
-  const discovery = await findTsConfigs(projectRoot);
+  const discovery = await findTsConfigs(projectRoot, 64, signal);
   const { roots } = discovery;
   if (roots.length === 0) {
+    if (discovery.issues.length > 0) {
+      return failed(
+        "tsc",
+        discovery.issues.map((issue) => `${rel(projectRoot, issue.config)}: ${issue.message}`).join("; "),
+      );
+    }
     return skipped("tsc", "no tsconfig.json at the root or in packages/apps");
   }
   const bin = await nodeBin(projectRoot, "tsc");
@@ -278,7 +377,9 @@ async function runTsc(projectRoot: string, signal?: AbortSignal): Promise<Analyz
 
   const findings: FindingInput[] = [];
   const line = /^(.+?)\((\d+),(\d+)\): error (TS\d+): (.+)$/;
-  const failures: string[] = [];
+  const failures: string[] = discovery.issues.map(
+    (issue) => `${rel(projectRoot, issue.config)}: ${issue.message}`,
+  );
   if (discovery.capped) {
     failures.push(`project discovery exceeded the ${roots.length}-config safety cap`);
   }

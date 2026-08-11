@@ -59,8 +59,61 @@ interface NativeFile {
   refs: Array<{ name: string; module: string; line: number; column: number }>;
 }
 
-interface NativeCore {
+export interface NativeScipDocument {
+  path: string;
+  occurrences: number;
+  definitions: number;
+  imports: number;
+  references: number;
+}
+
+export interface NativeScipSummary {
+  toolName: string;
+  toolVersion: string;
+  projectRoot: string;
+  documents: number;
+  occurrences: number;
+  definitions: number;
+  imports: number;
+  references: number;
+  relationships: number;
+  externalSymbols: number;
+  bytes: number;
+  sha256: string;
+  sampleDocuments: NativeScipDocument[];
+}
+
+export interface NativeStagedSnapshot {
+  sourceSignature: string;
+  files: number;
+  bytes: number;
+}
+
+export interface NativeSnapshotEntry {
+  path: string;
+  bytes: number;
+  sha256: string;
+}
+
+export interface NativeSnapshotManifest {
+  inputSignature: string;
+  files: number;
+  bytes: number;
+  entries: NativeSnapshotEntry[];
+}
+
+export interface NativeCore {
   scanRepo(root: string): Promise<{ files: NativeFile[]; walkMs: number; parseMs: number }>;
+  /** Present in native cores that can consume official SCIP protobuf output. */
+  inspectScip?(path: string): Promise<NativeScipSummary>;
+  /** Freeze exactly the indexed source generation before an external provider reads it. */
+  stageSourceSnapshot?(
+    root: string,
+    destination: string,
+    expectedSignature: string,
+  ): Promise<NativeStagedSnapshot>;
+  /** Attest every input in a staged provider view before and after execution. */
+  snapshotManifest?(root: string): Promise<NativeSnapshotManifest>;
 }
 
 let nativeLookedUp = false;

@@ -7,6 +7,7 @@
  */
 
 import { execFile, spawn, type ChildProcess } from "node:child_process";
+import { statSync } from "node:fs";
 import { homedir } from "node:os";
 import { delimiter, extname, join } from "node:path";
 
@@ -21,6 +22,8 @@ export interface ExecResult {
   timedOut: boolean;
   /** True when stdout or stderr exceeded the configured buffer. */
   truncated: boolean;
+  /** True when a child-generated artifact exceeded its configured disk bound. */
+  fileSizeExceeded: boolean;
 }
 
 export interface ExecOptions {
@@ -30,6 +33,8 @@ export interface ExecOptions {
   env?: NodeJS.ProcessEnv;
   /** Cancels the process and rejects the call instead of reporting a tool failure. */
   signal?: AbortSignal;
+  /** Kill a producer whose output artifact grows beyond this bound. */
+  maxFileSize?: { path: string; bytes: number };
   /** Set only when arguments were pre-escaped for cmd.exe. */
   windowsVerbatimArguments?: boolean;
 }
@@ -157,6 +162,19 @@ export function exec(
     let child: ChildProcess;
     let timedOut = false;
     let timeout: NodeJS.Timeout | null = null;
+    let fileSizeExceeded = false;
+    let fileSizeTimer: NodeJS.Timeout | null = null;
+    const checkFileSize = (): boolean => {
+      if (!options.maxFileSize) return false;
+      try {
+        if (statSync(options.maxFileSize.path).size <= options.maxFileSize.bytes) return false;
+        fileSizeExceeded = true;
+        return true;
+      } catch {
+        // The producer may not have created its output yet.
+        return false;
+      }
+    };
     const onAbort = (): void => {
       // AbortSignal kills the direct child. On Windows that child may be
       // cmd.exe in front of an npm shim, so explicitly terminate its tree.
@@ -164,6 +182,7 @@ export function exec(
     };
     const finish = (): void => {
       if (timeout) clearTimeout(timeout);
+      if (fileSizeTimer) clearInterval(fileSizeTimer);
       options.signal?.removeEventListener("abort", onAbort);
     };
 
@@ -183,9 +202,24 @@ export function exec(
         windowsVerbatimArguments: options.windowsVerbatimArguments,
       },
       (error, stdout, stderr) => {
+        // A fast producer can write an oversized artifact and exit between
+        // polling ticks. Classify the final file before clearing the monitor.
+        checkFileSize();
         finish();
         if (options.signal?.aborted) {
           reject(options.signal.reason ?? error ?? new Error("The operation was aborted."));
+          return;
+        }
+        if (fileSizeExceeded) {
+          resolve({
+            stdout: stdout ?? "",
+            stderr: stderr ?? "",
+            exitCode: null,
+            spawnFailed: false,
+            timedOut: false,
+            truncated: false,
+            fileSizeExceeded: true,
+          });
           return;
         }
         if (!error && !timedOut) {
@@ -196,6 +230,7 @@ export function exec(
             spawnFailed: false,
             timedOut: false,
             truncated: false,
+            fileSizeExceeded: false,
           });
           return;
         }
@@ -207,6 +242,7 @@ export function exec(
             spawnFailed: false,
             timedOut: true,
             truncated: false,
+            fileSizeExceeded: false,
           });
           return;
         }
@@ -235,6 +271,7 @@ export function exec(
             spawnFailed: false,
             timedOut: false,
             truncated: true,
+            fileSizeExceeded: false,
           });
           return;
         }
@@ -246,6 +283,7 @@ export function exec(
           spawnFailed,
           timedOut: wasTimedOut,
           truncated: false,
+          fileSizeExceeded: false,
         });
       },
     );
@@ -259,6 +297,12 @@ export function exec(
     }
     options.signal?.addEventListener("abort", onAbort, { once: true });
     if (options.signal?.aborted) onAbort();
+    if (options.maxFileSize) {
+      fileSizeTimer = setInterval(() => {
+        if (checkFileSize()) terminateProcessTree(child, true);
+      }, 50);
+      fileSizeTimer.unref();
+    }
   });
 }
 

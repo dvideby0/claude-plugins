@@ -50,6 +50,15 @@ This is cheaper operationally than maintaining independent relational, graph, an
 
 SCIP indexes, CodeQL databases, language servers, compiler metadata, test coverage, and runtime traces can all enrich the common model when present. They should be adapters with explicit provenance and capability discovery. Core indexing and the desktop experience must remain useful without downloading a heavyweight external analysis suite.
 
+The first concrete adoption is the Apache-2.0
+[`@sourcegraph/scip-typescript`](https://www.npmjs.com/package/@sourcegraph/scip-typescript)
+indexer plus the official Apache-2.0
+[`scip` Rust bindings](https://crates.io/crates/scip). This reuses TypeScript
+project/package resolution and the SCIP protocol rather than reproducing either
+inside SDLC. Joern remains an optional evaluation dependency: its CPG/CFG/PDG
+exports are promising, but the JVM/JDK footprint and graph translation cost
+must earn their place against the golden corpus before bundling.
+
 ## Integration research
 
 [Codex plugin documentation](https://developers.openai.com/plugins/build/plugins) describes bundles containing a `.codex-plugin/plugin.json` manifest plus skills, apps/MCP registrations, hooks, and related resources. Its marketplace workflow supports local and Git-backed sources. [Codex MCP documentation](https://developers.openai.com/codex/mcp/) describes supported CLI configuration rather than requiring direct TOML editing.

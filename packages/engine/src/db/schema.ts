@@ -1,4 +1,4 @@
-export const SCHEMA_VERSION = 13;
+export const SCHEMA_VERSION = 16;
 
 /**
  * The audit store. Files, symbols and edges are the deterministic picture of
@@ -33,6 +33,10 @@ CREATE TABLE IF NOT EXISTS files (
   -- none: symbols/imports only; import: native imported-name refs; typed:
   -- compiler-resolved refs. Zero counts are only meaningful above none.
   ref_coverage   TEXT NOT NULL DEFAULT 'none',
+  -- Workspace generation in which this source's compiler refs were replaced.
+  ref_generation TEXT,
+  -- Deterministic source signature that actually produced those compiler refs.
+  ref_source_signature TEXT,
   present        INTEGER NOT NULL DEFAULT 1,
   first_seen_run INTEGER,
   last_seen_run  INTEGER
@@ -73,6 +77,7 @@ CREATE TABLE IF NOT EXISTS refs (
   src_path  TEXT NOT NULL,
   src_line  INTEGER NOT NULL,
   src_column INTEGER NOT NULL DEFAULT 0,
+  src_end_column INTEGER,
   name      TEXT NOT NULL,
   specifier TEXT NOT NULL,
   dst_path  TEXT,
@@ -85,6 +90,8 @@ CREATE TABLE IF NOT EXISTS refs (
   -- methods with the same name in the same file.
   dst_line INTEGER,
   dst_column INTEGER,
+  dst_end_line INTEGER,
+  dst_end_column INTEGER,
   dst_symbol_id TEXT,
   PRIMARY KEY (src_path, src_line, src_column, name, specifier)
 );

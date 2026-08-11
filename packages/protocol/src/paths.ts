@@ -32,6 +32,11 @@ export function storeDir(): string {
   return join(stateDir(), "stores");
 }
 
+/** App-owned outputs and manifests produced by external analysis providers. */
+export function providersDir(): string {
+  return join(stateDir(), "providers");
+}
+
 /** Daemon log, tailed by the desktop app. */
 export function logFile(): string {
   return join(stateDir(), "daemon.log");

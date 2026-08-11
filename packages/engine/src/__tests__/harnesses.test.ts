@@ -19,6 +19,7 @@ import {
   drawInvocationArgs,
   MAP_MCP_TOOLS,
   mapCompletionAdvanced,
+  mapRunSucceeded,
   supportedHarnesses,
 } from "../daemon/draw.js";
 import { posixShellQuote, windowsLauncherCommand } from "../daemon/launcher.js";
@@ -296,6 +297,27 @@ describe("draw harness ids", () => {
     expect(mapCompletionAdvanced("old", "new")).toBe(true);
   });
 
+  it("accepts clean maintenance without requiring a new finalization marker", () => {
+    expect(
+      mapRunSucceeded(
+        { marker: "existing", complete: true, clean: false },
+        { marker: "existing", complete: true, clean: true },
+      ),
+    ).toBe(true);
+    expect(
+      mapRunSucceeded(
+        { marker: "existing", complete: true, clean: false },
+        { marker: "existing", complete: true, clean: false },
+      ),
+    ).toBe(false);
+    expect(
+      mapRunSucceeded(
+        { marker: null, complete: false, clean: false },
+        { marker: "first", complete: true, clean: true },
+      ),
+    ).toBe(true);
+  });
+
   it("limits unattended Claude and Codex runs to map tools", () => {
     const claude = drawInvocationArgs("claude-code", "draw", {
       command: "/app/sdlc-bridge",
@@ -323,9 +345,10 @@ describe("draw harness ids", () => {
     expect(claude).toContain("--strict-mcp-config");
     expect(claude).toContain("user");
     const config = JSON.parse(claude[claude.indexOf("--mcp-config") + 1]!) as {
-      mcpServers: { sdlc: { command: string } };
+      mcpServers: { sdlc: { command: string; alwaysLoad: boolean } };
     };
     expect(config.mcpServers.sdlc.command).toBe("/app/sdlc-bridge");
+    expect(config.mcpServers.sdlc.alwaysLoad).toBe(true);
     const override = codex.find((value) => value.startsWith("mcp_servers ="))!;
     expect(override).toBe(
       codexMcpOverride({
@@ -462,6 +485,42 @@ describe("subprocess output bounds", () => {
       { timeout: 25 },
     );
     expect(result.timedOut).toBe(true);
+    expect(result.spawnFailed).toBe(false);
+  });
+
+  it("terminates a producer whose output artifact exceeds its disk bound", async () => {
+    root = await makeProject({});
+    const artifact = join(root, "growing.bin");
+    const result = await exec(
+      process.execPath,
+      [
+        "-e",
+        "const fs=require('fs');const fd=fs.openSync(process.argv[1],'w');const chunk=Buffer.alloc(65536);setInterval(()=>fs.writeSync(fd,chunk),1)",
+        artifact,
+      ],
+      { timeout: 10_000, maxFileSize: { path: artifact, bytes: 128 * 1024 } },
+    );
+
+    expect(result.fileSizeExceeded).toBe(true);
+    expect(result.timedOut).toBe(false);
+    expect(result.spawnFailed).toBe(false);
+  });
+
+  it("classifies an oversized artifact even when its producer exits between polling ticks", async () => {
+    root = await makeProject({});
+    const artifact = join(root, "fast.bin");
+    const result = await exec(
+      process.execPath,
+      [
+        "-e",
+        "require('fs').writeFileSync(process.argv[1], Buffer.alloc(1024 * 1024))",
+        artifact,
+      ],
+      { timeout: 10_000, maxFileSize: { path: artifact, bytes: 128 * 1024 } },
+    );
+
+    expect(result.fileSizeExceeded).toBe(true);
+    expect(result.timedOut).toBe(false);
     expect(result.spawnFailed).toBe(false);
   });
 });

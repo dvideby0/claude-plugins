@@ -48,6 +48,10 @@ SDLC's differentiated work is the product and knowledge-fusion layer:
   memories, and change understanding;
 - budgeted context delivery through MCP and supported Claude/Codex connectors.
 
+The versioned minimum envelope is documented in
+[`FACT_MODEL.md`](FACT_MODEL.md). Provider-native SCIP and CPG detail remains
+available behind that boundary rather than being reimplemented in the envelope.
+
 SDLC does not own language package-resolution edge cases, compiler-grade symbol
 identity, or mature universal program-analysis algorithms. Provider adapters
 translate those results into SDLC's envelope without pretending SDLC produced
@@ -64,7 +68,8 @@ the syntax index and then the dependent provider output.
 An index file alone is not proof of that snapshot. For output to be classified
 as exact, the SDLC provider runner must execute the provider against an
 immutable, app-owned staged snapshot (or an input view with equivalent read
-attestation and mutation fencing). It records the staged inputs, provider
+attestation and mutation fencing) that includes every byte the provider may
+read, including dependency declarations and out-of-tree project inputs. It records the staged inputs, provider
 identity and version, and output digest in a run manifest. Comparing that
 manifest's source signature with the live workspace determines whether the
 result is current or stale; matching live-workspace hashes at two points in
@@ -74,6 +79,10 @@ evaluation, but remains unverified and must never be labeled current and exact.
 
 This snapshot boundary is deliberately simpler than attempting to duplicate a
 compiler's complete input dependency graph inside the query path.
+The current SCIP evaluation attests only the deterministic repository source
+view. Because the external process is not yet confined to a manifested
+dependency/read closure, its useful comparison output remains `partial` and
+`unverified`; source staging alone is not described as exact provenance.
 
 ## Adoption sequence
 
@@ -85,6 +94,45 @@ compiler's complete input dependency graph inside the query path.
    usable coverage, packaging cost, latency, and graph translation effort.
 5. Keep, replace, or supplement providers based on measured gaps. Write custom
    analyzers only for product-specific relations or proven provider gaps.
+
+## Implementation status
+
+As of 2026-08-06, the first evaluation boundary exists:
+
+- the official `@sourcegraph/scip-typescript` 0.4.0 indexer is bundled for
+  TypeScript and JavaScript evaluation;
+- the app runs it under the existing bounded process supervisor and writes its
+  output and manifest under app-owned provider storage;
+- the Rust native core decodes the official SCIP protobuf, applies a bounded
+  input limit, hashes the artifact, deduplicates documents emitted by
+  overlapping project configs for comparison, and returns aggregates;
+- configless JavaScript/TypeScript evaluation uses an app-owned config built
+  from the deterministic source inventory; it never invokes the upstream
+  `--infer-tsconfig` mode that writes into the source repository;
+- Settings reports provider capabilities and the project Overview can run and
+  inspect a SCIP comparison without replacing the existing syntax facts;
+- the Rust core stages the deterministic source inventory under app ownership,
+  requires it to match the indexed source signature, records a hash manifest,
+  and verifies the input view after SCIP exits; dependency and out-of-tree
+  compiler reads remain unattested, so current output is partial/unverified,
+  later source generations expose it as stale, and only the five most recent artifacts remain;
+- provider discovery, execution, and decode waits honor removal/shutdown
+  cancellation, while successful indexes with skipped project configs remain
+  inspectable but are explicitly labeled `partial`;
+- both `tsconfig.json` and `jsconfig.json` are discovered; invalid configs,
+  oversized-source skips, and mixed valid/invalid project sets are surfaced as
+  failed or partial instead of silently appearing complete, and flag-like legal
+  project paths are passed as paths rather than CLI options;
+- config preflight is bounded and syntax-only; it does not expand TypeScript
+  globs on the daemon thread, and solution-style roots remain intact so the
+  provider can follow custom-named project references itself;
+- Joern capability detection exists, but no Joern adapter is enabled or bundled
+  yet. Its first use remains the bounded EVAL-001 control/data-flow spike.
+
+This completes attestation of the repository source view, not full immutable
+provider-input provenance or PROV-001. Dependency/read-closure confinement,
+provider-neutral fact import, and evaluation across the full golden corpus
+remain open.
 
 ## Guardrails
 
