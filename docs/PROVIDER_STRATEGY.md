@@ -68,7 +68,8 @@ the syntax index and then the dependent provider output.
 An index file alone is not proof of that snapshot. For output to be classified
 as exact, the SDLC provider runner must execute the provider against an
 immutable, app-owned staged snapshot (or an input view with equivalent read
-attestation and mutation fencing). It records the staged inputs, provider
+attestation and mutation fencing) that includes every byte the provider may
+read, including dependency declarations and out-of-tree project inputs. It records the staged inputs, provider
 identity and version, and output digest in a run manifest. Comparing that
 manifest's source signature with the live workspace determines whether the
 result is current or stale; matching live-workspace hashes at two points in
@@ -78,6 +79,10 @@ evaluation, but remains unverified and must never be labeled current and exact.
 
 This snapshot boundary is deliberately simpler than attempting to duplicate a
 compiler's complete input dependency graph inside the query path.
+The current SCIP evaluation attests only the deterministic repository source
+view. Because the external process is not yet confined to a manifested
+dependency/read closure, its useful comparison output remains `partial` and
+`unverified`; source staging alone is not described as exact provenance.
 
 ## Adoption sequence
 
@@ -108,8 +113,9 @@ As of 2026-08-06, the first evaluation boundary exists:
   inspect a SCIP comparison without replacing the existing syntax facts;
 - the Rust core stages the deterministic source inventory under app ownership,
   requires it to match the indexed source signature, records a hash manifest,
-  and verifies the input view after SCIP exits; later index generations expose
-  the retained result as stale, and only the five most recent artifacts remain;
+  and verifies the input view after SCIP exits; dependency and out-of-tree
+  compiler reads remain unattested, so current output is partial/unverified,
+  later source generations expose it as stale, and only the five most recent artifacts remain;
 - provider discovery, execution, and decode waits honor removal/shutdown
   cancellation, while successful indexes with skipped project configs remain
   inspectable but are explicitly labeled `partial`;

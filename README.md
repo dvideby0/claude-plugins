@@ -89,8 +89,10 @@ symbol, and reference coverage with the bundled official SCIP indexer. The
 comparison is an evaluation signal, not a precision score. The Rust core
 copies the indexed source generation into an app-owned input view and records
 an attested manifest before SCIP runs; the result is marked stale after the
-source index changes. It remains evaluation-only and does not replace the
-project's trusted facts. Repositories without a TypeScript config are
+source index changes. Installed dependencies and other compiler inputs outside
+that source view are not yet fenced or manifested, so results remain explicitly
+partial and unverified rather than being promoted as exact. They do not replace
+the project's trusted facts. Repositories without a TypeScript config are
 evaluated through an app-owned inferred config; evaluation never creates a
 `tsconfig.json` in the source repository. If the upstream indexer skips one of
 several project configs, the usable comparison is retained and labeled

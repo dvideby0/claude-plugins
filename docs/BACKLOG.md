@@ -57,7 +57,9 @@ desktop, and preserves Tree-sitter fallback behavior. Rust now copies the exact
 indexed source generation into a private app-owned view, rejects a generation
 mismatch, records every staged input and hash, verifies that view after the
 provider exits, and reports retained output as stale after the source signature
-changes. Provider-neutral fact import and broader golden-corpus comparison
+changes. The app does not yet attest package dependencies or other compiler
+reads outside that source view, so the evaluation remains partial/unverified
+instead of claiming exact provenance. Provider-neutral fact import and broader golden-corpus comparison
 remain acceptance-critical next steps. Joern
 is detected but intentionally not bundled before its EVAL-001 spike. Configless
 evaluation now uses an app-owned config rather than allowing the upstream CLI

@@ -78,7 +78,8 @@ describe("provider boundary", () => {
       const db = await getDb(project);
       const evaluation = await runScipEvaluation("abcdef123456", project, db, artifacts);
 
-      expect(evaluation).toMatchObject({ status: "ok", trust: "exact", exact: true });
+      expect(evaluation).toMatchObject({ status: "partial", trust: "unverified", exact: false });
+      expect(evaluation.error).toMatch(/dependency and out-of-tree compiler inputs/i);
       expect(evaluation.projects).toEqual(["."]);
       expect(evaluation.scip?.documents).toBe(oracle.scip.documents);
       expect(evaluation.scip?.definitions).toBeGreaterThanOrEqual(oracle.scip.minimumDefinitions);
@@ -95,6 +96,75 @@ describe("provider boundary", () => {
       await expect(readdir(join(evaluation.artifactDir, "input"))).rejects.toMatchObject({
         code: "ENOENT",
       });
+    } finally {
+      await closeDb(project);
+    }
+  });
+
+  nativeIt("does not promote output influenced by an out-of-tree project input", async () => {
+    const project = await temporary("sdlc-scip-outside-project-");
+    const outside = await temporary("sdlc-scip-outside-input-");
+    const artifacts = await temporary("sdlc-scip-outside-artifacts-");
+    const outsideSource = join(outside, "external.ts");
+    await writeFile(outsideSource, "export const outside = 1;\n");
+    await writeFile(join(project, "package.json"), JSON.stringify({ name: "outside-input" }));
+    await writeFile(join(project, "tsconfig.json"), JSON.stringify({ files: [outsideSource] }));
+
+    try {
+      await scan(project, { full: true, kind: "provider-outside-input-test" });
+      const db = await getDb(project);
+      const evaluation = await runScipEvaluation("111122223333", project, db, artifacts);
+
+      expect(evaluation).toMatchObject({ status: "partial", trust: "unverified", exact: false });
+      expect(evaluation.scip?.documents).toBe(1);
+      expect(evaluation.error).toMatch(/out-of-tree compiler inputs/i);
+      expect(evaluation.input?.entries.some((entry) => entry.path.includes("external.ts"))).toBe(
+        false,
+      );
+    } finally {
+      await closeDb(project);
+    }
+  });
+
+  nativeIt("does not promote a source-only snapshot that omits installed dependencies", async () => {
+    const project = await temporary("sdlc-scip-dependency-project-");
+    const artifacts = await temporary("sdlc-scip-dependency-artifacts-");
+    await mkdir(join(project, "src"), { recursive: true });
+    await mkdir(join(project, "node_modules", "fixture-dep"), { recursive: true });
+    await writeFile(
+      join(project, "package.json"),
+      JSON.stringify({ name: "dependency-input", dependencies: { "fixture-dep": "1.0.0" } }),
+    );
+    await writeFile(
+      join(project, "tsconfig.json"),
+      JSON.stringify({
+        compilerOptions: { module: "NodeNext", moduleResolution: "NodeNext", target: "ES2022" },
+        files: ["src/main.ts"],
+      }),
+    );
+    await writeFile(
+      join(project, "src", "main.ts"),
+      'import { external } from "fixture-dep"; export const answer = external();\n',
+    );
+    await writeFile(
+      join(project, "node_modules", "fixture-dep", "package.json"),
+      JSON.stringify({ name: "fixture-dep", version: "1.0.0", types: "index.d.ts" }),
+    );
+    await writeFile(
+      join(project, "node_modules", "fixture-dep", "index.d.ts"),
+      "export declare function external(): number;\n",
+    );
+
+    try {
+      await scan(project, { full: true, kind: "provider-dependency-input-test" });
+      const db = await getDb(project);
+      const evaluation = await runScipEvaluation("444455556666", project, db, artifacts);
+
+      expect(evaluation).toMatchObject({ status: "partial", trust: "unverified", exact: false });
+      expect(evaluation.error).toMatch(/dependency and out-of-tree compiler inputs/i);
+      expect(
+        evaluation.input?.entries.some((entry) => entry.path.startsWith("node_modules/")),
+      ).toBe(false);
     } finally {
       await closeDb(project);
     }
@@ -123,7 +193,7 @@ describe("provider boundary", () => {
       const db = await getDb(project);
       const evaluation = await runScipEvaluation("123456abcdef", project, db, artifacts);
 
-      expect(evaluation.status).toBe("ok");
+      expect(evaluation.status).toBe("partial");
       expect(evaluation.projects).toEqual(["apps/web", "packages/api"]);
       expect(evaluation.scip?.documents).toBe(2);
     } finally {
@@ -158,7 +228,7 @@ describe("provider boundary", () => {
       const db = await getDb(project);
       const evaluation = await runScipEvaluation("eeeeffffaaaa", project, db, artifacts);
 
-      expect(evaluation.status).toBe("ok");
+      expect(evaluation.status).toBe("partial");
       expect(evaluation.projects).toEqual(["."]);
       expect(evaluation.scip?.documents).toBe(1);
       expect(evaluation.scip?.sampleDocuments[0]?.path).toMatch(/src\/app\.ts$/);
@@ -179,7 +249,7 @@ describe("provider boundary", () => {
       const db = await getDb(project);
       const evaluation = await runScipEvaluation("abcdef654321", project, db, artifacts);
 
-      expect(evaluation.status).toBe("ok");
+      expect(evaluation.status).toBe("partial");
       expect(evaluation.projects).toEqual(["(app-owned inferred config)"]);
       expect(evaluation.scip?.documents).toBe(1);
       await expect(readFile(join(project, "tsconfig.json"), "utf-8")).rejects.toMatchObject({
@@ -215,7 +285,7 @@ describe("provider boundary", () => {
       const db = await getDb(project);
       const evaluation = await runScipEvaluation("aaaabbbbcccc", project, db, artifacts);
 
-      expect(evaluation.status).toBe("ok");
+      expect(evaluation.status).toBe("partial");
       expect(evaluation.projects).toEqual(["jsconfig.json"]);
       expect(evaluation.scip?.documents).toBe(1);
       const indexed = evaluation.scip?.sampleDocuments.map((document) => document.path) ?? [];
@@ -240,7 +310,7 @@ describe("provider boundary", () => {
       const db = await getDb(project);
       const evaluation = await runScipEvaluation("bbbbaaaacccc", project, db, artifacts);
 
-      expect(evaluation.status).toBe("ok");
+      expect(evaluation.status).toBe("partial");
       expect(evaluation.projects).toEqual(["--infer-tsconfig"]);
       await expect(readFile(join(project, "tsconfig.json"), "utf-8")).rejects.toMatchObject({
         code: "ENOENT",
@@ -275,7 +345,7 @@ describe("provider boundary", () => {
       const db = await getDb(project);
       const evaluation = await runScipEvaluation("fedcba123456", project, db, artifacts);
 
-      expect(evaluation.status).toBe("ok");
+      expect(evaluation.status).toBe("partial");
       expect(evaluation.projects).toEqual([".", "packages/api"]);
       expect(evaluation.scip?.documents).toBe(1);
       expect(evaluation.scip?.sampleDocuments).toHaveLength(1);
@@ -390,7 +460,7 @@ describe("provider boundary", () => {
     }
   });
 
-  nativeIt("marks an exact provider result stale after the indexed source changes", async () => {
+  nativeIt("marks an unverified provider result stale after the indexed source changes", async () => {
     const project = await temporary("sdlc-scip-stale-");
     const artifacts = await temporary("sdlc-scip-stale-artifacts-");
     await writeFile(join(project, "tsconfig.json"), JSON.stringify({ files: ["index.ts"] }));
@@ -401,7 +471,7 @@ describe("provider boundary", () => {
       await scan(project, { full: true, kind: "provider-stale-initial" });
       const db = await getDb(project);
       const evaluation = await runScipEvaluation(workspaceId, project, db, artifacts);
-      expect(evaluation).toMatchObject({ trust: "exact", exact: true });
+      expect(evaluation).toMatchObject({ trust: "unverified", exact: false });
 
       await writeFile(join(project, "index.ts"), "export const value = 2;\n");
       await scan(project, { kind: "provider-stale-refresh" });

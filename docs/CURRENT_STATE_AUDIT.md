@@ -16,8 +16,10 @@ hashed in Rust, its artifacts live in app-owned storage, and its capabilities
 and comparison results appear in the desktop. It now runs against an app-owned
 source snapshot that must match the deterministic index generation, records a
 per-input manifest, verifies the input view after execution, and marks retained
-output stale when the indexed source generation changes. The output remains an
-evaluation and does not replace current syntax/reference facts. Joern is
+output stale when the indexed source generation changes. Dependency and
+out-of-tree compiler reads are not yet attested, so output remains partial and
+unverified rather than exact. The output remains an evaluation and does not
+replace current syntax/reference facts. Joern is
 capability-detected only and still requires the planned bounded control/data-flow
 evaluation.
 
@@ -95,9 +97,9 @@ The provider evaluation layer now packages `@sourcegraph/scip-typescript`,
 runs it with time/output bounds, retains five app-owned runs, and uses the
 official Rust SCIP types to summarize definitions, references, relationships,
 and artifact provenance. It is a measurement path rather than a production fact
-source: inputs are copied and attested in Rust before the provider runs, exact
-results are tied to that source signature, and provider failure leaves the
-Tree-sitter index available. It discovers both `tsconfig.json` and
+source: repository inputs are copied and attested in Rust before the provider
+runs, but the unmanifested dependency/read closure keeps results unverified;
+provider failure leaves the Tree-sitter index available. It discovers both `tsconfig.json` and
 `jsconfig.json`, reports invalid or skipped projects and oversized-source skips
 as partial output, and passes project paths through a hardened argument boundary
 so legal flag-like directory names cannot become provider options. Provider

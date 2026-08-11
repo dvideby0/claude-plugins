@@ -637,8 +637,10 @@ function providerEvaluation(workspace, providerState) {
         </div>${rows}`
       : evaluation.trust !== "exact" && evaluation.status !== "failed"
         ? `<div class="notice">
-            Last evaluation ${relative(evaluation.finishedAt)} is <b>unverified</b> because it predates
-            immutable source staging. Run it again before comparing or importing these results.
+            Last evaluation ${relative(evaluation.finishedAt)} is <b>unverified</b>. Its repository
+            source snapshot was attested, but dependency and out-of-tree compiler inputs are not yet
+            fenced. Treat these counts as an evaluation signal, not importable facts.
+            ${evaluation.error ? esc(evaluation.error) : ""}
           </div>${rows}`
       : evaluation.status === "ok"
       ? `<div class="notice">
@@ -732,7 +734,7 @@ async function evaluateScip(workspace, button) {
       method: "POST",
     });
     await refreshScipOverview(workspace);
-    toast("SCIP evaluation finished against an app-owned source snapshot.");
+    toast("SCIP evaluation finished; the source snapshot is attested, but full input closure remains unverified.");
   } catch (error) {
     toast(error.message);
     await refreshScipOverview(workspace);

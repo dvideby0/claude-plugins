@@ -85,6 +85,8 @@ const SCIP_DISCOVERY_TIMEOUT_MS = 30_000;
 const MAX_PROVIDER_OUTPUT = 4 * 1024 * 1024;
 const MAX_SCIP_INDEX_BYTES = 128 * 1024 * 1024;
 const RETAINED_SCIP_RUNS = 5;
+const UNATTESTED_INPUT_CLOSURE =
+  "The repository source snapshot is attested, but dependency and out-of-tree compiler inputs are not yet fenced; SCIP coverage is evaluation-only.";
 let detectionCache: { expiresAt: number; providers: ProviderStatus[] } | null = null;
 interface ActiveScipRun {
   controller: AbortController;
@@ -336,7 +338,6 @@ function withCurrentSourceState(
 ): ScipEvaluation {
   if (
     !currentSourceSignature ||
-    !evaluation.exact ||
     !evaluation.input ||
     evaluation.input.sourceSignature === currentSourceSignature
   ) {
@@ -402,10 +403,27 @@ async function evaluateScip(
   // The provider never reads the mutable workspace. Rust walks the same
   // deterministic source boundary as the indexer, refuses a generation that
   // no longer matches the DB, and writes a private app-owned input view.
+  if (signal.aborted) {
+    await rm(artifactDir, { recursive: true, force: true });
+    throw signal.reason ?? new Error("SCIP evaluation cancelled.");
+  }
+  const staging = native.stageSourceSnapshot(root, snapshotRoot, expectedSourceSignature);
   let staged;
   try {
-    staged = await native.stageSourceSnapshot(root, snapshotRoot, expectedSourceSignature);
+    staged = await abortable(staging, signal);
   } catch (cause) {
+    if (signal.aborted) {
+      // napi AsyncTask work cannot be preempted once libuv starts it. Return
+      // cancellation promptly, but consume the task and delete its unique run
+      // directory only after it can no longer write there.
+      void staging
+        .then(
+          () => rm(artifactDir, { recursive: true, force: true }),
+          () => rm(artifactDir, { recursive: true, force: true }),
+        )
+        .catch(() => {});
+      throw signal.reason ?? cause;
+    }
     await rm(artifactDir, { recursive: true, force: true });
     throw cause;
   }
@@ -459,7 +477,9 @@ async function evaluateScip(
 
   let summary: NativeScipSummary | null = null;
   let error: string | null = selectedProjects.error;
-  let incomplete: string | null = selectedProjects.incomplete;
+  let incomplete: string | null = [selectedProjects.incomplete, UNATTESTED_INPUT_CLOSURE]
+    .filter(Boolean)
+    .join("\n");
   let reason: ScipEvaluation["reason"] = "provider_failed";
   if (!error) {
     let command;
@@ -542,7 +562,7 @@ async function evaluateScip(
   // each of the five evaluation runs would multiply private data and disk use.
   await rm(snapshotRoot, { recursive: true, force: true });
 
-  const exact = summary !== null && error === null;
+  const exact = summary !== null && error === null && incomplete === null;
 
   const evaluation: ScipEvaluation = {
     runId: id,
