@@ -78,8 +78,11 @@ That is a good substrate for evolving toward base facts and derived overlays. Th
 The first versioned provider-neutral envelope is now documented in
 [`FACT_MODEL.md`](FACT_MODEL.md), and the legacy deterministic/asserted tables
 can be projected into it without changing their authority. SCIP facts are not
-yet projected or persisted through that contract, and dependency ownership is
-still incomplete.
+persisted through that contract, and dependency ownership is still incomplete.
+Official SCIP occurrences and relationships can now be projected in memory
+with workspace-bound provider-run ownership, artifact and input-manifest
+verification, exact staged-root/path confinement, bounded collection,
+conflict-safe document-local symbols, and explicit ambiguity.
 
 ### Scanning and reference resolution
 
@@ -96,7 +99,7 @@ Important limits:
 The provider evaluation layer now packages `@sourcegraph/scip-typescript`,
 runs it with time/output bounds, retains five app-owned runs, and uses the
 official Rust SCIP types to summarize definitions, references, relationships,
-and artifact provenance. It is a measurement path rather than a production fact
+artifact provenance, and provider-neutral facts. It is a measurement path rather than a production fact
 source: repository inputs are copied and attested in Rust before the provider
 runs, but the unmanifested dependency/read closure keeps results unverified;
 provider failure leaves the Tree-sitter index available. It discovers both `tsconfig.json` and

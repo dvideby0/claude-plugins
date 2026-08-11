@@ -25,6 +25,66 @@ export interface NativeScipSummary {
   sha256: string
   sampleDocuments: Array<NativeScipDocument>
 }
+export interface NativeScipRange {
+  startLine: number
+  startColumn: number
+  endLine: number
+  endColumn: number
+}
+export interface NativeScipSourceDocument {
+  path: string
+  language: string
+}
+export interface NativeScipPathAlias {
+  /** Lexically normalized path emitted by the provider. */
+  providerPath: string
+  /** Canonical manifest spelling observed while the staged input existed. */
+  path: string
+}
+export interface NativeScipSymbol {
+  /** Document-scoped for SCIP local symbols; global otherwise. */
+  key: string
+  symbol: string
+  displayName: string
+  kind: string
+  path?: string
+  external: boolean
+  /** Conflicting provider documents or metadata describe this identity. */
+  ambiguous: boolean
+}
+export interface NativeScipOccurrence {
+  path: string
+  range?: NativeScipRange
+  positionEncoding: string
+  symbolKey: string
+  symbol: string
+  /** definition, import, reference, read, or write. */
+  kind: string
+  /** Lossless SCIP role labels for evidence/debugging. */
+  nativeKind: string
+  ambiguous: boolean
+}
+export interface NativeScipRelationship {
+  path?: string
+  sourceKey: string
+  sourceSymbol: string
+  targetKey: string
+  targetSymbol: string
+  /** implement or reference in the provider-neutral vocabulary. */
+  kind: string
+  /** The exact SCIP relationship flag represented by this edge. */
+  nativeKind: string
+  ambiguous: boolean
+}
+export interface NativeScipProjection {
+  sha256: string
+  pathAliases: Array<NativeScipPathAlias>
+  pathAliasSignature: string
+  documents: Array<NativeScipSourceDocument>
+  symbols: Array<NativeScipSymbol>
+  occurrences: Array<NativeScipOccurrence>
+  relationships: Array<NativeScipRelationship>
+}
 export interface NativeStagedSnapshot {
   sourceSignature: string
   files: number
@@ -40,13 +100,19 @@ export interface NativeSnapshotManifest {
   files: number
   bytes: number
   entries: Array<NativeSnapshotEntry>
+  pathAliases?: Array<NativeScipPathAlias>
+  pathAliasSignature?: string
 }
 /** Decode and summarize a SCIP protobuf without blocking the Node event loop. */
 export declare function inspectScip(path: string): Promise<NativeScipSummary>
+/** Decode bounded SCIP occurrences and relationships for neutral fact shaping. */
+export declare function projectScip(path: string, expectedSourceRoot: string, pathAliases: Array<NativeScipPathAlias>): Promise<NativeScipProjection>
 /** Copy the indexed source inventory into a private, immutable-for-the-run view. */
 export declare function stageSourceSnapshot(root: string, destination: string, expectedSignature: string): Promise<NativeStagedSnapshot>
 /** Hash every staged provider input before and after execution. */
 export declare function snapshotManifest(root: string): Promise<NativeSnapshotManifest>
+/** Recompute and validate a durable provider input manifest off the event loop. */
+export declare function verifySnapshotManifest(manifest: NativeSnapshotManifest): Promise<boolean>
 export interface NativeSymbol {
   kind: string
   name: string

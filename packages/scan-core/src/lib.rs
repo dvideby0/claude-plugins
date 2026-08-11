@@ -27,8 +27,10 @@ mod provider;
 mod walk;
 
 pub use provider::{
-    inspect_scip, snapshot_manifest, stage_source_snapshot, NativeScipDocument, NativeScipSummary,
-    NativeSnapshotEntry, NativeSnapshotManifest, NativeStagedSnapshot,
+    inspect_scip, project_scip, snapshot_manifest, stage_source_snapshot, verify_snapshot_manifest,
+    NativeScipDocument, NativeScipOccurrence, NativeScipPathAlias, NativeScipProjection,
+    NativeScipRange, NativeScipRelationship, NativeScipSourceDocument, NativeScipSummary,
+    NativeScipSymbol, NativeSnapshotEntry, NativeSnapshotManifest, NativeStagedSnapshot,
 };
 
 #[napi(object)]

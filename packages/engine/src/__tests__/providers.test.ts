@@ -38,6 +38,9 @@ describe("provider boundary", () => {
     expect(providers[0]).toMatchObject({ available: true, bundled: true, trust: "syntax" });
     expect(providers[1]).toMatchObject({ bundled: true, version: "0.4.0", trust: "unverified" });
     expect(providers[1]?.detail).toMatch(/snapshot|support is unavailable/);
+    if (loadNative()?.projectScip && loadNative()?.verifySnapshotManifest) {
+      expect(providers[1]?.capabilities).toContain("fact-projection");
+    }
     expect(providers[2]).toMatchObject({ bundled: false, trust: "unverified" });
   });
 
@@ -47,6 +50,7 @@ describe("provider boundary", () => {
     await mkdir(join(root, "2026-01-01"), { recursive: true });
     await mkdir(join(root, "2026-01-02"), { recursive: true });
     const fixture = {
+      workspaceId: "abcdef123456",
       runId: "2026-01-01",
       provider: "scip-typescript",
       status: "failed",
@@ -66,6 +70,7 @@ describe("provider boundary", () => {
     const root = join(state, "111122223333", "scip-typescript", "2026-01-01");
     await mkdir(root, { recursive: true });
     const fixture = {
+      workspaceId: "111122223333",
       runId: "2026-01-01",
       provider: "scip-typescript",
       status: "failed",
@@ -116,12 +121,14 @@ describe("provider boundary", () => {
       expect(evaluation.scip?.references).toBeGreaterThanOrEqual(oracle.scip.minimumReferences);
       expect(evaluation.indexPath).toContain(artifacts);
       expect(evaluation.input?.entries).toBeUndefined();
+      expect(evaluation.input?.pathAliasSignature).toMatch(/^[a-f0-9]{64}$/);
       const manifest = JSON.parse(
         await readFile(join(evaluation.artifactDir, "manifest.json"), "utf-8"),
       );
       expect(manifest.reason).toBe("immutable_staged_snapshot");
       expect(manifest.input.sourceSignature).toBe(indexedSourceSignature(db));
       expect(manifest.input.inputSignature).toMatch(/^[a-f0-9]{64}$/);
+      expect(manifest.input.pathAliasSignature).toBe(evaluation.input?.pathAliasSignature);
       expect(manifest.input.entries.some((entry: { path: string }) => entry.path === "src/main.ts"))
         .toBe(true);
       await expect(readdir(join(evaluation.artifactDir, "input"))).rejects.toMatchObject({

@@ -310,11 +310,13 @@ if (!nativeBinding) {
   throw new Error(`Failed to load native binding`)
 }
 
-const { inspectScip, stageSourceSnapshot, snapshotManifest, scanRepo, searchStructural, walkRepo } = nativeBinding
+const { inspectScip, projectScip, stageSourceSnapshot, snapshotManifest, verifySnapshotManifest, scanRepo, searchStructural, walkRepo } = nativeBinding
 
 module.exports.inspectScip = inspectScip
+module.exports.projectScip = projectScip
 module.exports.stageSourceSnapshot = stageSourceSnapshot
 module.exports.snapshotManifest = snapshotManifest
+module.exports.verifySnapshotManifest = verifySnapshotManifest
 module.exports.scanRepo = scanRepo
 module.exports.searchStructural = searchStructural
 module.exports.walkRepo = walkRepo

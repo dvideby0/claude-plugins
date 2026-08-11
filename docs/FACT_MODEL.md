@@ -92,7 +92,41 @@ relation update timestamp. They use a null source signature and remain
 `unverified` while their source anchor matches, or `stale` after it changes,
 rather than borrowing the source generation present when they are projected.
 
-The next provider slice projects official SCIP occurrences and relationships
-into the same envelope for measured comparison. Persistence waits for
-STORE-001's app-owned native SQLite boundary so a large provider index is not
-first written into the disposable whole-export `sql.js` store.
+## Official SCIP projection
+
+[`packages/scan-core/src/provider.rs`](../packages/scan-core/src/provider.rs)
+uses the official SCIP Rust bindings to decode a bounded artifact, preserve
+document position encodings and relationship flags, scope local symbol ids to
+their owning document, deduplicate overlapping project output, and mark
+conflicting targets at the same source range ambiguous. Conflicting same-path
+provider documents retain separate local-symbol scopes instead of silently
+merging reused local ids. Raw semantic records and unique projected facts are
+bounded before and during collection. Document paths are rebased only after the
+SCIP project root is proven to be the exact staged input root; portable parent
+escapes, documents absent from the durable input manifest, and internally
+inconsistent input manifests are rejected. Canonical document spelling is
+captured before the staged tree is removed, so case aliases remain tied to one
+collision-free manifest identity on case-insensitive filesystems. The ordered
+alias map has its own run-bound digest, which is verified before replay.
+File-URI conversion uses the maintained `url` crate, including Windows UNC
+roots; an untrusted UNC authority is rejected before filesystem access, and
+validated roots are canonicalized once per projection. The projection is also
+rejected if its artifact digest no longer matches the run manifest.
+
+[`packages/engine/src/facts/scip.ts`](../packages/engine/src/facts/scip.ts)
+shapes those native facts into schema version 1. Definitions become symbol
+nodes and containment edges; occurrence roles become import, reference, read,
+or write edges; and SCIP relationship flags retain their native kind alongside
+the coarse reference/implementation vocabulary. Facts are owned by the
+provider run and retain its source, input, and run generation. Current output
+remains `unverified` because the evaluation does not yet attest the compiler's
+complete dependency/read closure; a later repository generation makes it
+`stale`. Projection requires the current indexed generation and validates the
+durable run's workspace owner; caller-supplied DTO fields cannot relabel or
+promote a run. SCIP TypeScript 0.4 omits its document position encoding, so those
+anchors remain `unknown` rather than assuming UTF-16.
+
+This is a measured in-memory import boundary, not production persistence.
+STORE-001's app-owned native SQLite work should persist provider-run ownership
+without first copying a large index into the disposable whole-export `sql.js`
+store.
