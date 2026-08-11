@@ -47,6 +47,7 @@ export interface TypedReference {
   src: string;
   line: number;
   column: number;
+  endColumn: number;
   name: string;
   dst: string;
   dstLine: number;
@@ -404,6 +405,7 @@ export function analyseTypes(projectRoot: string): TypedAnalysis {
 
             if (dst && name && !isSelf) {
               const sourcePosition = utf8Position(sourceFile, node.getStart());
+              const sourceEndPosition = utf8Position(sourceFile, node.getEnd());
               const declaredNode = (declaration as ts.NamedDeclaration).name;
               const destinationPosition = utf8Position(
                 declFile,
@@ -413,6 +415,7 @@ export function analyseTypes(projectRoot: string): TypedAnalysis {
                 src,
                 line: sourcePosition.line,
                 column: sourcePosition.column,
+                endColumn: sourceEndPosition.column,
                 name,
                 dst,
                 dstLine: destinationPosition.line,
@@ -550,17 +553,18 @@ export function applyTypedAnalysis(db: Db, analysis: TypedAnalysis): TypedResult
         const name = defaultSlots.has(`${reference.dst}\0${reference.name}`)
           ? "default"
           : reference.name;
-        const key = `${reference.src}|${reference.line}|${reference.column}|${name}|${reference.dst}|${reference.dstLine}|${reference.dstColumn}`;
+        const key = `${reference.src}|${reference.line}|${reference.column}|${reference.endColumn}|${name}|${reference.dst}|${reference.dstLine}|${reference.dstColumn}`;
         if (seen.has(key)) continue;
         seen.add(key);
         db.run(
-          `INSERT OR REPLACE INTO refs(src_path, src_line, src_column, name, specifier,
-                                      dst_path, dst_line, dst_column)
-           VALUES(?, ?, ?, ?, ?, ?, ?, ?)`,
+          `INSERT OR REPLACE INTO refs(src_path, src_line, src_column, src_end_column, name,
+                                      specifier, dst_path, dst_line, dst_column)
+           VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           [
             reference.src,
             reference.line,
             reference.column,
+            reference.endColumn,
             name,
             typedSpecifier(reference.dst, reference.dstLine, reference.dstColumn),
             reference.dst,

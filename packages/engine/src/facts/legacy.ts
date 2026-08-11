@@ -230,6 +230,7 @@ export function projectLegacyFacts(db: Db, options: LegacyFactOptions): FactBatc
     src_path: string;
     src_line: number;
     src_column: number;
+    src_end_column: number | null;
     src_symbol: string | null;
     src_symbol_id: string | null;
     name: string;
@@ -240,7 +241,7 @@ export function projectLegacyFacts(db: Db, options: LegacyFactOptions): FactBatc
     dst_symbol_id: string | null;
     ref_generation: string | null;
   }>(
-    `SELECT src_path, src_line, src_column, src_symbol, src_symbol_id, name, specifier,
+    `SELECT src_path, src_line, src_column, src_end_column, src_symbol, src_symbol_id, name, specifier,
             dst_path, dst_line, dst_column, dst_symbol_id, f.ref_generation
        FROM refs r
        LEFT JOIN files f ON f.path = r.src_path AND f.present = 1
@@ -253,18 +254,19 @@ export function projectLegacyFacts(db: Db, options: LegacyFactOptions): FactBatc
       reference.ref_generation,
       currentTypedGeneration,
     );
+    const sourceRange =
+      reference.src_end_column !== null
+        ? {
+            startLine: zeroBased(reference.src_line),
+            startColumn: reference.src_column,
+            endLine: zeroBased(reference.src_line),
+            endColumn: reference.src_end_column,
+          }
+        : null;
     const anchor: FactAnchor = {
       path: reference.src_path,
       ...(reference.src_symbol ? { symbol: reference.src_symbol } : {}),
-      positionEncoding: typed ? "utf-16" : "utf-8",
-      range: {
-        startLine: zeroBased(reference.src_line),
-        startColumn: reference.src_column,
-        endLine: zeroBased(reference.src_line),
-        endColumn:
-          reference.src_column +
-          (typed ? reference.name.length : Buffer.byteLength(reference.name, "utf-8")),
-      },
+      ...(sourceRange ? { positionEncoding: "utf-8" as const, range: sourceRange } : {}),
     };
     const typedDeclarationId =
       typed &&
@@ -305,12 +307,12 @@ export function projectLegacyFacts(db: Db, options: LegacyFactOptions): FactBatc
         const declarationAnchor: FactAnchor = {
           path: reference.dst_path,
           symbol: reference.name,
-          positionEncoding: "utf-16",
+          positionEncoding: "utf-8",
           range: {
             startLine: zeroBased(reference.dst_line!),
             startColumn: reference.dst_column!,
             endLine: zeroBased(reference.dst_line!),
-            endColumn: reference.dst_column! + reference.name.length,
+            endColumn: reference.dst_column! + Buffer.byteLength(reference.name, "utf-8"),
           },
         };
         nodes.push({

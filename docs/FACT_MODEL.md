@@ -75,6 +75,9 @@ workspace generation for each source file whose references it replaced;
 projected compiler facts are `current` only while that generation still
 matches, `stale` after a source or project-coverage change, and `unverified`
 for older stores that have no attestation.
+Compiler reference ranges use the UTF-8 byte coordinates stored by the typed
+prototype. Older and parser-derived reference rows that did not preserve the
+local token end remain navigable by file/symbol but omit an invented range.
 
 The next provider slice projects official SCIP occurrences and relationships
 into the same envelope for measured comparison. Persistence waits for

@@ -33,13 +33,14 @@ describe("provider-neutral fact contract", () => {
     expect(run && save).toBeTruthy();
     db.run(
       `INSERT OR REPLACE INTO refs(
-         src_path, src_line, src_column, name, specifier, dst_path,
+         src_path, src_line, src_column, src_end_column, name, specifier, dst_path,
          src_symbol, src_symbol_id, dst_line, dst_column, dst_symbol_id
-       ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         "src/main.ts",
         2,
         31,
+        35,
         "save",
         typedSpecifier("src/store.ts", 1, 0),
         "src/store.ts",
@@ -81,7 +82,7 @@ describe("provider-neutral fact contract", () => {
     ).toMatchObject({
       certainty: "exact",
       freshness: "unverified",
-      evidence: [{ anchor: { path: "src/main.ts", positionEncoding: "utf-16" } }],
+      evidence: [{ anchor: { path: "src/main.ts", positionEncoding: "utf-8" } }],
     });
     expect(
       facts.edges.find(
@@ -155,6 +156,34 @@ describe("provider-neutral fact contract", () => {
       path: "src/store.ts",
       symbol: "actualName",
     });
+  });
+
+  it("preserves UTF-8 evidence ranges for aliased compiler references", async () => {
+    const prefix = "/*😀*/ export function run() { return x(); }";
+    root = await makeProject({
+      "tsconfig.json": JSON.stringify({ files: ["src/main.ts", "src/store.ts"] }),
+      "src/main.ts": `import { veryLongName as x } from "./store";\n${prefix}\n`,
+      "src/store.ts": "export function veryLongName() { return true; }\n",
+    });
+    await scan(root, { full: true, kind: "fact-contract-alias-range-test" });
+    const db = await getDb(root);
+    expect(resolveTypes(db, root).resolved).toBe(1);
+
+    const reference = projectLegacyFacts(db, { workspaceId: "workspace-1" }).edges.find(
+      (edge) => edge.kind === "reference" && edge.producer.kind === "compiler",
+    );
+    const startColumn = Buffer.byteLength(prefix.slice(0, prefix.indexOf("x()")), "utf-8");
+    expect(reference?.evidence[0]?.anchor).toMatchObject({
+      path: "src/main.ts",
+      positionEncoding: "utf-8",
+      range: {
+        startLine: 1,
+        startColumn,
+        endLine: 1,
+        endColumn: startColumn + 1,
+      },
+    });
+    expect(reference?.target.symbol).toBe("veryLongName");
   });
 
   it("marks compiler facts stale when the indexed workspace changes after resolution", async () => {

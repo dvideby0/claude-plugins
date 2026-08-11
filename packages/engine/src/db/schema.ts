@@ -1,4 +1,4 @@
-export const SCHEMA_VERSION = 14;
+export const SCHEMA_VERSION = 15;
 
 /**
  * The audit store. Files, symbols and edges are the deterministic picture of
@@ -75,6 +75,7 @@ CREATE TABLE IF NOT EXISTS refs (
   src_path  TEXT NOT NULL,
   src_line  INTEGER NOT NULL,
   src_column INTEGER NOT NULL DEFAULT 0,
+  src_end_column INTEGER,
   name      TEXT NOT NULL,
   specifier TEXT NOT NULL,
   dst_path  TEXT,

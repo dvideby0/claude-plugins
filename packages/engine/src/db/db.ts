@@ -55,6 +55,7 @@ export class Db {
   private static readonly ADDED_COLUMNS: Array<{ table: string; column: string; type: string }> = [
     { table: "refs", column: "src_symbol", type: "TEXT" },
     { table: "refs", column: "src_column", type: "INTEGER NOT NULL DEFAULT 0" },
+    { table: "refs", column: "src_end_column", type: "INTEGER" },
     { table: "refs", column: "src_symbol_id", type: "TEXT" },
     { table: "refs", column: "dst_line", type: "INTEGER" },
     { table: "refs", column: "dst_column", type: "INTEGER" },
@@ -105,6 +106,7 @@ export class Db {
         src_path TEXT NOT NULL,
         src_line INTEGER NOT NULL,
         src_column INTEGER NOT NULL DEFAULT 0,
+        src_end_column INTEGER,
         name TEXT NOT NULL,
         specifier TEXT NOT NULL,
         dst_path TEXT,
@@ -116,10 +118,10 @@ export class Db {
         PRIMARY KEY (src_path, src_line, src_column, name, specifier)
       )`);
       this.run(`INSERT OR REPLACE INTO refs_v12(
-          src_path, src_line, src_column, name, specifier, dst_path,
+          src_path, src_line, src_column, src_end_column, name, specifier, dst_path,
           src_symbol, src_symbol_id, dst_line, dst_column, dst_symbol_id
         )
-        SELECT src_path, src_line, src_column, name, specifier, dst_path,
+        SELECT src_path, src_line, src_column, src_end_column, name, specifier, dst_path,
                src_symbol, src_symbol_id, dst_line, dst_column, dst_symbol_id
           FROM refs`);
       this.run("DROP TABLE refs");
