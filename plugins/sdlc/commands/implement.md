@@ -9,22 +9,27 @@ Work is split across subagents so that no single context accumulates the whole
 job. The thing that makes that work here is that a subagent does **not** have
 to read the codebase to understand its task — the engine briefs it.
 
-## 1. Recall, then scope
+## 1. Get task context, then scope
 
-`recall` the key nouns. If a previous session already decided something here,
-follow it or explicitly supersede it — do not silently re-decide.
+Call `brief` with the full task, `intent: implement`, and any targets already
+known. It ranks lexical matches, graph neighbours, flows, tests, findings,
+memories, and bounded source excerpts inside the requested byte budget. If no
+target is known, use the task-first form; do not grep the repository just to
+manufacture one. Follow its uncertainty and recommended reads with `context`,
+`references`, or `impact` only when needed.
 
-`context` or `audit_query kind:symbol` to find where the work lands. If the
-request is ambiguous about *what* to build, stop and ask now. Ambiguity
-discovered in task three costs all of tasks one and two.
+If a previous session already recorded a decision, follow it or explicitly
+supersede it — do not silently re-decide. If the result says a target is
+ambiguous, refine it rather than guessing. Ambiguity discovered in task three
+costs all of tasks one and two.
 
 ## 2. Break it into tasks
 
 Each task must be:
 
 - **One concern.** If the title needs "and", split it.
-- **Anchored.** Name the exact files. If you cannot, you do not understand it
-  yet — go back to step 1.
+- **Anchored.** Name the exact files surfaced by the task context. If none are
+  credible, refine the task or ask rather than reading the repository at large.
 - **Verifiable.** State the command that proves it worked, or the behaviour to
   observe. "It compiles" is not verification.
 - **Ordered.** Note which tasks depend on which. Independent ones can run
@@ -34,10 +39,11 @@ Show the list and get agreement before dispatching anything.
 
 ## 3. Brief, then dispatch
 
-For each task, call `brief` with the target file or symbol and the task
-description. It returns constraints recorded against that code, what the file
-exposes and how widely each export is used, what breaks if it changes, which
-tests cover it, and what is already known to be wrong there.
+For each task, call `brief` with its task description, `intent: implement`, the
+known target files or symbols, and a byte budget appropriate to the task. It
+returns ranked evidence, exact source/fact references, freshness, omissions,
+uncertainty, and focused follow-up reads. Do not hide an omitted or stale
+section from the subagent.
 
 Dispatch a subagent with `Task`, and give it:
 
@@ -48,9 +54,9 @@ Dispatch a subagent with `Task`, and give it:
    read the repository at large.*
 
 Why this way: a subagent that greps its way to understanding spends most of its
-window before it edits anything, and still misses the constraints, because
-constraints are not in the files. Briefing costs about two thousand characters
-and carries what the files cannot say.
+window before it edits anything, and still misses constraints because they are
+not in the files. The briefing has a measured byte ceiling and says what it
+could not fit instead of silently overflowing the context.
 
 Run independent tasks in parallel — one message, several `Task` calls.
 

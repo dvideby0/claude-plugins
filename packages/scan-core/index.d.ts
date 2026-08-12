@@ -258,6 +258,13 @@ export declare class NativeDatabase {
    */
   searchKnowledge(query: string, kindsJson: string, limit: number, memoryKind?: string | undefined | null): string
   /**
+   * Rank task-relevant facts and one-hop graph evidence behind the existing
+   * intent-oriented briefing boundary. Source reading and final byte packing
+   * remain in the thin daemon adapter so repository containment has one
+   * implementation, while retrieval policy and ordering live with SQLite.
+   */
+  taskContext(task: string, targetsJson: string, intent?: string | undefined | null, limit?: number | undefined | null): string
+  /**
    * Query the bounded, evidence-backed execution graph assembled by native
    * framework adapters. Path enumeration remains inside the native storage
    * boundary and terminates on cycles and configured limits.

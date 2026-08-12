@@ -65,7 +65,7 @@ authoritative relational rows.
 | Execution and data flow | Early vertical slice | One measured HTTP adapter produces real entry-to-response paths; the general view remains a heuristic call graph and data flow is not modeled. |
 | Human-readable system map | Promising | Components and ordered flows exist, but they are authored overlays rather than evidence-derived semantic objects. |
 | Incremental recomputation | Basic | Content hashes avoid some database rewrites, but invalidation is file-level and native scans still revisit the repository. |
-| Search and context retrieval | Early | Targeted briefs and a shared FTS5 cross-search exist; graph/task ranking and retrieval evaluation remain open. |
+| Search and context retrieval | Early experimental vertical slice | The primary brief now has Rust-owned lexical/one-hop task ranking, bounded source evidence, and exact response budgets; change ranking and comparative retrieval evaluation remain open. |
 | Memories and notes | Basic | Anchored durable notes exist; search, evidence, validation, editing, and fine-grained staleness need work. |
 | Desktop experience | Functional shell | Useful maps and operational views exist, but it is not yet a complete code-intelligence workspace. |
 | Claude/Codex installation | Partial | MCP connection exists; complete plugin/skill lifecycle and supported Codex configuration are missing. |
@@ -227,7 +227,16 @@ The MCP server in [`packages/engine/src/mcp/server.ts`](../packages/engine/src/m
 
 The breadth proves the engine has useful primitives. It also creates overlap and discovery cost for an agent. A smaller intent-oriented query surface could compose these primitives internally, return evidence and uncertainty consistently, and enforce an explicit context budget.
 
-The `brief` implementation is a good beginning: it assembles nearby symbols, impact, tests, memories, findings, and recommended files. Relevance is still mostly based on explicit targets and keyword matches rather than evaluated lexical/graph/semantic ranking. The first EVAL-001 command deliberately reports retrieval and entry-to-effect path quality as unmeasured rather than treating the new symbol/reference fixture as evidence for either claim.
+The existing `brief` operation is now the experimental primary task-context
+query rather than a single-target TypeScript composer. Its Rust planner combines
+FTS5 with bounded one-hop graph, execution/authored flow, test, finding, memory,
+relation, and exported-symbol evidence; the Node boundary reads only selected
+contained source ranges and enforces an exact byte ceiling on the complete MCP
+response. It exposes ranking reasons, provenance, freshness, omissions,
+uncertainty, and recommended reads without adding another tool to the 33-tool
+catalog. The path is not yet proven: change relevance and a checked-in retrieval
+corpus against an Aider-style symbol-map baseline remain open, so the response
+labels itself experimental and no redundant public tools have been retired.
 
 ### Desktop application
 

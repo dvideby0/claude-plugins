@@ -26,6 +26,7 @@ mod database;
 mod http_flow;
 mod parse;
 mod provider;
+mod task_context;
 mod walk;
 
 pub use database::database_schema_version;

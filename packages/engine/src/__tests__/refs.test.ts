@@ -3,8 +3,8 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { getDb } from "../db/db.js";
 import { impactOf, referencesTo } from "../graph/refs.js";
-import { buildBrief } from "../graph/brief.js";
 import { neighbourhood } from "../memory/context.js";
+import { buildTaskContext } from "../plan/task-context.js";
 import { EXTRACTION_VERSION, scan } from "../scan/scan.js";
 import { resolveTypes } from "../graph/typed.js";
 import { cleanup, makeProject } from "./helpers.js";
@@ -333,9 +333,14 @@ describe("reference coverage", () => {
 
     const impact = impactOf(db, "src/db.ts");
     expect(impact.referenceCoverage).toBe("none");
-    const brief = buildBrief(db, "src/db.ts").text;
-    expect(brief).toContain("precise references are unknown");
-    expect(brief).toContain("Test coverage is unknown");
+    const brief = (
+      await buildTaskContext(db, root, {
+        targets: ["src/db.ts"],
+        intent: "review",
+      })
+    ).text;
+    expect(brief).toContain("reference analysis is unavailable");
+    expect(brief).toContain("means unknown, not unused");
     expect(brief).not.toContain("Nothing references it");
     expect(brief).not.toContain("No test covers it");
   });
@@ -387,9 +392,14 @@ describe("reference coverage", () => {
     const db = await getDb(root);
     resolveTypes(db, root);
 
-    const brief = buildBrief(db, "src/store.ts").text;
-    expect(brief).toContain("`unused` (method");
-    expect(brief).toContain("unused elsewhere");
-    expect(brief).not.toContain("uses not tracked");
+    const brief = await buildTaskContext(db, root, {
+      task: "change Store unused method",
+      targets: ["src/store.ts"],
+      intent: "refactor",
+    });
+    expect(brief.evidence.some((item) => item.title.endsWith("#unused"))).toBe(true);
+    expect(brief.uncertainties).not.toContain(
+      expect.stringContaining("method calls and type positions can be incomplete"),
+    );
   });
 });

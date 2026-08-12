@@ -337,6 +337,24 @@ Acceptance criteria:
 - It beats an Aider-style symbol-map baseline on agreed EVAL-001 scenarios or remains an experimental internal path.
 - The public MCP catalog is reviewed for redundant tools after this query is proven.
 
+Progress (2026-08-12, experimental task-context slice): the existing `brief`
+operation now accepts a task, optional targets, intent, and an exact UTF-8 byte
+budget; no 34th MCP tool was added. A Rust planner beside the native SQLite
+owner resolves targets without guessing, combines the shared FTS5 index with
+bounded one-hop reference/import, execution-flow, authored-flow, finding,
+memory, relation, exported-surface, and test evidence, and emits deterministic
+scores with reasons and provenance. The thin TypeScript boundary reads only
+planner-selected source ranges through the existing contained reader, compares
+them with their producing signatures, and packs the complete pretty-printed
+response to the requested byte ceiling. The former TypeScript-only brief
+ranking implementation was removed, while its single-target call remains
+compatible. Focused tests cover task-only and legacy MCP calls, the unchanged
+33-tool catalog, ambiguity, stale evidence, source/fact navigation, and exact
+budget accounting. This path reports itself as experimental: change relevance
+and a checked-in retrieval corpus against the Aider-style symbol-map baseline
+remain open before QUERY-001 can be called proven or redundant public tools can
+be retired.
+
 ### SEARCH-001: Lexical, structural, and graph-ranked retrieval
 
 Build a strong non-vector baseline using FTS5, identifier-aware scoring, path and language filters, current structural search, and graph centrality/proximity.
