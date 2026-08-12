@@ -149,7 +149,7 @@ async function main(): Promise<void> {
             entrypoints: fixture.oracle.entryToEffect.entrypoints.length,
             relations: fixture.oracle.entryToEffect.relations.length,
             paths: fixture.oracle.entryToEffect.paths.length,
-            scoring: "unmeasured" as const,
+            scoring: providers.some((provider) => provider.flow) ? ("measured" as const) : ("unmeasured" as const),
           }
         : null,
       passed: providers.every((provider) => provider.passed),
@@ -179,6 +179,12 @@ async function main(): Promise<void> {
     failures.push("At least one official scip test validation did not pass.");
   }
 
+  const measuredEntryToEffect = scenarios.some(
+    (scenario) => scenario.entryToEffectOracle?.scoring === "measured",
+  );
+  const unmeasuredEntryToEffect = scenarios.some(
+    (scenario) => scenario.entryToEffectOracle?.scoring === "unmeasured",
+  );
   const report = {
     schemaVersion: 1,
     generatedAt: new Date().toISOString(),
@@ -198,9 +204,14 @@ async function main(): Promise<void> {
         "cold, warm, and one-file-change syntax/compiler timing where supported",
         "workspace-store and SCIP artifact size",
         "isolated worker peak RSS",
+        ...(measuredEntryToEffect
+          ? ["entry-to-effect precision and recall for enabled product adapters"]
+          : []),
       ],
       explicitlyUnmeasured: [
-        "entry-to-effect path precision and recall",
+        ...(unmeasuredEntryToEffect
+          ? ["entry-to-effect path precision and recall where no product adapter is enabled"]
+          : []),
         "retrieval recall, evidence coverage, token packing, and irrelevant-context rate",
         "external SCIP child peak RSS",
       ],

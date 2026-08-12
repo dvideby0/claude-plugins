@@ -22,6 +22,13 @@ import {
   type FactScores,
   type ScipOracle,
 } from "./model.js";
+import {
+  executionFlowCandidate,
+  flowAcceptanceFailures,
+  scoreFlowGraph,
+  type CandidateFlowGraph,
+  type FlowScores,
+} from "./flow.js";
 
 const nodeRequire = createRequire(import.meta.url);
 const MAX_SCIP_INDEX_BYTES = 128 * 1024 * 1024;
@@ -87,6 +94,11 @@ export interface ProviderEvaluationReport {
   };
   officialScipTest: OfficialScipTest | null;
   scipCounts: ScipCounts | null;
+  flow: {
+    scores: FlowScores;
+    candidate: { entrypoints: number; relations: number; paths: number };
+    diagnostics: string[];
+  } | null;
   sourceEngine: ScanResult["engine"];
   unmeasured: string[];
 }
@@ -507,6 +519,40 @@ export async function runEvaluationWorker(
 
     const scores = scoreFactBatch(batch, oracle);
     const failures = [...thresholdFailures(provider, scores, oracle), ...providerFailures];
+    let flow: ProviderEvaluationReport["flow"] = null;
+    if (oracle.entryToEffect) {
+      const db = await getDb(project);
+      dbOpened = true;
+      const executionIndex = db.executionFlow();
+      if (executionIndex.entries.length > 0) {
+        const candidates = executionIndex.entries.map((entry) =>
+          executionFlowCandidate(db.executionFlow(entry.id)),
+        );
+        const candidate: CandidateFlowGraph = {
+          entrypoints: candidates.flatMap((item) => item.entrypoints),
+          relations: candidates.flatMap((item) => item.relations),
+          paths: candidates.flatMap((item) => item.paths),
+          diagnostics: candidates.flatMap((item) => item.diagnostics),
+        };
+        const flowScores = scoreFlowGraph(candidate, oracle.entryToEffect);
+        failures.push(
+          ...flowAcceptanceFailures(
+            flowScores,
+            oracle.entryToEffect.thresholds,
+            candidate.diagnostics,
+          ),
+        );
+        flow = {
+          scores: flowScores,
+          candidate: {
+            entrypoints: candidate.entrypoints.length,
+            relations: candidate.relations.length,
+            paths: candidate.paths.length,
+          },
+          diagnostics: candidate.diagnostics,
+        };
+      }
+    }
     if (official?.status === "failed") {
       const detail = official.missingFiles.length
         ? `no assertions matched ${official.missingFiles.join(", ")}`
@@ -539,16 +585,20 @@ export async function runEvaluationWorker(
       },
       officialScipTest: official,
       scipCounts,
+      flow,
       sourceEngine,
       unmeasured:
         provider.startsWith("scip-")
           ? [
               "warm and one-file-change provider indexing",
               "external SCIP child peak RSS",
-              "entry-to-effect path precision and recall",
+              ...(flow ? [] : ["entry-to-effect path precision and recall"]),
               "retrieval quality",
             ]
-          : ["entry-to-effect path precision and recall", "retrieval quality"],
+          : [
+              ...(flow ? [] : ["entry-to-effect path precision and recall"]),
+              "retrieval quality",
+            ],
     };
   } finally {
     // scan() can cache a connection before the branch reaches its explicit

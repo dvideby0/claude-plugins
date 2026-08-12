@@ -1,4 +1,5 @@
 import type { CertaintyClass, FactEdgeKind, FactProducer } from "../facts/model.js";
+import type { ExecutionFlowView, ExecutionNodeView } from "../db/db.js";
 import {
   metricThresholdFailures,
   scoreMetric,
@@ -80,6 +81,138 @@ export interface FlowScores {
   metadataMismatches: FlowMetadataMismatch[];
   pathMetadataMismatches: FlowPathMetadataMismatch[];
   explicitlyUnmeasured: string[];
+}
+
+function executionNodeRelationKind(node: ExecutionNodeView): FactEdgeKind | null {
+  switch (node.kind) {
+    case "call":
+    case "await":
+    case "branch":
+    case "throw":
+    case "return":
+    case "terminal-effect":
+      return node.kind;
+    default:
+      return null;
+  }
+}
+
+/**
+ * Project the persisted execution-path view into the same provider-neutral
+ * graph used by EVAL-001. Sequence edges remain presentation/CFG detail;
+ * scored relations describe the calls, control transfers, and effects they
+ * connect. This keeps the evaluation independent of native node ordinals.
+ */
+export function executionFlowCandidate(view: ExecutionFlowView): CandidateFlowGraph {
+  const selected = view.selected;
+  if (!selected) {
+    return {
+      entrypoints: [],
+      relations: [],
+      paths: [],
+      diagnostics: view.note ? [view.note] : ["No execution entry was selected."],
+    };
+  }
+  const entry = selected.entry;
+  const producerKind = ["parsed", "compiler", "framework", "runtime", "human", "llm"].includes(
+    entry.producer.kind,
+  )
+    ? (entry.producer.kind as FactProducer["kind"])
+    : "framework";
+  const producer: FactProducer = {
+    id: entry.producer.id,
+    version: entry.producer.version,
+    kind: producerKind,
+  };
+  const entrypointId = `http:${entry.method}:${entry.route}`;
+  const registrationId = `${entrypointId}:registration`;
+  const registration: CandidateFlowRelation = {
+    id: registrationId,
+    kind: "register",
+    source: { external: entrypointId },
+    target: { path: entry.path, ...(entry.symbol ? { symbol: entry.symbol } : {}) },
+    certainty: entry.certainty as CertaintyClass,
+    evidence: {
+      path: entry.evidence.path,
+      startLine: Math.max(0, entry.evidence.startLine - 1),
+      detail: `${entry.label} route guard`,
+    },
+    producer,
+  };
+  const nodeRelations = new Map<string, CandidateFlowRelation>();
+  for (const node of selected.nodes) {
+    const kind = executionNodeRelationKind(node);
+    if (!kind) continue;
+    const target: FlowEntity = node.target.external
+      ? { external: node.target.external }
+      : node.target.path
+        ? {
+            path: node.target.path,
+            ...(node.target.symbol ? { symbol: node.target.symbol } : {}),
+          }
+        : node.kind === "branch"
+          ? { external: `condition:${node.label}` }
+          : node.target.symbol
+            ? { external: `unresolved-call:${node.target.symbol}` }
+            : { external: `${node.kind}:${node.label}` };
+    nodeRelations.set(node.id, {
+      id: `${entrypointId}:node:${node.ordinal}`,
+      kind,
+      source: { path: node.path, ...(node.symbol ? { symbol: node.symbol } : {}) },
+      target,
+      certainty: node.certainty as CertaintyClass,
+      evidence: {
+        path: node.evidence.path,
+        startLine: Math.max(0, node.evidence.startLine - 1),
+        detail: node.detail,
+      },
+      producer,
+    });
+  }
+  const relations = [registration, ...nodeRelations.values()];
+  const paths: CandidateFlowPath[] = selected.paths.flatMap((path, index) => {
+    const relationIds = [
+      registrationId,
+      ...path.nodeIds.flatMap((nodeId) => {
+        const relation = nodeRelations.get(nodeId);
+        return relation ? [relation.id] : [];
+      }),
+    ];
+    const terminalRelation = path.terminalNodeId
+      ? nodeRelations.get(path.terminalNodeId)
+      : undefined;
+    if (!terminalRelation || terminalRelation.kind !== "terminal-effect") return [];
+    return [
+      {
+        id: `${entrypointId}:path:${index}`,
+        entrypoint: entrypointId,
+        relations: relationIds,
+        terminalRelation: terminalRelation.id,
+        conditions: path.conditions,
+        certainty: path.certainty as CertaintyClass,
+        producer,
+      },
+    ];
+  });
+  return {
+    entrypoints: [
+      {
+        id: entrypointId,
+        registration: registration.evidence,
+        target: registration.target,
+        registrationRelation: registrationId,
+        producer,
+      },
+    ],
+    relations,
+    paths,
+    diagnostics: [
+      ...selected.diagnostics,
+      ...selected.nodes
+        .filter((node) => node.kind === "gap")
+        .map((node) => `${node.evidence.path}:${node.evidence.startLine}: ${node.label}`),
+    ],
+  };
 }
 
 function relationEvidenceMatches(mismatch: FlowMetadataMismatch): boolean {
@@ -211,30 +344,37 @@ export function scoreFlowGraph(
     ];
   });
 
-  const expectedByRelation = new Map(
-    oracle.relations.map((relation) => [flowRelationKey(relation), relation]),
-  );
+  const expectedByRelation = new Map<string, ExpectedFlowRelation[]>();
+  for (const relation of oracle.relations) {
+    const key = flowRelationKey(relation);
+    expectedByRelation.set(key, [...(expectedByRelation.get(key) ?? []), relation]);
+  }
   const metadataMismatches = candidate.relations.flatMap((actual) => {
-    const expected = expectedByRelation.get(flowRelationKey(actual));
+    const expectedRelations = expectedByRelation.get(flowRelationKey(actual));
+    const expected = expectedRelations?.find(
+      (candidate) =>
+        candidate.certainty === actual.certainty &&
+        candidate.evidence.path === actual.evidence.path &&
+        candidate.evidence.startLine === actual.evidence.startLine,
+    );
     if (
-      !expected ||
-      (expected.certainty === actual.certainty &&
-        expected.evidence.path === actual.evidence.path &&
-        expected.evidence.startLine === actual.evidence.startLine)
+      !expectedRelations ||
+      expected
     ) {
       return [];
     }
+    const representative = expectedRelations[0]!;
     return [
       {
         relation: {
-          id: expected.id,
-          kind: expected.kind,
-          source: expected.source,
-          target: expected.target,
+          id: representative.id,
+          kind: representative.kind,
+          source: representative.source,
+          target: representative.target,
         },
-        expectedCertainty: expected.certainty,
+        expectedCertainty: representative.certainty,
         actualCertainty: actual.certainty,
-        expectedEvidence: expected.evidence,
+        expectedEvidence: representative.evidence,
         actualEvidence: actual.evidence,
       },
     ];
