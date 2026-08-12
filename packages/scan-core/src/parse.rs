@@ -58,10 +58,17 @@ pub struct Reference {
     pub column: u32,
 }
 
+/// One module dependency and the exact source statement that produced it.
+pub struct Import {
+    pub specifier: String,
+    pub start_line: u32,
+    pub end_line: u32,
+}
+
 #[derive(Default)]
 pub struct Parsed {
     pub symbols: Vec<Symbol>,
-    pub imports: Vec<String>,
+    pub imports: Vec<Import>,
     pub refs: Vec<Reference>,
     pub execution_entries: Vec<crate::http_flow::ExecutionEntry>,
 }
@@ -1385,13 +1392,17 @@ pub fn parse(engines: &mut Engines, path: &str, lang: &str, source: &str) -> Par
     };
     let names = query.capture_names();
     let mut symbols = Vec::new();
-    let mut imports: Vec<String> = Vec::new();
+    let mut imports: Vec<Import> = Vec::new();
     let mut seen_imports = std::collections::HashSet::new();
 
-    let mut push_import = |value: &str| {
+    let mut push_import = |value: &str, start_line: u32, end_line: u32| {
         let trimmed = value.trim();
         if !trimmed.is_empty() && seen_imports.insert(trimmed.to_string()) {
-            imports.push(trimmed.to_string());
+            imports.push(Import {
+                specifier: trimmed.to_string(),
+                start_line,
+                end_line,
+            });
         }
     };
 
@@ -1409,9 +1420,11 @@ pub fn parse(engines: &mut Engines, path: &str, lang: &str, source: &str) -> Par
         }
 
         if label == "import" || label == "export" {
+            let start_line = node.start_position().row as u32 + 1;
+            let end_line = node.end_position().row as u32 + 1;
             if let Some(source_node) = node.child_by_field_name("source") {
                 if let Ok(text) = source_node.utf8_text(bytes) {
-                    push_import(strip_quotes(text));
+                    push_import(strip_quotes(text), start_line, end_line);
                 }
             }
             // Python `import a, b as c` — every comma-separated module, not
@@ -1422,13 +1435,13 @@ pub fn parse(engines: &mut Engines, path: &str, lang: &str, source: &str) -> Par
                     match child.kind() {
                         "dotted_name" => {
                             if let Ok(text) = child.utf8_text(bytes) {
-                                push_import(text);
+                                push_import(text, start_line, end_line);
                             }
                         }
                         "aliased_import" => {
                             if let Some(target) = child.child_by_field_name("name") {
                                 if let Ok(text) = target.utf8_text(bytes) {
-                                    push_import(text);
+                                    push_import(text, start_line, end_line);
                                 }
                             }
                         }
@@ -1442,7 +1455,11 @@ pub fn parse(engines: &mut Engines, path: &str, lang: &str, source: &str) -> Par
         if label == "import_from" {
             if let Some(module) = node.child_by_field_name("module_name") {
                 if let Ok(text) = module.utf8_text(bytes) {
-                    push_import(text);
+                    push_import(
+                        text,
+                        node.start_position().row as u32 + 1,
+                        node.end_position().row as u32 + 1,
+                    );
                 }
             }
             continue;
@@ -1582,6 +1599,24 @@ mod tests {
             .refs
             .iter()
             .any(|reference| reference.name == "default"));
+    }
+
+    #[test]
+    fn records_the_statement_range_for_each_import_edge() {
+        let mut engines = Engines::new();
+        let parsed = parse(
+            &mut engines,
+            "imports.ts",
+            "typescript",
+            "// setup\nimport {\n  value,\n} from './store.js';\nvalue();\n",
+        );
+        let imported = parsed
+            .imports
+            .iter()
+            .find(|imported| imported.specifier == "./store.js")
+            .expect("import edge");
+        assert_eq!(imported.start_line, 2);
+        assert_eq!(imported.end_line, 4);
     }
 
     #[test]

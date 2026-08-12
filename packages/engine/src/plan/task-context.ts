@@ -292,9 +292,19 @@ async function materialize(
   const endLine = Math.min(anchorEnd + 6, startLine + 47);
   try {
     const slice = await readWorkspaceSourceSlice(projectRoot, candidate.path, startLine, endLine);
-    const freshness = candidate.indexedSha
+    const sourceRevisionFreshness = candidate.indexedSha
       ? sourceFreshness(slice.contentSha, candidate.indexedSha, candidate.evidenceSha)
       : "unverified";
+    // The native planner can know that a provider generation is stale even
+    // when the caller file itself has not changed. Preserve that stronger
+    // warning while still checking the live working-tree revision here.
+    const plannedFreshness = candidate.provenance.freshness;
+    const freshness: SourceFreshness =
+      plannedFreshness === "stale" || sourceRevisionFreshness === "stale"
+        ? "stale"
+        : plannedFreshness === "unverified" || sourceRevisionFreshness === "unverified"
+          ? "unverified"
+          : "current";
     return {
       candidate,
       source: {

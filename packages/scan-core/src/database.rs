@@ -17,13 +17,14 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-const DATABASE_SCHEMA_VERSION: u32 = 21;
+const DATABASE_SCHEMA_VERSION: u32 = 22;
 const FIRST_VERSIONED_SCHEMA: u32 = 17;
 const SCHEMA_V17_SQL: &str = include_str!("database_schema_v17.sql");
 const SCHEMA_V18_SQL: &str = include_str!("database_schema_v18.sql");
 const SCHEMA_V19_SQL: &str = include_str!("database_schema_v19.sql");
 const SCHEMA_V20_SQL: &str = include_str!("database_schema_v20.sql");
 const SCHEMA_V21_SQL: &str = include_str!("database_schema_v21.sql");
+const SCHEMA_V22_SQL: &str = include_str!("database_schema_v22.sql");
 const SEARCH_KINDS: &[&str] = &[
     "file",
     "symbol",
@@ -499,6 +500,9 @@ fn apply_migration(connection: &Connection, version: u32) -> Result<()> {
         21 => connection
             .execute_batch(SCHEMA_V21_SQL)
             .map_err(|error| database_error("Cannot install SQLite schema v21", error)),
+        22 => connection
+            .execute_batch(SCHEMA_V22_SQL)
+            .map_err(|error| database_error("Cannot install SQLite schema v22", error)),
         _ => Err(invalid_argument(format!(
             "No SQLite migration is registered for schema v{version}"
         ))),

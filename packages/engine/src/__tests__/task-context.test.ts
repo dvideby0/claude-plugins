@@ -5,6 +5,7 @@ import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { getDb } from "../db/db.js";
+import { resolveTypes } from "../graph/typed.js";
 import { remember } from "../memory/store.js";
 import { createMcpServer } from "../mcp/server.js";
 import { buildTaskContext } from "../plan/task-context.js";
@@ -214,6 +215,55 @@ describe("budgeted task context", () => {
     expect(outgoingReference?.source).toMatchObject({ path: "src/a.ts", freshness: "stale" });
   });
 
+  it("navigates dependency evidence to the exact import statement", async () => {
+    root = await makeProject({
+      "src/a.ts": `${Array.from({ length: 60 }, (_, index) => `// setup ${index + 1}`).join(
+        "\n",
+      )}\nimport './b.js';\n`,
+      "src/b.ts": "export const value = 1;\n",
+    });
+    await scan(root, { kind: "full" });
+
+    const brief = await buildTaskContext(await getDb(root), root, {
+      targets: ["src/a.ts"],
+      budgetBytes: 30_000,
+    });
+    const dependency = brief.evidence.find((item) => item.kind === "dependency");
+    expect(dependency?.source?.startLine).toBeLessThanOrEqual(61);
+    expect(dependency?.source?.endLine).toBeGreaterThanOrEqual(61);
+    expect(brief.text).toContain("import './b.js';");
+  });
+
+  it("keeps stale compiler generations stale when the caller text is unchanged", async () => {
+    root = await makeProject({
+      "tsconfig.json": JSON.stringify({ files: ["src/main.ts", "src/store.ts"] }),
+      "src/main.ts":
+        'import { save } from "./store";\nexport function run() { return save(); }\n',
+      "src/store.ts": "export function save() { return true; }\n",
+      "src/other.ts": "export const value = 1;\nconsole.log(value);\n",
+    });
+    await scan(root, { full: true, kind: "full" });
+    const db = await getDb(root);
+    expect(resolveTypes(db, root).ran).toBe(true);
+
+    await writeFile(
+      join(root, "tsconfig.json"),
+      JSON.stringify({ files: ["src/other.ts"] }),
+    );
+    await scan(root, { kind: "incremental" });
+    expect(resolveTypes(db, root).ran).toBe(true);
+
+    const brief = await buildTaskContext(db, root, {
+      targets: ["src/store.ts"],
+      intent: "review",
+      budgetBytes: 30_000,
+    });
+    const staleReference = brief.evidence.find(
+      (item) => item.kind === "reference" && item.source?.path === "src/main.ts",
+    );
+    expect(staleReference?.source?.freshness).toBe("stale");
+  });
+
   it("resolves an exact repository path before considering longer suffix matches", async () => {
     root = await makeProject({
       "src/foo.ts": "export const rootFoo = 1;\n",
@@ -284,6 +334,126 @@ describe("budgeted task context", () => {
         (item) => item.kind === "reference" && item.source?.path === "src/api.test.ts",
       ),
     ).toBe(true);
+  });
+
+  it("expands every bounded anchor of a task-only authored-memory match", async () => {
+    root = await makeProject({
+      "src/a.ts": "export const a = 1;\n",
+      "src/b.ts": "export function b() { return 1; }\n",
+      "src/b.test.ts": "import { b } from './b.js';\nb();\n",
+    });
+    await scan(root, { kind: "full" });
+    const db = await getDb(root);
+    remember(db, {
+      kind: "gotcha",
+      title: "Quuxwomble marker",
+      body: "Unique flibbertigibbet behavior applies to both anchors.",
+      anchors: [
+        { path: "src/a.ts", symbol: "a" },
+        { path: "src/b.ts", symbol: "b" },
+      ],
+    });
+
+    const brief = await buildTaskContext(db, root, {
+      task: "diagnose flibbertigibbet",
+      budgetBytes: 30_000,
+    });
+    expect(
+      brief.evidence.some(
+        (item) => item.kind === "reference" && item.source?.path === "src/b.test.ts",
+      ),
+    ).toBe(true);
+  });
+
+  it("does not count duplicate anchors of one retained memory as omissions", async () => {
+    root = await makeProject({ "src/a.ts": "export const a = 1;\n" });
+    await scan(root, { kind: "full" });
+    const db = await getDb(root);
+    remember(db, {
+      kind: "context",
+      title: "Many local anchors",
+      anchors: Array.from({ length: 21 }, (_, index) => ({
+        path: "src/a.ts",
+        symbol: `anchor${index}`,
+      })),
+    });
+
+    const plan = db.taskContext("", ["src/a.ts"], "understand", 64);
+    expect(plan.candidates.map((candidate) => candidate.kind)).toEqual(
+      expect.arrayContaining(["file", "memory"]),
+    );
+    expect(plan.omittedCandidates).toBe(0);
+  });
+
+  it("restricts covering tests to an explicit symbol instead of sibling exports", async () => {
+    const files: Record<string, string> = {
+      "src/api.ts":
+        "export function run() { return 1; }\nexport function sibling() { return 2; }\n",
+    };
+    for (let index = 0; index < 31; index += 1) {
+      files[`src/a${String(index).padStart(2, "0")}.ts`] =
+        "import { run } from './api.js';\nrun();\n";
+    }
+    files["src/z.test.ts"] =
+      "import { sibling } from './api.js';\nsibling();\n";
+    root = await makeProject(files);
+    await scan(root, { kind: "full" });
+
+    const brief = await buildTaskContext(await getDb(root), root, {
+      targets: ["run"],
+      intent: "review",
+      budgetBytes: 100_000,
+    });
+    expect(
+      brief.evidence.some(
+        (item) => item.kind === "reference" && item.source?.path === "src/z.test.ts",
+      ),
+    ).toBe(false);
+  });
+
+  it("keeps file-wide covering tests when a file and one of its symbols are both explicit", async () => {
+    const files: Record<string, string> = {
+      "src/api.ts":
+        "export function run() { return 1; }\nexport function sibling() { return 2; }\n",
+    };
+    for (let index = 0; index < 31; index += 1) {
+      files[`src/a${String(index).padStart(2, "0")}.ts`] =
+        "import { run } from './api.js';\nrun();\n";
+    }
+    files["src/z.test.ts"] =
+      "import { sibling } from './api.js';\nsibling();\n";
+    root = await makeProject(files);
+    await scan(root, { kind: "full" });
+
+    const brief = await buildTaskContext(await getDb(root), root, {
+      targets: ["src/api.ts", "run"],
+      intent: "review",
+      budgetBytes: 100_000,
+    });
+    expect(
+      brief.evidence.some(
+        (item) => item.kind === "reference" && item.source?.path === "src/z.test.ts",
+      ),
+    ).toBe(true);
+  });
+
+  it("keeps import-resolved reference certainty inferred", async () => {
+    root = await makeProject({
+      "src/api.ts": "export function run() { return 1; }\n",
+      "src/use.ts": "import { run } from './api.js';\nrun();\n",
+    });
+    await scan(root, { kind: "full" });
+    const brief = await buildTaskContext(await getDb(root), root, {
+      targets: ["src/api.ts"],
+      budgetBytes: 20_000,
+    });
+    const reference = brief.evidence.find(
+      (item) => item.kind === "reference" && item.source?.path === "src/use.ts",
+    );
+    expect(reference?.provenance).toMatchObject({
+      source: "import-reference-index",
+      certainty: "inferred",
+    });
   });
 
   it("does not guess when a symbol target is ambiguous", async () => {
@@ -361,6 +531,7 @@ describe("budgeted task context", () => {
     });
 
     const brief = await buildTaskContext(db, root, {
+      task: "review the shared symbol rule",
       targets: ["second"],
       budgetBytes: 20_000,
     });

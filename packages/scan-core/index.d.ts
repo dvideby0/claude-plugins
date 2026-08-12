@@ -134,6 +134,11 @@ export interface NativeRef {
   line: number
   column: number
 }
+export interface NativeImport {
+  specifier: string
+  startLine: number
+  endLine: number
+}
 export interface NativeExecutionNode {
   id: string
   ordinal: number
@@ -189,7 +194,7 @@ export interface NativeFile {
   /** False for files no grammar covers, or that were skipped as noise. */
   parsed: boolean
   symbols: Array<NativeSymbol>
-  imports: Array<string>
+  imports: Array<NativeImport>
   /** Uses of imported names, for symbol-level reference resolution. */
   refs: Array<NativeRef>
   /** Product-specific entry-to-effect facts extracted by bounded adapters. */
