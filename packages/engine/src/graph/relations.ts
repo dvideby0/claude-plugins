@@ -24,6 +24,7 @@ export const RELATION_KINDS = [
 ] as const;
 
 export type RelationKind = (typeof RELATION_KINDS)[number];
+const MAX_EVIDENCE_LINE = 4_294_967_295;
 
 export interface RelationInput {
   kind: RelationKind;
@@ -67,6 +68,14 @@ function fingerprint(input: RelationInput): string {
 export function relate(db: Db, input: RelationInput): { id: string; created: boolean } {
   if (!input.evidence?.trim()) {
     throw new Error("Evidence is required — a relation without a citation cannot be checked later.");
+  }
+  if (
+    input.evidenceLine !== undefined &&
+    (!Number.isSafeInteger(input.evidenceLine) ||
+      input.evidenceLine < 1 ||
+      input.evidenceLine > MAX_EVIDENCE_LINE)
+  ) {
+    throw new Error(`Evidence line must be an integer between 1 and ${MAX_EVIDENCE_LINE}.`);
   }
 
   const id = fingerprint(input);

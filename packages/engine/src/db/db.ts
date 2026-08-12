@@ -102,8 +102,31 @@ export interface ExecutionPathView {
   complete: boolean;
 }
 
+export interface ExecutionAssertionView {
+  id: string;
+  kind: string;
+  label: string | null;
+  from: { path: string; symbol: string | null };
+  to: { path: string | null; symbol: string | null };
+  evidence: { path: string; startLine: number | null; text: string };
+  provenance: {
+    source: string;
+    certainty: "asserted";
+    confidence: "definite" | "high" | "medium" | "low";
+    freshness: "current";
+  };
+  anchors: Array<{ nodeId: string; relationEndpoint: "source" | "target" }>;
+}
+
+export interface ExecutionAssertedOverlayView {
+  enabled: boolean;
+  note: string;
+  relations: ExecutionAssertionView[];
+  truncated: boolean;
+}
+
 export interface ExecutionFlowView {
-  schemaVersion: 1;
+  schemaVersion: 2;
   model: "entry-to-effect";
   note?: string | null;
   entries: ExecutionEntrySummary[];
@@ -115,6 +138,7 @@ export interface ExecutionFlowView {
     paths: ExecutionPathView[];
     diagnostics: string[];
     truncated: boolean;
+    assertedOverlay: ExecutionAssertedOverlayView;
   } | null;
 }
 
@@ -242,8 +266,10 @@ export class Db {
   }
 
   /** Evidence-backed paths produced by bounded native framework adapters. */
-  executionFlow(entryId?: string, maxPaths = 24): ExecutionFlowView {
-    return JSON.parse(this.raw.executionFlow(entryId, maxPaths)) as ExecutionFlowView;
+  executionFlow(entryId?: string, maxPaths = 24, includeAssertions = false): ExecutionFlowView {
+    return JSON.parse(
+      this.raw.executionFlow(entryId, maxPaths, includeAssertions),
+    ) as ExecutionFlowView;
   }
 
   /** Scalar helper for counts and aggregates. */

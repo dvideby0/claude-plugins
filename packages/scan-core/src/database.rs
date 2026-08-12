@@ -802,6 +802,21 @@ struct ExecutionPath {
     complete: bool,
 }
 
+#[derive(Clone)]
+struct ExecutionAssertionRow {
+    id: String,
+    kind: String,
+    src_path: String,
+    src_symbol: Option<String>,
+    dst_path: Option<String>,
+    dst_symbol: Option<String>,
+    label: Option<String>,
+    evidence: String,
+    evidence_line: Option<u32>,
+    confidence: String,
+    source: String,
+}
+
 fn execution_entry_value(entry: &ExecutionEntryRow) -> serde_json::Value {
     serde_json::json!({
         "id": entry.id,
@@ -863,6 +878,195 @@ fn execution_edge_value(edge: &ExecutionEdgeRow) -> serde_json::Value {
         "evidence": { "path": edge.path, "startLine": edge.start_line },
         "certainty": edge.certainty,
     })
+}
+
+fn execution_endpoint_matches(
+    endpoint_path: Option<&str>,
+    endpoint_symbol: Option<&str>,
+    candidate_path: &str,
+    candidate_symbol: &str,
+) -> bool {
+    endpoint_path.is_some_and(|path| path == candidate_path)
+        && endpoint_symbol.is_none_or(|symbol| symbol.is_empty() || symbol == candidate_symbol)
+}
+
+fn execution_assertion_anchors(
+    assertion: &ExecutionAssertionRow,
+    nodes: &[ExecutionNodeRow],
+) -> Vec<serde_json::Value> {
+    let mut anchors = Vec::new();
+    let mut seen = HashSet::new();
+    for node in nodes {
+        let locations = [
+            (Some(node.path.as_str()), node.symbol.as_str()),
+            (node.target_path.as_deref(), node.target_symbol.as_str()),
+        ];
+        for (path, symbol) in locations {
+            if execution_endpoint_matches(
+                Some(assertion.src_path.as_str()),
+                assertion.src_symbol.as_deref(),
+                path.unwrap_or_default(),
+                symbol,
+            ) && seen.insert((node.id.clone(), "source"))
+            {
+                anchors.push(serde_json::json!({
+                    "nodeId": node.id,
+                    "relationEndpoint": "source",
+                }));
+            }
+            if execution_endpoint_matches(
+                assertion.dst_path.as_deref(),
+                assertion.dst_symbol.as_deref(),
+                path.unwrap_or_default(),
+                symbol,
+            ) && seen.insert((node.id.clone(), "target"))
+            {
+                anchors.push(serde_json::json!({
+                    "nodeId": node.id,
+                    "relationEndpoint": "target",
+                }));
+            }
+        }
+    }
+    anchors
+}
+
+fn execution_asserted_overlay(
+    connection: &Connection,
+    nodes: &[ExecutionNodeRow],
+    enabled: bool,
+) -> Result<serde_json::Value> {
+    const MAX_ASSERTIONS: usize = 128;
+    const NOTE: &str = "Authored relations are evidence-backed assertions, not deterministic path facts. Only assertions whose evidence source is current are shown.";
+    if !enabled {
+        return Ok(serde_json::json!({
+            "enabled": false,
+            "note": NOTE,
+            "relations": [],
+            "truncated": false,
+        }));
+    }
+
+    let mut relevant_endpoints = nodes
+        .iter()
+        .flat_map(|node| {
+            [
+                Some((node.path.as_str(), node.symbol.as_str())),
+                node.target_path
+                    .as_deref()
+                    .map(|path| (path, node.target_symbol.as_str())),
+            ]
+        })
+        .flatten()
+        .filter(|(path, _)| !path.is_empty())
+        .map(|(path, symbol)| (path.to_owned(), symbol.to_owned()))
+        .collect::<Vec<_>>();
+    relevant_endpoints.sort();
+    relevant_endpoints.dedup();
+    if relevant_endpoints.is_empty() {
+        return Ok(serde_json::json!({
+            "enabled": true,
+            "note": NOTE,
+            "relations": [],
+            "truncated": false,
+        }));
+    }
+
+    let placeholders = (0..relevant_endpoints.len())
+        .map(|index| format!("(?{}, ?{})", index * 2 + 1, index * 2 + 2))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let limit_parameter = relevant_endpoints.len() * 2 + 1;
+    let sql = format!(
+        "WITH relevant(path, symbol) AS (VALUES {placeholders})
+         SELECT r.id, r.kind, r.src_path, r.src_symbol, r.dst_path, r.dst_symbol,
+                r.label, r.evidence,
+                CASE WHEN typeof(r.evidence_line) = 'integer'
+                           AND r.evidence_line BETWEEN 1 AND 4294967295
+                     THEN r.evidence_line ELSE NULL END,
+                r.confidence, r.source
+         FROM relations r
+         JOIN files f ON f.path = r.src_path
+                     AND f.present = 1
+                     AND f.content_sha = r.content_sha
+         WHERE EXISTS (
+           SELECT 1 FROM relevant endpoint
+           WHERE (r.src_path = endpoint.path
+                  AND (COALESCE(r.src_symbol, '') = '' OR r.src_symbol = endpoint.symbol))
+              OR (r.dst_path = endpoint.path
+                  AND (COALESCE(r.dst_symbol, '') = '' OR r.dst_symbol = endpoint.symbol))
+         )
+         ORDER BY r.updated_at DESC, r.id
+         LIMIT ?{limit_parameter}"
+    );
+    let mut values = relevant_endpoints
+        .into_iter()
+        .flat_map(|(path, symbol)| [Value::Text(path), Value::Text(symbol)])
+        .collect::<Vec<_>>();
+    values.push(Value::Integer((MAX_ASSERTIONS + 1) as i64));
+    let mut statement = connection
+        .prepare(&sql)
+        .map_err(|error| database_error("Cannot prepare execution assertion query", error))?;
+    let mut assertion_rows = statement
+        .query_map(params_from_iter(values), |row| {
+            Ok(ExecutionAssertionRow {
+                id: row.get(0)?,
+                kind: row.get(1)?,
+                src_path: row.get(2)?,
+                src_symbol: row.get(3)?,
+                dst_path: row.get(4)?,
+                dst_symbol: row.get(5)?,
+                label: row.get(6)?,
+                evidence: row.get(7)?,
+                evidence_line: row.get(8)?,
+                confidence: row.get(9)?,
+                source: row.get(10)?,
+            })
+        })
+        .map_err(|error| database_error("Cannot query execution assertions", error))?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(|error| database_error("Cannot read execution assertions", error))?;
+
+    let truncated = assertion_rows.len() > MAX_ASSERTIONS;
+    assertion_rows.truncate(MAX_ASSERTIONS);
+    let mut relations = Vec::new();
+    for assertion in assertion_rows {
+        let anchors = execution_assertion_anchors(&assertion, nodes);
+        if anchors.is_empty() {
+            continue;
+        }
+        relations.push(serde_json::json!({
+            "id": assertion.id,
+            "kind": assertion.kind,
+            "label": assertion.label,
+            "from": {
+                "path": assertion.src_path,
+                "symbol": assertion.src_symbol,
+            },
+            "to": {
+                "path": assertion.dst_path,
+                "symbol": assertion.dst_symbol,
+            },
+            "evidence": {
+                "path": assertion.src_path,
+                "startLine": assertion.evidence_line,
+                "text": assertion.evidence,
+            },
+            "provenance": {
+                "source": assertion.source,
+                "certainty": "asserted",
+                "confidence": assertion.confidence,
+                "freshness": "current",
+            },
+            "anchors": anchors,
+        }));
+    }
+    Ok(serde_json::json!({
+        "enabled": true,
+        "note": NOTE,
+        "relations": relations,
+        "truncated": truncated,
+    }))
 }
 
 fn weakest_certainty(current: &str, candidate: &str) -> String {
@@ -1001,6 +1205,7 @@ fn execution_flow_json(
     connection: &Connection,
     selected_entry_id: Option<&str>,
     max_paths: u32,
+    include_assertions: bool,
 ) -> Result<String> {
     if selected_entry_id.is_some_and(|id| id.is_empty() || id.chars().count() > 512) {
         return Err(invalid_argument(
@@ -1068,7 +1273,7 @@ fn execution_flow_json(
 
     let Some(entry_id) = selected_entry_id else {
         return serde_json::to_string(&serde_json::json!({
-            "schemaVersion": 1,
+            "schemaVersion": 2,
             "model": "entry-to-effect",
             "note": if entries.is_empty() {
                 Some("No deterministic execution entries are indexed. Re-index after installing an adapter that recognizes this repository's entrypoints.")
@@ -1083,7 +1288,7 @@ fn execution_flow_json(
     };
     let Some(entry) = entries.iter().find(|entry| entry.id == entry_id) else {
         return serde_json::to_string(&serde_json::json!({
-            "schemaVersion": 1,
+            "schemaVersion": 2,
             "model": "entry-to-effect",
             "note": "The requested execution entry is not present in the current index.",
             "entries": entry_values,
@@ -1199,6 +1404,7 @@ fn execution_flow_json(
     }
     diagnostics.sort();
     diagnostics.dedup();
+    let asserted_overlay = execution_asserted_overlay(connection, &node_rows, include_assertions)?;
 
     let path_values = paths
         .iter()
@@ -1222,7 +1428,7 @@ fn execution_flow_json(
         .collect::<Vec<_>>();
 
     serde_json::to_string(&serde_json::json!({
-        "schemaVersion": 1,
+        "schemaVersion": 2,
         "model": "entry-to-effect",
         "entries": entry_values,
         "diagnostics": inventory_diagnostics,
@@ -1233,6 +1439,7 @@ fn execution_flow_json(
             "paths": path_values,
             "diagnostics": diagnostics,
             "truncated": paths_truncated,
+            "assertedOverlay": asserted_overlay,
         },
     }))
     .map_err(|error| storage_error("Cannot encode execution flow response", error))
@@ -1483,12 +1690,18 @@ impl NativeDatabase {
         &self,
         entry_id: Option<String>,
         max_paths: Option<u32>,
+        include_assertions: Option<bool>,
     ) -> Result<String> {
         let connection = self.connection()?;
         let connection = connection.as_ref().ok_or_else(|| {
             Error::new(Status::GenericFailure, "SQLite store is closed".to_string())
         })?;
-        execution_flow_json(connection, entry_id.as_deref(), max_paths.unwrap_or(24))
+        execution_flow_json(
+            connection,
+            entry_id.as_deref(),
+            max_paths.unwrap_or(24),
+            include_assertions.unwrap_or(false),
+        )
     }
 
     #[napi]

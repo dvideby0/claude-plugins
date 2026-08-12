@@ -1864,6 +1864,7 @@ async function showComponent(workspace, id, options = {}) {
 let flowRoot = null;
 let executionRoot = null;
 let flowDisplayMode = "execution";
+let executionAssertionsEnabled = false;
 
 async function paneFlow(workspace, pane) {
   let execution;
@@ -1911,7 +1912,13 @@ async function paneExecutionFlow(workspace, pane, index) {
         <strong>Entry-to-effect paths</strong>
         <span class="sub">Branches and terminal effects with source evidence</span>
       </div>
-      ${flowModeControls("execution", true)}
+      <div class="graph-controls">
+        <label class="execution-overlay-toggle" title="Show current authored relations beside deterministic paths">
+          <input type="checkbox" data-execution-assertions ${executionAssertionsEnabled ? "checked" : ""}>
+          <span>Asserted overlay</span>
+        </label>
+        ${flowModeControls("execution", true)}
+      </div>
     </div>
     <div class="flow-split execution-split">
       <aside class="flow-rail" id="execution-rail"></aside>
@@ -1930,6 +1937,47 @@ async function paneExecutionFlow(workspace, pane, index) {
   const inventoryNotice = index.diagnostics?.length
     ? `<div class="execution-diagnostics"><strong>Inventory limits</strong>${index.diagnostics.map((diagnostic) => `<p>${esc(diagnostic)}</p>`).join("")}</div>`
     : "";
+  let executionLoadGeneration = 0;
+
+  pane.querySelector("[data-execution-assertions]")?.addEventListener("change", (event) => {
+    executionAssertionsEnabled = event.currentTarget.checked;
+    void loadExecution();
+  });
+
+  function renderAssertedOverlay(overlay) {
+    if (!overlay?.enabled) return "";
+    const cards = overlay.relations
+      .map((relation, assertionIndex) => {
+        const from = `${relation.from.path}${relation.from.symbol ? ` · ${relation.from.symbol}` : ""}`;
+        const to = relation.to.path
+          ? `${relation.to.path}${relation.to.symbol ? ` · ${relation.to.symbol}` : ""}`
+          : relation.to.symbol || relation.label || "unresolved target";
+        return `<article class="execution-assertion">
+          <header>
+            <span>${esc(relation.kind)}</span>
+            <span class="knowledge-pill status-asserted">asserted · ${esc(relation.provenance.confidence)}</span>
+          </header>
+          <strong>${esc(relation.label || `${relation.kind} relation`)}</strong>
+          <div class="execution-assertion-edge">
+            <span>${esc(from)}</span><b>→</b><span>${esc(to)}</span>
+          </div>
+          <p>${esc(relation.evidence.text)}</p>
+          <button class="execution-evidence" data-assertion-evidence="${assertionIndex}">
+            ${esc(relation.evidence.path)}${relation.evidence.startLine ? `:${num(relation.evidence.startLine)}` : ""} · ${num(relation.anchors.length)} path anchor${relation.anchors.length === 1 ? "" : "s"}
+          </button>
+        </article>`;
+      })
+      .join("");
+    return `<section class="execution-assertions">
+      <header>
+        <div><span class="execution-kicker">Optional knowledge layer</span><strong>Authored assertions</strong></div>
+        <span class="knowledge-pill status-asserted">separate from deterministic paths</span>
+      </header>
+      <p class="sub">${esc(overlay.note)}</p>
+      ${cards || '<div class="sub">No current assertions touch this flow.</div>'}
+      ${overlay.truncated ? '<p class="execution-overlay-limit">Only the first 128 matching assertions are shown.</p>' : ""}
+    </section>`;
+  }
 
   function renderRail() {
     rail.innerHTML = `
@@ -1956,12 +2004,22 @@ async function paneExecutionFlow(workspace, pane, index) {
   }
 
   async function loadExecution() {
+    const generation = ++executionLoadGeneration;
+    const requestedEntry = executionRoot;
+    const requestedAssertions = executionAssertionsEnabled;
     stage.innerHTML = `${inventoryNotice}<div class="loading">Tracing evidence…</div>`;
     inspector.hidden = true;
     try {
       const view = await api(
-        `/api/workspaces/${workspace.id}/execution-flow?entryId=${encodeURIComponent(executionRoot)}`,
+        `/api/workspaces/${workspace.id}/execution-flow?entryId=${encodeURIComponent(requestedEntry)}&includeAssertions=${requestedAssertions}`,
       );
+      if (
+        generation !== executionLoadGeneration ||
+        requestedEntry !== executionRoot ||
+        requestedAssertions !== executionAssertionsEnabled
+      ) {
+        return;
+      }
       const selected = view.selected;
       if (!selected) {
         stage.innerHTML = `<div class="empty">${esc(view.note || "This entry is no longer indexed.")}</div>`;
@@ -1969,6 +2027,7 @@ async function paneExecutionFlow(workspace, pane, index) {
       }
       const entry = selected.entry;
       const nodes = new Map(selected.nodes.map((node) => [node.id, node]));
+      const assertedOverlay = selected.assertedOverlay;
       stage.innerHTML = `${inventoryNotice}
         <div class="execution-head">
           <div>
@@ -1989,6 +2048,7 @@ async function paneExecutionFlow(workspace, pane, index) {
           <div><strong>${num(entry.terminalEffects)}</strong><span>terminal effects</span></div>
           <div><strong>${num(entry.gaps)}</strong><span>explicit gaps</span></div>
         </div>
+        ${renderAssertedOverlay(assertedOverlay)}
         ${
           selected.diagnostics.length
             ? `<div class="execution-diagnostics"><strong>Limits and gaps</strong>${selected.diagnostics
@@ -2049,7 +2109,19 @@ async function paneExecutionFlow(workspace, pane, index) {
           if (node) showExecutionNode(workspace, node, entry, inspector, button);
         });
       }
+      for (const button of stage.querySelectorAll("[data-assertion-evidence]")) {
+        button.addEventListener("click", (event) => {
+          const relation = assertedOverlay?.relations[Number(button.dataset.assertionEvidence)];
+          if (relation) {
+            void showFile(workspace, relation.evidence.path, {
+              forceDrawer: true,
+              origin: event.currentTarget,
+            });
+          }
+        });
+      }
     } catch (error) {
+      if (generation !== executionLoadGeneration) return;
       stage.innerHTML = `<div class="empty">${esc(error.message)}</div>`;
     }
   }

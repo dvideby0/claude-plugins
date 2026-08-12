@@ -58,6 +58,14 @@ describe("enrichment", () => {
         evidence: "   ",
       }),
     ).toThrow(/Evidence is required/);
+    expect(() =>
+      relate(db, {
+        kind: "registers",
+        srcPath: "src/graph.py",
+        evidence: 'b.add_node("classify", classify_node)',
+        evidenceLine: -1,
+      }),
+    ).toThrow(/Evidence line must be an integer between/);
   });
 
   it("treats a relation without an indexed source snapshot as stale", async () => {

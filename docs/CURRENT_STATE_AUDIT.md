@@ -195,7 +195,7 @@ truncation are preserved as visible diagnostics and keep affected paths
 incomplete. The adapter currently proves the product shape for one measured
 route family; it does not fill the general gaps listed above.
 
-The gap workflow in [`packages/engine/src/graph/gaps.ts`](../packages/engine/src/graph/gaps.ts) and asserted relations in [`packages/engine/src/graph/relations.ts`](../packages/engine/src/graph/relations.ts) are valuable escape hatches. However, asserted relations are not yet a first-class overlay in the main flow and trace queries, so teaching the system a missed relationship does not consistently improve its answers.
+The gap workflow in [`packages/engine/src/graph/gaps.ts`](../packages/engine/src/graph/gaps.ts) and asserted relations in [`packages/engine/src/graph/relations.ts`](../packages/engine/src/graph/relations.ts) are valuable escape hatches. Current, evidence-backed assertions can now be enabled as a separately labeled overlay in deterministic execution-flow queries without changing path facts. The older call-graph and trace queries do not yet expose the same overlay, so teaching the system a missed relationship still does not improve every answer consistently.
 
 ### Human map and memory
 

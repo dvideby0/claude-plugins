@@ -780,7 +780,20 @@ export function createHttpServer(options: HttpServerOptions): HttpServerHandle {
             sendJson(res, 400, { error: "maxPaths must be an integer between 1 and 64." });
             return true;
           }
-          sendJson(res, 200, db.executionFlow(entryId, maxPaths));
+          const rawIncludeAssertions = query.get("includeAssertions");
+          if (
+            rawIncludeAssertions !== null &&
+            rawIncludeAssertions !== "true" &&
+            rawIncludeAssertions !== "false"
+          ) {
+            sendJson(res, 400, { error: "includeAssertions must be true or false." });
+            return true;
+          }
+          sendJson(
+            res,
+            200,
+            db.executionFlow(entryId, maxPaths, rawIncludeAssertions === "true"),
+          );
           return true;
         }
         if (sub === "map") {
