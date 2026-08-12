@@ -143,7 +143,10 @@ hash; query freshness compares that hash with the current indexed file.
 Schema v20 records the execution target's local source spelling and exact
 line/column occurrence separately from its resolved destination path and
 symbol. Reference providers can refresh the destination after syntax or typed
-resolution without losing aliases, default imports, or evidence identity.
+resolution without losing aliases, default imports, or evidence identity. A
+compiler-derived destination is exposed only while its recorded workspace
+generation matches the current indexed generation; during refresh lag the call
+returns to an unresolved local spelling rather than presenting a stale target.
 
 The native graph uses a private `next` edge for bounded path ordering. `next`
 is not silently promoted into the version-1 fact vocabulary. Evaluation and

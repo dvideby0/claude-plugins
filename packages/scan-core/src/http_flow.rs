@@ -9,7 +9,7 @@
 use tree_sitter::Node;
 
 const PRODUCER_ID: &str = "sdlc-http-route-adapter";
-const PRODUCER_VERSION: &str = "2";
+const PRODUCER_VERSION: &str = "3";
 const MAX_ENTRIES_PER_FILE: usize = 128;
 const MAX_GUARD_ALTERNATIVES: usize = 256;
 const MAX_NODES_PER_ENTRY: usize = 256;
@@ -332,7 +332,12 @@ fn collect_calls<'tree>(
 ) {
     if matches!(
         node.kind(),
-        "arrow_function" | "function_expression" | "function_declaration"
+        "arrow_function"
+            | "function_expression"
+            | "function_declaration"
+            | "generator_function"
+            | "generator_function_declaration"
+            | "method_definition"
     ) {
         return;
     }
@@ -393,7 +398,10 @@ fn argument(call: Node, index: usize) -> Option<Node> {
 }
 
 fn terminal_effect(call: &CallObservation, bytes: &[u8]) -> Option<(String, String)> {
-    if call.target_symbol == "sendJson" {
+    if call.callee == "sendJson"
+        && argument(call.node, 0)
+            .is_some_and(|receiver| matches!(text(receiver, bytes).trim(), "res" | "response"))
+    {
         let status = argument(call.node, 1)
             .map(|node| compact(text(node, bytes), 24))
             .filter(|value| !value.is_empty())
@@ -735,6 +743,12 @@ impl Builder<'_> {
         let Some(condition) = node.child_by_field_name("condition") else {
             return self.emit_gap(node, incoming, "condition");
         };
+        // Conditions execute before either branch. Preserve their calls (and
+        // awaits) as operations instead of hiding them inside the branch label.
+        let after_condition = self.walk_calls(condition, incoming);
+        if after_condition.is_empty() {
+            return after_condition;
+        }
         let condition_label = compact(text(condition, self.bytes), 160);
         let Some(control) = self.add_node(
             condition,
@@ -748,9 +762,9 @@ impl Builder<'_> {
             false,
             "Both syntactic outcomes are retained; runtime feasibility is not claimed.".to_string(),
         ) else {
-            return incoming;
+            return after_condition;
         };
-        self.connect(&incoming, &control);
+        self.connect(&after_condition, &control);
 
         let line = condition.start_position().row as u32 + 1;
         let consequence = node.child_by_field_name("consequence");
@@ -1047,9 +1061,13 @@ fn visit(
                 .into_iter()
                 .filter_map(|guard| {
                     let route = guard.route?;
-                    route
-                        .starts_with('/')
-                        .then_some((route, guard.method.unwrap_or_default()))
+                    route.starts_with('/').then_some((
+                        route,
+                        guard
+                            .method
+                            .map(|method| method.to_ascii_uppercase())
+                            .unwrap_or_default(),
+                    ))
                 })
                 .collect::<Vec<_>>();
             guards.sort();
@@ -1180,6 +1198,8 @@ async function handleApi(path: string, method: string, res: unknown) {
               if (!(path === "/excluded")) { sendJson(res, 201, {}); }
               if ((path === "/get" && method === "GET") ||
                   (path === "/post" && method === "POST")) { sendJson(res, 202, {}); }
+              if ((path === "/same" && method === "GET") ||
+                  (path === "/same" && method === "get")) { sendJson(res, 203, {}); }
             }"#,
         );
         let mut labels = entries
@@ -1189,7 +1209,13 @@ async function handleApi(path: string, method: string, res: unknown) {
         labels.sort();
         assert_eq!(
             labels,
-            ["ANY /", "ANY /index.html", "GET /get", "POST /post"]
+            [
+                "ANY /",
+                "ANY /index.html",
+                "GET /get",
+                "GET /same",
+                "POST /post"
+            ]
         );
         assert!(entries.iter().all(|entry| {
             entry
@@ -1225,6 +1251,68 @@ async function handleApi(path: string, method: string, res: unknown) {
             operations,
             [("call", "Call inner"), ("await", "Await outer")]
         );
+    }
+
+    #[test]
+    fn records_awaited_calls_evaluated_by_branch_conditions() {
+        let entries = extract_typescript(
+            r#"async function route(path: string, res: unknown) {
+              if (path === "/condition") {
+                if (await authorized()) { sendJson(res, 200, {}); }
+                else { sendJson(res, 403, {}); }
+              }
+            }"#,
+        );
+        let entry = &entries[0];
+        let await_index = entry
+            .nodes
+            .iter()
+            .position(|node| node.kind == "await" && node.label == "Await authorized")
+            .expect("condition await");
+        let branch_index = entry
+            .nodes
+            .iter()
+            .position(|node| node.kind == "branch" && node.label.contains("authorized"))
+            .expect("condition branch");
+        assert!(await_index < branch_index);
+    }
+
+    #[test]
+    fn skips_deferred_method_bodies_during_call_collection() {
+        let entries = extract_typescript(
+            r#"function route(path: string, res: unknown) {
+              if (path === "/callback") {
+                const callbacks = { fail() { res.end(); } };
+                sendJson(res, 200, {});
+              }
+            }"#,
+        );
+        let effects = entries[0]
+            .nodes
+            .iter()
+            .filter(|node| node.kind == "terminal-effect")
+            .map(|node| node.external.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(effects, ["http:response:200"]);
+    }
+
+    #[test]
+    fn does_not_promote_member_send_json_calls_to_http_effects() {
+        let entries = extract_typescript(
+            r#"function route(path: string, res: unknown, client: any) {
+              if (path === "/member") {
+                client.sendJson({ event: "started" }, { durable: true });
+                res.end();
+              }
+            }"#,
+        );
+        let effects = entries[0]
+            .nodes
+            .iter()
+            .filter(|node| node.kind == "terminal-effect")
+            .map(|node| node.external.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(effects, ["http:response"]);
     }
 
     #[test]

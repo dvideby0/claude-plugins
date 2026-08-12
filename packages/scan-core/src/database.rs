@@ -915,13 +915,16 @@ fn walk_execution_paths(
     let certainty = weakest_certainty(certainty, &node.certainty);
     node_ids.push(node.id.clone());
     if node.terminal {
+        let complete = node_ids
+            .iter()
+            .all(|id| nodes.get(id).is_some_and(|visited| visited.kind != "gap"));
         paths.push(ExecutionPath {
             node_ids: node_ids.clone(),
             edge_ordinals: edge_ordinals.clone(),
             conditions: conditions.clone(),
             terminal_node_id: Some(node.id.clone()),
             certainty,
-            complete: node.kind != "gap",
+            complete,
         });
         node_ids.pop();
         return;

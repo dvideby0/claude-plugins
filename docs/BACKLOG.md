@@ -259,8 +259,11 @@ throws, `finally` transitions before deferred returns/throws, awaited calls,
 returns/throws, and recognized HTTP response effects; unsupported loops,
 switches, and input truncation become explicit gaps or diagnostics. Native path
 enumeration is cycle- and budget-bounded. Reference refresh resolves aliased and
-default imports and incorporates later compiler targets. The existing MCP
-`flow` operation prefers this model when it is
+default imports, incorporates later compiler targets, and removes those targets
+when their compiler generation becomes stale. Normalized method alternatives
+cannot collide in storage, calls in nested conditions are retained, and deferred
+callback bodies are not treated as executed. The existing MCP `flow` operation
+prefers this model when it is
 available, while preserving the older call graph as `mode: calls`, and the
 desktop now presents entry-to-effect paths as its primary Flow workspace. A
 checked-in HTTP fixture measures one entry, seven unique semantic relations,

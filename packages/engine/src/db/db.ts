@@ -12,6 +12,7 @@ import {
   workspaceIdentityKey,
   workspaceIdForCanonicalRoot,
 } from "../lib/workspace-path.js";
+import { TYPED_SPECIFIER, typedWorkspaceGeneration } from "../graph/typed-contract.js";
 
 export type Params = Array<string | number | null>;
 
@@ -259,6 +260,7 @@ export class Db {
 
   /** Re-attribute reference endpoints to stable declaration ids. */
   refreshReferenceIdentity(): void {
+    const currentTypedGeneration = typedWorkspaceGeneration(this);
     this.run(
       `UPDATE refs SET
          src_symbol = (
@@ -322,6 +324,13 @@ export class Db {
              AND r.src_line = execution_nodes.target_line
              AND r.src_column = execution_nodes.target_column
              AND r.dst_path IS NOT NULL
+             AND r.dst_symbol_id IS NOT NULL
+             AND ((r.specifier != ?1 AND r.specifier NOT LIKE ?2) OR EXISTS (
+               SELECT 1 FROM files source
+               WHERE source.path = r.src_path
+                 AND source.ref_coverage = 'typed'
+                 AND source.ref_generation = ?3
+             ))
            LIMIT 1
          ),
          target_symbol = COALESCE((
@@ -332,9 +341,17 @@ export class Db {
              AND r.src_line = execution_nodes.target_line
              AND r.src_column = execution_nodes.target_column
              AND r.dst_path IS NOT NULL
+             AND r.dst_symbol_id IS NOT NULL
+             AND ((r.specifier != ?1 AND r.specifier NOT LIKE ?2) OR EXISTS (
+               SELECT 1 FROM files source
+               WHERE source.path = r.src_path
+                 AND source.ref_coverage = 'typed'
+                 AND source.ref_generation = ?3
+             ))
            LIMIT 1
          ), execution_nodes.target_local)
        WHERE execution_nodes.target_local != ''`,
+      [TYPED_SPECIFIER, `${TYPED_SPECIFIER}:%`, currentTypedGeneration],
     );
   }
 

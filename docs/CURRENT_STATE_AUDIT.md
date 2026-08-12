@@ -187,11 +187,13 @@ For explicit `path === "/..."` guards it constructs a small operation/control
 graph, preserves bounded positive boolean route alternatives without inventing
 facts from negation, retains both `if` outcomes and caught exceptions, runs
 `finally` blocks before deferred returns or throws, labels the actually awaited
-call, and recognizes concrete HTTP response effects. Native SQLite enumerates
-paths with node/path limits and cycle detection. Unsupported loop/switch
-control and bounded-input truncation are preserved as visible diagnostics. The
-adapter currently proves the product shape for one measured route family; it
-does not fill the general gaps listed above.
+call (including calls evaluated by a nested condition), skips deferred callback
+bodies, and recognizes concrete HTTP response effects only through the bounded
+response-helper contract. Native SQLite enumerates paths with node/path limits
+and cycle detection. Unsupported loop/switch control and bounded-input
+truncation are preserved as visible diagnostics and keep affected paths
+incomplete. The adapter currently proves the product shape for one measured
+route family; it does not fill the general gaps listed above.
 
 The gap workflow in [`packages/engine/src/graph/gaps.ts`](../packages/engine/src/graph/gaps.ts) and asserted relations in [`packages/engine/src/graph/relations.ts`](../packages/engine/src/graph/relations.ts) are valuable escape hatches. However, asserted relations are not yet a first-class overlay in the main flow and trace queries, so teaching the system a missed relationship does not consistently improve its answers.
 
@@ -293,9 +295,9 @@ explicit user-visible restore workflow for a generally corrupted store remain.
 
 The audit ran the following checks successfully against the working tree:
 
-- `npm test`: 37 engine test files and 309 tests passed.
+- `npm test`: 37 engine test files and 310 tests passed.
 - `npm run build`: native core, engine, bridge, protocol, and desktop passed.
-- `cargo test` in `packages/scan-core`: 38 Rust tests passed.
+- `cargo test` in `packages/scan-core`: 41 Rust tests passed.
 - The retired migration benchmark found 127 files, parsed 84, and reported 548
   symbols and 342 imports with no agreement differences. The Rust path took
   about 14 ms versus 158 ms for the former TypeScript path in that single run.

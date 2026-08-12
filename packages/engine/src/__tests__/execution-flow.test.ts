@@ -75,7 +75,7 @@ withNative("deterministic execution flow", () => {
       gaps: 0,
       producer: {
         id: "sdlc-http-route-adapter",
-        version: "2",
+        version: "3",
         kind: "framework",
       },
       certainty: "inferred",
@@ -208,6 +208,39 @@ export async function route(path: string, res: unknown): Promise<void> {
 
     expect(resolveTypes(db, root).ran).toBe(true);
     expect(target()).toEqual({ path: "src/service.ts", symbol: "query", external: "" });
+
+    const { writeFile } = await import("node:fs/promises");
+    await writeFile(
+      `${root}/src/service.ts`,
+      `export class Service { async renamed(): Promise<number> { return 1; } }
+       export const service = new Service();`,
+    );
+    await scan(root, { kind: "execution-typed-target-change" });
+    expect(target()).toEqual({ path: null, symbol: "query", external: "" });
+  });
+
+  it("keeps paths incomplete after an unsupported control-flow gap", async () => {
+    root = await makeProject({
+      "src/http.ts": `
+function sendJson(_res: unknown, _status: number, _body: unknown): void {}
+export function route(path: string, res: unknown): void {
+  if (path === "/loop") {
+    while (ready()) { work(); }
+    sendJson(res, 200, {});
+  }
+}
+`,
+    });
+    await scan(root, { full: true, kind: "execution-gap" });
+    const db = await getDb(root);
+    const entry = db.executionFlow().entries[0];
+    const view = db.executionFlow(entry.id);
+
+    expect(view.selected?.paths).toHaveLength(1);
+    expect(view.selected?.paths[0]).toMatchObject({
+      terminalEffect: "http:response:200",
+      complete: false,
+    });
   });
 
   it("serves the deterministic paths through the existing MCP flow tool", async () => {

@@ -27,7 +27,7 @@ import { sourceSignature } from "./signature.js";
  *
  * When the stored version is behind, the next scan is promoted to a full one.
  */
-export const EXTRACTION_VERSION = 12;
+export const EXTRACTION_VERSION = 13;
 
 export interface ScanOptions {
   /** Re-parse every file, ignoring content hashes. */
