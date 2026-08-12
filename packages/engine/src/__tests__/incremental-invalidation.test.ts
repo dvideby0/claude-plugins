@@ -238,6 +238,18 @@ describe("files that move keep the knowledge written about them", () => {
       db.count("SELECT COUNT(*) AS n FROM explorations WHERE path = 'src/lib/digest.ts'"),
     ).toBe(1);
     expect(orphanedOverlays(db)).toEqual([]);
+
+    // A relation's id is a fingerprint over its own endpoints. Carrying the
+    // path without re-deriving the id would leave a row whose identity no
+    // longer describes it, and re-asserting the same fact would then compute
+    // the new fingerprint, miss the row, and insert a duplicate.
+    relate(db, {
+      kind: "calls",
+      srcPath: "src/lib/digest.ts",
+      label: "hashes input",
+      evidence: "return value;",
+    });
+    expect(relationsFor(db, "src/lib/digest.ts")).toHaveLength(1);
   }, 30_000);
 
   it("refuses to guess when two identical files move at once", async () => {

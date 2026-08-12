@@ -15,6 +15,7 @@
 
 import type { Db } from "../db/db.js";
 import type { SourceFile } from "./source.js";
+import { renameRelationPaths } from "../graph/relations.js";
 
 export interface FileMove {
   from: string;
@@ -81,8 +82,10 @@ export function correlateMoves(inputs: MoveInputs): FileMove[] {
  *
  * `path` is part of the primary key on several of these tables, so a plain
  * UPDATE throws when a row already exists at the destination — which happens
- * whenever somebody has already written about the new path. `OR REPLACE` keeps
- * the destination's own row and drops the carried duplicate.
+ * whenever somebody has already written about the new path. `OR REPLACE`
+ * deletes the pre-existing destination row and lets the carried one land. Both
+ * describe the same file at the same path, so either is correct; what matters
+ * is that the move does not abort the scan.
  *
  * Findings are deliberately not moved: they survive by fingerprint and are
  * re-detected against the new path on this same scan, so carrying them would
@@ -96,8 +99,9 @@ export function applyMove(db: Db, runId: number, move: FileMove): void {
     [runId, move.from, move.to, move.evidence, new Date().toISOString()],
   );
 
-  db.run("UPDATE relations SET src_path = ? WHERE src_path = ?", [move.to, move.from]);
-  db.run("UPDATE relations SET dst_path = ? WHERE dst_path = ?", [move.to, move.from]);
+  // Relations own their identity, so the rename goes through the module that
+  // derives it rather than rewriting the column here.
+  renameRelationPaths(db, move.from, move.to);
   db.run("UPDATE flow_steps SET path = ? WHERE path = ?", [move.to, move.from]);
 
   db.run("UPDATE OR REPLACE memory_anchors SET path = ? WHERE path = ?", [move.to, move.from]);
@@ -126,28 +130,36 @@ export function orphanedOverlays(
   db: Db,
   limit = 50,
 ): Array<{ kind: string; path: string; label: string }> {
-  const absent = `AND NOT EXISTS (SELECT 1 FROM files f WHERE f.path = o.path AND f.present = 1)`;
-  const rows: Array<{ kind: string; path: string; label: string }> = [];
+  /** The path column differs per table; the absence test does not. */
+  const absent = (column: string) =>
+    `NOT EXISTS (SELECT 1 FROM files f WHERE f.path = ${column} AND f.present = 1)`;
 
+  const rows: Array<{ kind: string; path: string; label: string }> = [];
   for (const [kind, sql] of [
     [
       "memory",
-      `SELECT o.path AS path, m.title AS label FROM memory_anchors o
-         JOIN memories m ON m.id = o.memory_id AND m.status = 'active' ${absent}`,
+      `SELECT a.path AS path, m.title AS label
+         FROM memory_anchors a
+         JOIN memories m ON m.id = a.memory_id
+        WHERE m.status = 'active' AND ${absent("a.path")}`,
     ],
     [
       "relation",
-      `SELECT o.src_path AS path, COALESCE(o.label, o.kind) AS label FROM relations o
-        WHERE 1 = 1 AND NOT EXISTS (
-          SELECT 1 FROM files f WHERE f.path = o.src_path AND f.present = 1)`,
+      `SELECT r.src_path AS path, COALESCE(r.label, r.kind) AS label
+         FROM relations r
+        WHERE ${absent("r.src_path")}`,
     ],
     [
       "flow-step",
-      `SELECT o.path AS path, o.label AS label FROM flow_steps o
-        WHERE o.path IS NOT NULL ${absent}`,
+      `SELECT s.path AS path, s.label AS label
+         FROM flow_steps s
+        WHERE s.path IS NOT NULL AND ${absent("s.path")}`,
     ],
   ] as const) {
-    for (const row of db.all<{ path: string; label: string | null }>(`${sql} LIMIT ?`, [limit])) {
+    for (const row of db.all<{ path: string; label: string | null }>(
+      `${sql} ORDER BY path LIMIT ?`,
+      [limit],
+    )) {
       rows.push({ kind, path: row.path, label: row.label ?? "" });
     }
   }

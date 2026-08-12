@@ -199,6 +199,42 @@ const SELECT = `SELECT r.*, f.present AS current_present, f.content_sha AS curre
                 FROM relations r
                 LEFT JOIN files f ON f.path = r.src_path AND f.present = 1`;
 
+/**
+ * Repoint every assertion about a file that moved.
+ *
+ * A relation's id is a fingerprint over its own endpoints, so rewriting the
+ * path without re-deriving the id leaves a row whose identity no longer
+ * describes it — and the next assertion of the same fact computes the new
+ * fingerprint, misses it, and inserts a duplicate. The id has to move with the
+ * path, which is why this lives beside `fingerprint` rather than in the scan.
+ */
+export function renameRelationPaths(db: Db, from: string, to: string): void {
+  const rows = db.all<Row>(`${SELECT} WHERE r.src_path = ? OR r.dst_path = ?`, [from, from]);
+  for (const row of rows) {
+    const srcPath = row.src_path === from ? to : row.src_path;
+    const dstPath = row.dst_path === from ? to : row.dst_path;
+    const id = fingerprint({
+      kind: row.kind as RelationKind,
+      srcPath,
+      srcSymbol: row.src_symbol ?? undefined,
+      dstPath: dstPath ?? undefined,
+      dstSymbol: row.dst_symbol ?? undefined,
+      label: row.label ?? undefined,
+      evidence: row.evidence,
+    });
+    if (id === row.id) continue;
+    // The same claim may already have been asserted about the destination.
+    // Keeping both would report one fact twice.
+    db.run("DELETE FROM relations WHERE id = ?", [id]);
+    db.run("UPDATE relations SET id = ?, src_path = ?, dst_path = ? WHERE id = ?", [
+      id,
+      srcPath,
+      dstPath,
+      row.id,
+    ]);
+  }
+}
+
 export function relationsFor(db: Db, path: string, symbol?: string): Relation[] {
   const rows = symbol
     ? db.all<Row>(
