@@ -134,6 +134,11 @@ export interface NativeRef {
   line: number
   column: number
 }
+export interface NativeImport {
+  specifier: string
+  startLine: number
+  endLine: number
+}
 export interface NativeExecutionNode {
   id: string
   ordinal: number
@@ -189,7 +194,7 @@ export interface NativeFile {
   /** False for files no grammar covers, or that were skipped as noise. */
   parsed: boolean
   symbols: Array<NativeSymbol>
-  imports: Array<string>
+  imports: Array<NativeImport>
   /** Uses of imported names, for symbol-level reference resolution. */
   refs: Array<NativeRef>
   /** Product-specific entry-to-effect facts extracted by bounded adapters. */
@@ -257,6 +262,13 @@ export declare class NativeDatabase {
    * FTS expressions across the product boundary.
    */
   searchKnowledge(query: string, kindsJson: string, limit: number, memoryKind?: string | undefined | null): string
+  /**
+   * Rank task-relevant facts and one-hop graph evidence behind the existing
+   * intent-oriented briefing boundary. Source reading and final byte packing
+   * remain in the thin daemon adapter so repository containment has one
+   * implementation, while retrieval policy and ordering live with SQLite.
+   */
+  taskContext(task: string, targetsJson: string, intent?: string | undefined | null, limit?: number | undefined | null): string
   /**
    * Query the bounded, evidence-backed execution graph assembled by native
    * framework adapters. Path enumeration remains inside the native storage

@@ -26,6 +26,7 @@ mod database;
 mod http_flow;
 mod parse;
 mod provider;
+mod task_context;
 mod walk;
 
 pub use database::database_schema_version;
@@ -57,6 +58,13 @@ pub struct NativeRef {
     pub module: String,
     pub line: u32,
     pub column: u32,
+}
+
+#[napi(object)]
+pub struct NativeImport {
+    pub specifier: String,
+    pub start_line: u32,
+    pub end_line: u32,
 }
 
 #[napi(object)]
@@ -121,7 +129,7 @@ pub struct NativeFile {
     /// False for files no grammar covers, or that were skipped as noise.
     pub parsed: bool,
     pub symbols: Vec<NativeSymbol>,
-    pub imports: Vec<String>,
+    pub imports: Vec<NativeImport>,
     /// Uses of imported names, for symbol-level reference resolution.
     pub refs: Vec<NativeRef>,
     /// Product-specific entry-to-effect facts extracted by bounded adapters.
@@ -205,7 +213,15 @@ fn scan_sync(root: &str) -> NativeScan {
                         signature: symbol.signature,
                     })
                     .collect(),
-                imports: parsed.imports,
+                imports: parsed
+                    .imports
+                    .into_iter()
+                    .map(|import| NativeImport {
+                        specifier: import.specifier,
+                        start_line: import.start_line,
+                        end_line: import.end_line,
+                    })
+                    .collect(),
                 refs: parsed
                     .refs
                     .into_iter()

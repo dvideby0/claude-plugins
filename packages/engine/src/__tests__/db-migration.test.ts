@@ -34,6 +34,11 @@ describe("database migrations", () => {
           (column) => column.name === "content_sha",
         ),
       ).toBe(true);
+      const edgeColumns = JSON.parse(native.all("PRAGMA table_info(edges)", "[]")) as Array<{
+        name: string;
+      }>;
+      expect(edgeColumns.some((column) => column.name === "start_line")).toBe(true);
+      expect(edgeColumns.some((column) => column.name === "end_line")).toBe(true);
     } finally {
       native.close();
     }

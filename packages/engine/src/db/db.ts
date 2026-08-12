@@ -160,6 +160,56 @@ export interface ExecutionFlowView {
   } | null;
 }
 
+export const TASK_INTENTS = ["implement", "debug", "refactor", "review", "understand"] as const;
+export type TaskIntent = (typeof TASK_INTENTS)[number];
+
+export interface TaskTargetResolution {
+  query: string;
+  status: "resolved" | "ambiguous" | "not-found";
+  kind?: "file" | "symbol";
+  id?: string;
+  path?: string;
+  symbol?: string | null;
+  candidates?: string[];
+}
+
+export interface TaskContextCandidate {
+  id: string;
+  kind: string;
+  title: string;
+  detail: string;
+  path: string | null;
+  symbol: string | null;
+  startLine: number | null;
+  endLine: number | null;
+  evidenceSha: string | null;
+  indexedSha: string | null;
+  sourceBacked: boolean;
+  isTest: boolean;
+  score: number;
+  reasons: string[];
+  provenance: {
+    source: string;
+    certainty: string;
+    freshness: "current" | "stale" | "unverified" | "not-applicable";
+  };
+}
+
+export interface TaskContextPlan {
+  schemaVersion: 1;
+  task: string;
+  intent: TaskIntent;
+  targets: TaskTargetResolution[];
+  strategy: {
+    retrieval: "fts5-plus-one-hop";
+    ranking: "deterministic-intent-weighted";
+    maxCandidates: number;
+  };
+  candidates: TaskContextCandidate[];
+  omittedCandidates: number;
+  uncertainties: string[];
+}
+
 /** Stable location for the current path-derived workspace identity. */
 export function databasePathForWorkspace(canonicalRoot: string): string {
   return join(storeDir(), workspaceIdForCanonicalRoot(canonicalRoot), "audit.db");
@@ -284,6 +334,18 @@ export class Db {
       score: row.score,
       excerpt: row.excerpt,
     }));
+  }
+
+  /** Deterministically ranked evidence for one task, before source packing. */
+  taskContext(
+    task: string,
+    targets: readonly string[] = [],
+    intent: TaskIntent = "understand",
+    limit = 64,
+  ): TaskContextPlan {
+    return JSON.parse(
+      this.raw.taskContext(task, JSON.stringify(targets), intent, limit),
+    ) as TaskContextPlan;
   }
 
   /** Evidence-backed paths produced by bounded native framework adapters. */

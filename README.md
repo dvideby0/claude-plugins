@@ -200,7 +200,7 @@ everything else reads from it while work is happening.
 
 | Tool | For |
 |---|---|
-| `brief` | A short, ordered briefing ready to hand a subagent — constraints, surface, blast radius, covering tests. Use instead of dumping files into its prompt |
+| `brief` | The primary task-context query: ranked lexical/graph/flow/test/knowledge evidence and bounded source excerpts under an exact byte budget, with freshness, omissions, and follow-up reads. The older single-target call still works |
 | `flow` | Entry points and what runs from each, layered by call depth. Shared utilities separated out |
 | `trace` | Follow a call chain — what a symbol calls, transitively, or what reaches it |
 | `search_code` | Match by code shape, not text: empty catch blocks, bare excepts, throws |
@@ -403,8 +403,9 @@ markdown (`CONTEXT.md`, `.ecc/memory/`, session summaries), these persist to the
 store, anchored to the code, with staleness detection. A note about code that
 has since changed comes back flagged instead of quietly believed.
 
-And subagents are briefed by query rather than by file dump, which is what
-keeps the orchestrator's context small enough to run the whole job.
+And subagents are briefed by a task-first, byte-budgeted query rather than a
+file dump. The response says what was omitted and which evidence is stale, so
+the orchestrator can keep its context small without treating silence as proof.
 
 Plugins are prompts only. They carry no server and no binaries — the engine
 provides the tools, so the skills stay small and the grounding stays shared.

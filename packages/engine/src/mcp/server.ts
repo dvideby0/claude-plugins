@@ -12,11 +12,10 @@ import { resolve } from "node:path";
 import { z } from "zod";
 import { runAnalyzers } from "../analyze/run.js";
 import { contentDir } from "../content.js";
-import { getDb } from "../db/db.js";
+import { getDb, TASK_INTENTS } from "../db/db.js";
 import { extractSnippet } from "../findings/fingerprint.js";
 import { recordFindings, suppress } from "../findings/record.js";
 import { CATEGORIES, CONFIDENCES, SEVERITIES, type FindingInput } from "../findings/types.js";
-import { buildBrief } from "../graph/brief.js";
 import { resolveTypesInWorker } from "../graph/typed.js";
 import { CROSS_KINDS, crossQuery, type CrossKind, type WorkspaceRef } from "../graph/cross.js";
 import { impactOf, referencesTo } from "../graph/refs.js";
@@ -39,6 +38,7 @@ import { forget, listMemories, MEMORY_KINDS, recall, remember } from "../memory/
 import { buildContext } from "../plan/context.js";
 import { QUERY_KINDS, runQuery, type QueryKind } from "../plan/query.js";
 import { loadPlan, planUnits, savePlan } from "../plan/risk.js";
+import { buildTaskContext } from "../plan/task-context.js";
 import { buildReports } from "../report/export.js";
 import { runReview } from "../review/runner.js";
 import { scan } from "../scan/scan.js";
@@ -868,22 +868,46 @@ export function createMcpServer(options: McpServerOptions): McpServer {
 
   server.tool(
     "brief",
-    "A short, ordered briefing about a file or symbol, ready to hand to a subagent: constraints recorded against it, what it exposes and how widely it is used, what breaks if it changes, which tests cover it, and what is already known to be wrong. Use this instead of dumping files into a subagent's prompt.",
+    "Build a task-first, byte-budgeted briefing from ranked lexical, graph, flow, finding, memory, test, and source evidence. Use this before reading broadly. The legacy single target form remains supported.",
     {
       ...projectRootArg,
-      target: z.string().describe("File path, path suffix, or symbol name."),
+      target: z
+        .string()
+        .trim()
+        .min(1)
+        .max(512)
+        .optional()
+        .describe("Legacy single file path, path suffix, or symbol name."),
+      targets: z
+        .array(z.string().trim().min(1).max(512))
+        .max(8)
+        .optional()
+        .describe("Optional files, path suffixes, or symbols already known to matter."),
       task: z
         .string()
+        .trim()
+        .min(1)
+        .max(512)
         .optional()
-        .describe("What the work is — pulls in memories the target alone would miss."),
-      budget: z.number().optional().describe("Rough character budget. Default 6000."),
+        .describe("What the work is. Prefer this task-first form even when no target is known."),
+      intent: z.enum(TASK_INTENTS).optional().describe("How ranking should weight the evidence."),
+      budget: z
+        .number()
+        .int()
+        .min(6_000)
+        .max(100_000)
+        .optional()
+        .describe("Exact UTF-8 byte ceiling for the complete response. Default 12000."),
     },
-    async ({ projectRoot, target, task, budget }) =>
+    async ({ projectRoot, target, targets, task, intent, budget }) =>
       wrap(async () => {
-        const db = await getDb(resolveRoot(projectRoot));
-        return buildBrief(db, target, {
+        const root = resolveRoot(projectRoot);
+        const db = await getDb(root);
+        return buildTaskContext(db, root, {
           ...(task ? { task } : {}),
-          ...(budget ? { budget } : {}),
+          targets: [...(target ? [target] : []), ...(targets ?? [])],
+          ...(intent ? { intent } : {}),
+          ...(budget ? { budgetBytes: budget } : {}),
         });
       }),
   );

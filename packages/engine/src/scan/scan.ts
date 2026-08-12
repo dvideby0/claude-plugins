@@ -27,7 +27,7 @@ import { sourceSignature } from "./signature.js";
  *
  * When the stored version is behind, the next scan is promoted to a full one.
  */
-export const EXTRACTION_VERSION = 17;
+export const EXTRACTION_VERSION = 18;
 
 export interface ScanOptions {
   /** Re-parse every file, ignoring content hashes. */
@@ -216,10 +216,12 @@ async function doScan(projectRoot: string, options: ScanOptions = {}): Promise<S
         );
       }
 
-      for (const specifier of result.imports) {
+      for (const imported of result.imports) {
         db.run(
-          "INSERT OR REPLACE INTO edges(src_path, specifier, dst_path, external) VALUES(?, ?, NULL, NULL)",
-          [file.path, specifier],
+          `INSERT OR REPLACE INTO edges(
+             src_path, specifier, dst_path, external, start_line, end_line
+           ) VALUES(?, ?, NULL, NULL, ?, ?)`,
+          [file.path, imported.specifier, imported.startLine, imported.endLine],
         );
       }
 

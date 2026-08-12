@@ -17,13 +17,14 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-const DATABASE_SCHEMA_VERSION: u32 = 21;
+const DATABASE_SCHEMA_VERSION: u32 = 22;
 const FIRST_VERSIONED_SCHEMA: u32 = 17;
 const SCHEMA_V17_SQL: &str = include_str!("database_schema_v17.sql");
 const SCHEMA_V18_SQL: &str = include_str!("database_schema_v18.sql");
 const SCHEMA_V19_SQL: &str = include_str!("database_schema_v19.sql");
 const SCHEMA_V20_SQL: &str = include_str!("database_schema_v20.sql");
 const SCHEMA_V21_SQL: &str = include_str!("database_schema_v21.sql");
+const SCHEMA_V22_SQL: &str = include_str!("database_schema_v22.sql");
 const SEARCH_KINDS: &[&str] = &[
     "file",
     "symbol",
@@ -62,11 +63,11 @@ const ADDED_COLUMNS: &[(&str, &str, &str)] = &[
     ("flow_steps", "content_sha", "TEXT"),
 ];
 
-fn invalid_argument(message: impl Into<String>) -> Error {
+pub(crate) fn invalid_argument(message: impl Into<String>) -> Error {
     Error::new(Status::InvalidArg, message.into())
 }
 
-fn database_error(context: &str, error: rusqlite::Error) -> Error {
+pub(crate) fn database_error(context: &str, error: rusqlite::Error) -> Error {
     Error::new(Status::GenericFailure, format!("{context}: {error}"))
 }
 
@@ -499,6 +500,9 @@ fn apply_migration(connection: &Connection, version: u32) -> Result<()> {
         21 => connection
             .execute_batch(SCHEMA_V21_SQL)
             .map_err(|error| database_error("Cannot install SQLite schema v21", error)),
+        22 => connection
+            .execute_batch(SCHEMA_V22_SQL)
+            .map_err(|error| database_error("Cannot install SQLite schema v22", error)),
         _ => Err(invalid_argument(format!(
             "No SQLite migration is registered for schema v{version}"
         ))),
@@ -676,7 +680,7 @@ fn parse_memory_kind(memory_kind: Option<&str>) -> Result<Option<String>> {
     Ok(Some(memory_kind.to_string()))
 }
 
-fn search_knowledge_json(
+pub(crate) fn search_knowledge_json(
     connection: &Connection,
     query: &str,
     kinds_json: &str,
@@ -1768,6 +1772,31 @@ impl NativeDatabase {
         )
     }
 
+    /// Rank task-relevant facts and one-hop graph evidence behind the existing
+    /// intent-oriented briefing boundary. Source reading and final byte packing
+    /// remain in the thin daemon adapter so repository containment has one
+    /// implementation, while retrieval policy and ordering live with SQLite.
+    #[napi]
+    pub fn task_context(
+        &self,
+        task: String,
+        targets_json: String,
+        intent: Option<String>,
+        limit: Option<u32>,
+    ) -> Result<String> {
+        let connection = self.connection()?;
+        let connection = connection.as_ref().ok_or_else(|| {
+            Error::new(Status::GenericFailure, "SQLite store is closed".to_string())
+        })?;
+        crate::task_context::task_context_json(
+            connection,
+            &task,
+            &targets_json,
+            intent.as_deref(),
+            limit.unwrap_or(64),
+        )
+    }
+
     /// Query the bounded, evidence-backed execution graph assembled by native
     /// framework adapters. Path enumeration remains inside the native storage
     /// boundary and terminates on cycles and configured limits.
@@ -1889,6 +1918,32 @@ mod tests {
         )
         .expect("symbol result decodes");
         assert_eq!(symbols[0]["path"], "src/core/db.ts");
+
+        let task_context: serde_json::Value = serde_json::from_str(
+            &crate::task_context::task_context_json(
+                &connection,
+                "change the upload retry query",
+                "[\"src/core/db.ts\"]",
+                Some("implement"),
+                20,
+            )
+            .expect("task context succeeds"),
+        )
+        .expect("task context decodes");
+        assert_eq!(task_context["targets"][0]["status"], "resolved");
+        let task_candidates = task_context["candidates"]
+            .as_array()
+            .expect("task candidates are an array");
+        assert!(task_candidates
+            .iter()
+            .any(|candidate| candidate["id"] == "memory:primary"));
+        assert!(task_candidates
+            .iter()
+            .any(|candidate| candidate["id"] == "symbol:src/core/db.ts#function:query@1:0"));
+        assert!(task_context["uncertainties"][0]
+            .as_str()
+            .expect("reference uncertainty is text")
+            .contains("no reference analysis"));
 
         connection
             .execute(

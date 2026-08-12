@@ -11,12 +11,12 @@ hat.
 
 ## 1. Has this happened before?
 
-`recall` the error text, the failing symbol, the subsystem. A `gotcha` recorded
-by an earlier session is the cheapest possible fix, and previous sessions were
-told to record exactly this.
-
-Check `context` on the failing file for open findings — a deterministic tool
-may already have flagged the cause.
+Call `brief` with the complete symptom or error text, `intent: debug`, and any
+known failing target. It searches recorded gotchas, open findings, execution
+flows, graph neighbours, tests, and source ranges together. A diagnosis from an
+earlier session is the cheapest possible fix, and previous sessions were told
+to record exactly this. Follow its recommended reads; use `context` or
+`references` only when the returned uncertainty requires a deeper query.
 
 ## 2. Reproduce it
 

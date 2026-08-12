@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { getDb } from "../db/db.js";
-import { buildBrief } from "../graph/brief.js";
+import { buildTaskContext } from "../plan/task-context.js";
 import { scan } from "../scan/scan.js";
 import { cleanup, makeProject } from "./helpers.js";
 
@@ -76,7 +76,7 @@ describe("exported vocabulary", () => {
     await scan(root, { kind: "full" });
     const db = await getDb(root);
 
-    const brief = buildBrief(db, "src/types.ts");
+    const brief = await buildTaskContext(db, root, { targets: ["src/types.ts"] });
     expect(brief.text).toContain('"warn"');
   });
 });

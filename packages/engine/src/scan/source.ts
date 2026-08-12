@@ -30,8 +30,14 @@ export interface ParsedSymbol {
 
 export interface ParsedSource {
   symbols: ParsedSymbol[];
-  imports: string[];
+  imports: ParsedImport[];
   executionEntries: ParsedExecutionEntry[];
+}
+
+export interface ParsedImport {
+  specifier: string;
+  startLine: number;
+  endLine: number;
 }
 
 export interface ParsedExecutionNode {
@@ -134,7 +140,7 @@ interface NativeFile {
     defaultExport: boolean;
     signature: string;
   }>;
-  imports: string[];
+  imports: ParsedImport[];
   refs: Array<{ name: string; module: string; line: number; column: number }>;
   executionEntries: ParsedExecutionEntry[];
 }
