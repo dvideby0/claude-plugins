@@ -9,7 +9,7 @@ use crate::database::{database_error, invalid_argument, search_knowledge_json};
 use napi::Result;
 use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::{json, Value};
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 const INTENTS: &[&str] = &["implement", "debug", "refactor", "review", "understand"];
 const MAX_TASK_BYTES: usize = 512;
@@ -44,6 +44,27 @@ struct Candidate {
     reasons: BTreeSet<String>,
     is_test: bool,
     source_backed: bool,
+}
+
+#[derive(Default)]
+struct RetrievalOmissions {
+    candidates: usize,
+}
+
+#[derive(Debug)]
+struct ReferenceEvidence {
+    src_path: String,
+    src_line: u32,
+    src_column: u32,
+    src_symbol: Option<String>,
+    name: String,
+    specifier: String,
+    dst_path: Option<String>,
+    dst_symbol_id: Option<String>,
+    dst_symbol: Option<String>,
+    content_sha: String,
+    is_test: bool,
+    total: usize,
 }
 
 impl Candidate {
@@ -300,6 +321,155 @@ fn add_symbol(
     Ok(())
 }
 
+fn dependency_candidate(
+    source: &FileMeta,
+    specifier: &str,
+    destination: &str,
+    score: i64,
+) -> Candidate {
+    Candidate {
+        id: format!("edge:{}:{specifier}", source.path),
+        kind: "dependency".to_string(),
+        title: format!("{} imports {destination}", source.path),
+        detail: format!("Resolved import {specifier} → {destination}"),
+        // An edge is produced by the importing source. Anchoring it to the
+        // destination makes an obsolete import look current when the importer
+        // changes in the working tree but has not been re-indexed yet.
+        path: Some(source.path.clone()),
+        symbol: None,
+        start_line: Some(1),
+        end_line: Some(source.loc.clamp(1, 40)),
+        evidence_sha: Some(source.content_sha.clone()),
+        indexed_sha: Some(source.content_sha.clone()),
+        provenance: "deterministic-index".to_string(),
+        certainty: "resolved".to_string(),
+        score,
+        reasons: reason("direct dependency"),
+        is_test: source.is_test,
+        source_backed: true,
+    }
+}
+
+fn add_dependency_candidates(
+    connection: &Connection,
+    candidates: &mut CandidateSet,
+    omissions: &mut RetrievalOmissions,
+    path: &str,
+) -> Result<()> {
+    let Some(source) = file_meta(connection, path)? else {
+        return Ok(());
+    };
+    let mut statement = connection
+        .prepare(
+            "SELECT specifier, dst_path, COUNT(*) OVER()
+             FROM edges
+             WHERE src_path = ?1 AND dst_path IS NOT NULL
+             ORDER BY dst_path, specifier LIMIT 24",
+        )
+        .map_err(|error| database_error("Cannot find direct task dependencies", error))?;
+    let rows = statement
+        .query_map([path], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                usize::try_from(row.get::<_, i64>(2)?).unwrap_or(usize::MAX),
+            ))
+        })
+        .map_err(|error| database_error("Cannot find direct task dependencies", error))?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(|error| database_error("Cannot read direct task dependencies", error))?;
+    let total = rows.first().map_or(0, |row| row.2);
+    omissions.candidates += total.saturating_sub(rows.len());
+    for (specifier, destination, _) in rows {
+        candidates.insert(dependency_candidate(&source, &specifier, &destination, 660));
+        // The producer-backed edge is the relationship evidence. The lower
+        // ranked destination remains useful source context without standing in
+        // for that evidence or its freshness.
+        add_file(
+            connection,
+            candidates,
+            &destination,
+            620,
+            "dependency destination",
+        )?;
+    }
+    Ok(())
+}
+
+fn collect_reference_evidence(
+    connection: &Connection,
+    sql: &str,
+    path: &str,
+    limit: usize,
+    context: &str,
+) -> Result<(Vec<ReferenceEvidence>, usize)> {
+    let mut statement = connection
+        .prepare(sql)
+        .map_err(|error| database_error(context, error))?;
+    let rows = statement
+        .query_map(
+            params![path, i64::try_from(limit).unwrap_or(i64::MAX)],
+            |row| {
+                Ok(ReferenceEvidence {
+                    src_path: row.get(0)?,
+                    src_line: u32::try_from(row.get::<_, i64>(1)?).unwrap_or(u32::MAX),
+                    src_column: u32::try_from(row.get::<_, i64>(2)?).unwrap_or(u32::MAX),
+                    src_symbol: row.get(3)?,
+                    name: row.get(4)?,
+                    specifier: row.get(5)?,
+                    dst_path: row.get(6)?,
+                    dst_symbol_id: row.get(7)?,
+                    dst_symbol: row.get(8)?,
+                    content_sha: row.get(9)?,
+                    is_test: row.get::<_, i64>(10)? != 0,
+                    total: usize::try_from(row.get::<_, i64>(11)?).unwrap_or(usize::MAX),
+                })
+            },
+        )
+        .map_err(|error| database_error(context, error))?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(|error| database_error(context, error))?;
+    let total = rows.first().map_or(0, |row| row.total);
+    let omitted = total.saturating_sub(rows.len());
+    Ok((rows, omitted))
+}
+
+fn reference_candidate(row: ReferenceEvidence, score: i64, why: &str) -> Candidate {
+    let destination = row.dst_path.as_deref().unwrap_or("unresolved target");
+    let destination_symbol = row.dst_symbol.as_deref().unwrap_or(&row.name);
+    let target_identity = row.dst_symbol_id.as_deref().unwrap_or(destination_symbol);
+    Candidate {
+        id: format!(
+            "reference:{}:{}:{}:{}:{}",
+            row.src_path, row.src_line, row.src_column, row.specifier, target_identity
+        ),
+        kind: "reference".to_string(),
+        title: format!(
+            "{}:{} → {}#{}",
+            row.src_path, row.src_line, destination, destination_symbol
+        ),
+        detail: format!("Resolved reference through {}", row.specifier),
+        path: Some(row.src_path),
+        symbol: row.src_symbol,
+        start_line: Some(row.src_line.max(1)),
+        end_line: Some(row.src_line.max(1)),
+        // Reference rows belong to the caller. This lets the Node boundary
+        // compare the live caller with the revision that produced the fact.
+        evidence_sha: Some(row.content_sha.clone()),
+        indexed_sha: Some(row.content_sha),
+        provenance: "reference-index".to_string(),
+        certainty: if row.dst_path.is_some() {
+            "resolved".to_string()
+        } else {
+            "unresolved".to_string()
+        },
+        score,
+        reasons: reason(why),
+        is_test: row.is_test,
+        source_backed: true,
+    }
+}
+
 fn authored_candidate(
     connection: &Connection,
     kind: &str,
@@ -307,6 +477,7 @@ fn authored_candidate(
     score: i64,
     why: &str,
     preferred_path: Option<&str>,
+    preferred_symbol: Option<&str>,
 ) -> Result<Option<Candidate>> {
     match kind {
         "memory" => connection
@@ -321,9 +492,17 @@ fn authored_candidate(
                  LEFT JOIN symbols s ON s.path = a.path AND s.name = a.symbol
                                      AND a.symbol != ''
                  WHERE m.id = ?1 AND m.status = 'active'
-                 ORDER BY CASE WHEN a.path = ?2 THEN 0 ELSE 1 END,
+                 ORDER BY CASE
+                            WHEN a.path = ?2 AND a.symbol = ?3 THEN 0
+                            WHEN a.path = ?2 THEN 1
+                            ELSE 2
+                          END,
                           a.path, a.symbol, s.start_line LIMIT 1",
-                params![source_id, preferred_path.unwrap_or("")],
+                params![
+                    source_id,
+                    preferred_path.unwrap_or(""),
+                    preferred_symbol.unwrap_or("")
+                ],
                 |row| {
                     let memory_kind: String = row.get(1)?;
                     Ok(Candidate {
@@ -443,9 +622,17 @@ fn authored_candidate(
                  LEFT JOIN symbols s ON s.path = fs.path AND s.name = fs.symbol
                                      AND fs.symbol IS NOT NULL
                  WHERE fl.id = ?1
-                 ORDER BY CASE WHEN fs.path = ?2 THEN 0 ELSE 1 END,
+                 ORDER BY CASE
+                            WHEN fs.path = ?2 AND fs.symbol = ?3 THEN 0
+                            WHEN fs.path = ?2 THEN 1
+                            ELSE 2
+                          END,
                           fs.ordinal, s.start_line LIMIT 1",
-                params![source_id, preferred_path.unwrap_or("")],
+                params![
+                    source_id,
+                    preferred_path.unwrap_or(""),
+                    preferred_symbol.unwrap_or("")
+                ],
                 |row| {
                     let summary: String = row.get(1)?;
                     let trigger: Option<String> = row.get(2)?;
@@ -563,6 +750,18 @@ fn execution_candidate(
 }
 
 fn exact_or_suffix_paths(connection: &Connection, target: &str) -> Result<Vec<String>> {
+    let exact = connection
+        .query_row(
+            "SELECT path FROM files WHERE present = 1 AND path = ?1",
+            [target],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(|error| database_error("Cannot resolve exact task-context target path", error))?;
+    if let Some(exact) = exact {
+        return Ok(vec![exact]);
+    }
+
     let escaped = target
         .replace('\\', "\\\\")
         .replace('%', "\\%")
@@ -571,12 +770,12 @@ fn exact_or_suffix_paths(connection: &Connection, target: &str) -> Result<Vec<St
     let mut statement = connection
         .prepare(
             "SELECT path FROM files
-             WHERE present = 1 AND (path = ?1 OR path LIKE ?2 ESCAPE '\\')
-             ORDER BY CASE WHEN path = ?1 THEN 0 ELSE 1 END, length(path), path LIMIT 9",
+             WHERE present = 1 AND path LIKE ?1 ESCAPE '\\'
+             ORDER BY length(path), path LIMIT 9",
         )
         .map_err(|error| database_error("Cannot resolve task-context target path", error))?;
     let rows = statement
-        .query_map(params![target, suffix], |row| row.get::<_, String>(0))
+        .query_map([suffix], |row| row.get::<_, String>(0))
         .map_err(|error| database_error("Cannot resolve task-context target path", error))?
         .collect::<rusqlite::Result<Vec<_>>>()
         .map_err(|error| database_error("Cannot read task-context target paths", error))?;
@@ -607,6 +806,7 @@ fn resolve_targets(
     targets: &[String],
     seed_paths: &mut BTreeSet<String>,
     seed_symbols: &mut BTreeSet<String>,
+    seed_anchor_symbols: &mut BTreeMap<String, BTreeSet<String>>,
 ) -> Result<Vec<Value>> {
     let mut resolutions = Vec::new();
     for raw in targets {
@@ -642,6 +842,10 @@ fn resolve_targets(
             let (id, path, name) = symbols[0].clone();
             seed_paths.insert(path.clone());
             seed_symbols.insert(id.clone());
+            seed_anchor_symbols
+                .entry(path.clone())
+                .or_default()
+                .insert(name.clone());
             add_symbol(connection, candidates, &id, 1_140, "explicit target")?;
             resolutions.push(json!({
                 "query": raw,
@@ -675,6 +879,7 @@ fn add_lexical_candidates(
     task: &str,
     seed_paths: &mut BTreeSet<String>,
     seed_symbols: &mut BTreeSet<String>,
+    seed_anchor_symbols: &mut BTreeMap<String, BTreeSet<String>>,
 ) -> Result<()> {
     if task.trim().is_empty() {
         return Ok(());
@@ -717,6 +922,14 @@ fn add_lexical_candidates(
                     if let Some(path) = hit.get("path").and_then(Value::as_str) {
                         if !path.is_empty() {
                             seed_paths.insert(path.to_string());
+                            if let Some(symbol) = hit.get("symbol").and_then(Value::as_str) {
+                                if !symbol.is_empty() {
+                                    seed_anchor_symbols
+                                        .entry(path.to_string())
+                                        .or_default()
+                                        .insert(symbol.to_string());
+                                }
+                            }
                         }
                     }
                 }
@@ -729,7 +942,19 @@ fn add_lexical_candidates(
                     score,
                     "task lexical match",
                     None,
+                    None,
                 )? {
+                    if rank < 6 {
+                        if let Some(path) = candidate.path.as_ref() {
+                            seed_paths.insert(path.clone());
+                            if let Some(symbol) = candidate.symbol.as_ref() {
+                                seed_anchor_symbols
+                                    .entry(path.clone())
+                                    .or_default()
+                                    .insert(symbol.clone());
+                            }
+                        }
+                    }
                     candidates.insert(candidate);
                 }
             }
@@ -742,25 +967,51 @@ fn collect_strings(
     connection: &Connection,
     sql: &str,
     parameter: &str,
+    limit: usize,
+    omissions: &mut RetrievalOmissions,
     context: &str,
 ) -> Result<Vec<String>> {
+    // Collection caps keep graph expansion bounded, but they must not disappear
+    // silently. Count the same deterministic query, then expose every row that
+    // did not enter CandidateSet through the plan's omission total.
+    let total = connection
+        .query_row(
+            &format!("SELECT COUNT(*) FROM ({sql}) AS bounded_candidates"),
+            [parameter],
+            |row| row.get::<_, i64>(0),
+        )
+        .map_err(|error| database_error(context, error))?;
     let mut statement = connection
-        .prepare(sql)
+        .prepare(&format!("{sql} LIMIT ?2"))
         .map_err(|error| database_error(context, error))?;
     let rows = statement
-        .query_map([parameter], |row| row.get::<_, String>(0))
+        .query_map(
+            params![parameter, i64::try_from(limit).unwrap_or(i64::MAX)],
+            |row| row.get::<_, String>(0),
+        )
         .map_err(|error| database_error(context, error))?
         .collect::<rusqlite::Result<Vec<_>>>()
         .map_err(|error| database_error(context, error))?;
+    omissions.candidates += usize::try_from(total)
+        .unwrap_or(usize::MAX)
+        .saturating_sub(rows.len());
     Ok(rows)
 }
 
-fn expand_path(connection: &Connection, candidates: &mut CandidateSet, path: &str) -> Result<()> {
+fn expand_path(
+    connection: &Connection,
+    candidates: &mut CandidateSet,
+    omissions: &mut RetrievalOmissions,
+    path: &str,
+    preferred_symbol: Option<&str>,
+) -> Result<()> {
     for id in collect_strings(
         connection,
         "SELECT m.id FROM memories m JOIN memory_anchors a ON a.memory_id = m.id
-         WHERE a.path = ?1 AND m.status = 'active' ORDER BY m.updated_at DESC LIMIT 20",
+         WHERE a.path = ?1 AND m.status = 'active' ORDER BY m.updated_at DESC",
         path,
+        20,
+        omissions,
         "Cannot find memories anchored to task target",
     )? {
         if let Some(candidate) = authored_candidate(
@@ -770,6 +1021,7 @@ fn expand_path(connection: &Connection, candidates: &mut CandidateSet, path: &st
             1_020,
             "recorded against target",
             Some(path),
+            preferred_symbol,
         )? {
             candidates.insert(candidate);
         }
@@ -778,8 +1030,10 @@ fn expand_path(connection: &Connection, candidates: &mut CandidateSet, path: &st
         connection,
         "SELECT id FROM findings WHERE path = ?1 AND status IN ('open', 'regressed')
          ORDER BY CASE severity WHEN 'critical' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 ELSE 3 END,
-                  line_start LIMIT 20",
+                  line_start",
         path,
+        20,
+        omissions,
         "Cannot find findings for task target",
     )? {
         if let Some(candidate) = authored_candidate(
@@ -789,6 +1043,7 @@ fn expand_path(connection: &Connection, candidates: &mut CandidateSet, path: &st
             1_010,
             "open finding on target",
             Some(path),
+            preferred_symbol,
         )? {
             candidates.insert(candidate);
         }
@@ -796,8 +1051,10 @@ fn expand_path(connection: &Connection, candidates: &mut CandidateSet, path: &st
     for id in collect_strings(
         connection,
         "SELECT DISTINCT fl.id FROM flows fl JOIN flow_steps fs ON fs.flow_id = fl.id
-         WHERE fs.path = ?1 ORDER BY fl.updated_at DESC LIMIT 12",
+         WHERE fs.path = ?1 ORDER BY fl.updated_at DESC",
         path,
+        12,
+        omissions,
         "Cannot find authored flows for task target",
     )? {
         if let Some(candidate) = authored_candidate(
@@ -807,6 +1064,7 @@ fn expand_path(connection: &Connection, candidates: &mut CandidateSet, path: &st
             930,
             "authored flow crosses target",
             Some(path),
+            preferred_symbol,
         )? {
             candidates.insert(candidate);
         }
@@ -814,8 +1072,10 @@ fn expand_path(connection: &Connection, candidates: &mut CandidateSet, path: &st
     for id in collect_strings(
         connection,
         "SELECT DISTINCT r.id FROM relations r
-         WHERE r.src_path = ?1 OR r.dst_path = ?1 ORDER BY r.updated_at DESC LIMIT 20",
+         WHERE r.src_path = ?1 OR r.dst_path = ?1 ORDER BY r.updated_at DESC",
         path,
+        20,
+        omissions,
         "Cannot find asserted relations for task target",
     )? {
         if let Some(candidate) = authored_candidate(
@@ -825,6 +1085,7 @@ fn expand_path(connection: &Connection, candidates: &mut CandidateSet, path: &st
             820,
             "asserted relation touches target",
             Some(path),
+            preferred_symbol,
         )? {
             candidates.insert(candidate);
         }
@@ -834,8 +1095,10 @@ fn expand_path(connection: &Connection, candidates: &mut CandidateSet, path: &st
         "SELECT DISTINCT e.id FROM execution_entries e
          LEFT JOIN execution_nodes n ON n.entry_id = e.id
          WHERE e.path = ?1 OR n.path = ?1 OR n.target_path = ?1
-         ORDER BY e.path, e.start_line LIMIT 20",
+         ORDER BY e.path, e.start_line",
         path,
+        20,
+        omissions,
         "Cannot find execution entries for task target",
     )? {
         if let Some(candidate) = execution_candidate(
@@ -848,33 +1111,23 @@ fn expand_path(connection: &Connection, candidates: &mut CandidateSet, path: &st
         }
     }
 
-    for dependency in collect_strings(
-        connection,
-        "SELECT dst_path FROM edges WHERE src_path = ?1 AND dst_path IS NOT NULL
-         ORDER BY dst_path LIMIT 24",
-        path,
-        "Cannot find direct task dependencies",
-    )? {
-        add_file(
-            connection,
-            candidates,
-            &dependency,
-            660,
-            "direct dependency",
-        )?;
-    }
+    add_dependency_candidates(connection, candidates, omissions, path)?;
     for importer in collect_strings(
         connection,
-        "SELECT src_path FROM edges WHERE dst_path = ?1 ORDER BY src_path LIMIT 24",
+        "SELECT src_path FROM edges WHERE dst_path = ?1 ORDER BY src_path",
         path,
+        24,
+        omissions,
         "Cannot find direct task importers",
     )? {
         add_file(connection, candidates, &importer, 700, "direct importer")?;
     }
     for symbol_id in collect_strings(
         connection,
-        "SELECT id FROM symbols WHERE path = ?1 AND exported = 1 ORDER BY start_line LIMIT 30",
+        "SELECT id FROM symbols WHERE path = ?1 AND exported = 1 ORDER BY start_line",
         path,
+        30,
+        omissions,
         "Cannot find exported target symbols",
     )? {
         add_symbol(
@@ -885,34 +1138,98 @@ fn expand_path(connection: &Connection, candidates: &mut CandidateSet, path: &st
             "exported surface of target",
         )?;
     }
-    for symbol_id in collect_strings(
+    let (outgoing, outgoing_omitted) = collect_reference_evidence(
         connection,
-        "SELECT DISTINCT s.id FROM refs r JOIN symbols s ON s.id = r.dst_symbol_id
-         WHERE r.src_path = ?1 ORDER BY r.src_line LIMIT 30",
+        "SELECT r.src_path, r.src_line, r.src_column, NULLIF(r.src_symbol, ''),
+                r.name, r.specifier, r.dst_path, r.dst_symbol_id, s.name,
+                f.content_sha, f.is_test, COUNT(*) OVER()
+         FROM refs r
+         JOIN files f ON f.path = r.src_path AND f.present = 1
+         LEFT JOIN symbols s ON s.id = r.dst_symbol_id
+         WHERE r.src_path = ?1 AND r.dst_path IS NOT NULL
+         ORDER BY r.src_line, r.src_column, r.name, r.specifier LIMIT ?2",
         path,
-        "Cannot find symbols referenced by task target",
-    )? {
-        add_symbol(
-            connection,
-            candidates,
-            &symbol_id,
+        30,
+        "Cannot find references produced by task target",
+    )?;
+    omissions.candidates += outgoing_omitted;
+    for reference in outgoing {
+        let destination_symbol = reference.dst_symbol_id.clone();
+        candidates.insert(reference_candidate(
+            reference,
             760,
-            "referenced by target",
-        )?;
+            "reference produced by target",
+        ));
+        if let Some(destination_symbol) = destination_symbol {
+            add_symbol(
+                connection,
+                candidates,
+                &destination_symbol,
+                720,
+                "referenced declaration",
+            )?;
+        }
     }
-    for caller in collect_strings(
+
+    let (callers, callers_omitted) = collect_reference_evidence(
         connection,
-        "SELECT DISTINCT src_path FROM refs WHERE dst_path = ?1 ORDER BY src_path LIMIT 30",
+        "WITH ranked AS (
+           SELECT r.src_path, r.src_line, r.src_column, NULLIF(r.src_symbol, '') AS src_symbol,
+                  r.name, r.specifier, r.dst_path, r.dst_symbol_id, s.name AS dst_symbol,
+                  f.content_sha, f.is_test,
+                  ROW_NUMBER() OVER (
+                    PARTITION BY r.src_path
+                    ORDER BY r.src_line, r.src_column, r.name, r.specifier
+                  ) AS source_rank
+           FROM refs r
+           JOIN files f ON f.path = r.src_path AND f.present = 1
+           LEFT JOIN symbols s ON s.id = r.dst_symbol_id
+           WHERE r.dst_path = ?1 AND r.src_path != ?1 AND f.is_test = 0
+         )
+         SELECT src_path, src_line, src_column, src_symbol, name, specifier,
+                dst_path, dst_symbol_id, dst_symbol, content_sha, is_test,
+                COUNT(*) OVER()
+         FROM ranked WHERE source_rank = 1
+         ORDER BY src_path LIMIT ?2",
         path,
-        "Cannot find callers of task target",
-    )? {
-        add_file(
-            connection,
-            candidates,
-            &caller,
-            740,
-            "tracked caller of target",
-        )?;
+        30,
+        "Cannot find line-backed callers of task target",
+    )?;
+    omissions.candidates += callers_omitted;
+    for caller in callers {
+        candidates.insert(reference_candidate(caller, 740, "tracked caller of target"));
+    }
+
+    // Covering tests are not a page of ordinary callers. Retrieve one exact
+    // call site per test independently so a test that sorts after a caller cap
+    // cannot disappear before intent ranking sees it.
+    let (covering_tests, tests_omitted) = collect_reference_evidence(
+        connection,
+        "WITH ranked AS (
+           SELECT r.src_path, r.src_line, r.src_column, NULLIF(r.src_symbol, '') AS src_symbol,
+                  r.name, r.specifier, r.dst_path, r.dst_symbol_id, s.name AS dst_symbol,
+                  f.content_sha, f.is_test,
+                  ROW_NUMBER() OVER (
+                    PARTITION BY r.src_path
+                    ORDER BY r.src_line, r.src_column, r.name, r.specifier
+                  ) AS source_rank
+           FROM refs r
+           JOIN files f ON f.path = r.src_path AND f.present = 1
+           LEFT JOIN symbols s ON s.id = r.dst_symbol_id
+           WHERE r.dst_path = ?1 AND r.src_path != ?1 AND f.is_test = 1
+         )
+         SELECT src_path, src_line, src_column, src_symbol, name, specifier,
+                dst_path, dst_symbol_id, dst_symbol, content_sha, is_test,
+                COUNT(*) OVER()
+         FROM ranked WHERE source_rank = 1
+         ORDER BY src_path LIMIT ?2",
+        path,
+        100,
+        "Cannot find covering tests for task target",
+    )?;
+    omissions.candidates += tests_omitted;
+    for test in covering_tests {
+        candidates.insert(reference_candidate(test, 780, "covering test reference"));
     }
     Ok(())
 }
@@ -920,13 +1237,16 @@ fn expand_path(connection: &Connection, candidates: &mut CandidateSet, path: &st
 fn expand_symbol(
     connection: &Connection,
     candidates: &mut CandidateSet,
+    omissions: &mut RetrievalOmissions,
     symbol_id: &str,
 ) -> Result<()> {
     for callee in collect_strings(
         connection,
         "SELECT DISTINCT dst_symbol_id FROM refs
-         WHERE src_symbol_id = ?1 AND dst_symbol_id IS NOT NULL ORDER BY dst_symbol_id LIMIT 30",
+         WHERE src_symbol_id = ?1 AND dst_symbol_id IS NOT NULL ORDER BY dst_symbol_id",
         symbol_id,
+        30,
+        omissions,
         "Cannot find task symbol callees",
     )? {
         add_symbol(
@@ -940,8 +1260,10 @@ fn expand_symbol(
     for caller in collect_strings(
         connection,
         "SELECT DISTINCT src_symbol_id FROM refs
-         WHERE dst_symbol_id = ?1 AND src_symbol_id IS NOT NULL ORDER BY src_symbol_id LIMIT 30",
+         WHERE dst_symbol_id = ?1 AND src_symbol_id IS NOT NULL ORDER BY src_symbol_id",
         symbol_id,
+        30,
+        omissions,
         "Cannot find task symbol callers",
     )? {
         add_symbol(connection, candidates, &caller, 820, "calls target symbol")?;
@@ -1031,14 +1353,17 @@ pub(crate) fn task_context_json(
     let (task, targets, intent) = parse_inputs(task, targets_json, intent)?;
     let limit = limit.clamp(1, 100) as usize;
     let mut candidates = CandidateSet::default();
+    let mut retrieval_omissions = RetrievalOmissions::default();
     let mut seed_paths = BTreeSet::new();
     let mut seed_symbols = BTreeSet::new();
+    let mut seed_anchor_symbols = BTreeMap::<String, BTreeSet<String>>::new();
     let resolutions = resolve_targets(
         connection,
         &mut candidates,
         &targets,
         &mut seed_paths,
         &mut seed_symbols,
+        &mut seed_anchor_symbols,
     )?;
     add_lexical_candidates(
         connection,
@@ -1046,12 +1371,28 @@ pub(crate) fn task_context_json(
         &task,
         &mut seed_paths,
         &mut seed_symbols,
+        &mut seed_anchor_symbols,
     )?;
     for path in &seed_paths {
-        expand_path(connection, &mut candidates, path)?;
+        let preferred_symbol = seed_anchor_symbols
+            .get(path)
+            .and_then(|symbols| symbols.iter().next())
+            .map(String::as_str);
+        expand_path(
+            connection,
+            &mut candidates,
+            &mut retrieval_omissions,
+            path,
+            preferred_symbol,
+        )?;
     }
     for symbol in &seed_symbols {
-        expand_symbol(connection, &mut candidates, symbol)?;
+        expand_symbol(
+            connection,
+            &mut candidates,
+            &mut retrieval_omissions,
+            symbol,
+        )?;
     }
 
     let mut uncertainties = Vec::new();
@@ -1085,7 +1426,8 @@ pub(crate) fn task_context_json(
         );
     }
 
-    let (ranked, omitted_candidates) = candidates.ranked(&intent, limit);
+    let (ranked, ranked_omissions) = candidates.ranked(&intent, limit);
+    let omitted_candidates = ranked_omissions.saturating_add(retrieval_omissions.candidates);
     let candidate_values = ranked
         .into_iter()
         .map(Candidate::into_value)

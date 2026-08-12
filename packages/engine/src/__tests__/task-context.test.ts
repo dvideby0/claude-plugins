@@ -192,6 +192,100 @@ describe("budgeted task context", () => {
     expect(brief.followUps).toContain("Re-index before trusting stale source-backed evidence.");
   });
 
+  it("anchors outgoing graph facts to the source revision that produced them", async () => {
+    root = await makeProject({
+      "src/a.ts": "import { dep } from './b.js';\nexport function run() { return dep(); }\n",
+      "src/b.ts": "export function dep() { return 1; }\n",
+    });
+    await scan(root, { kind: "full" });
+    const db = await getDb(root);
+    await writeFile(join(root, "src/a.ts"), "export function run() { return 2; }\n");
+
+    const brief = await buildTaskContext(db, root, {
+      targets: ["src/a.ts"],
+      intent: "review",
+      budgetBytes: 30_000,
+    });
+    const dependency = brief.evidence.find((item) => item.kind === "dependency");
+    const outgoingReference = brief.evidence.find(
+      (item) => item.kind === "reference" && item.title.includes("src/b.ts#dep"),
+    );
+    expect(dependency?.source).toMatchObject({ path: "src/a.ts", freshness: "stale" });
+    expect(outgoingReference?.source).toMatchObject({ path: "src/a.ts", freshness: "stale" });
+  });
+
+  it("resolves an exact repository path before considering longer suffix matches", async () => {
+    root = await makeProject({
+      "src/foo.ts": "export const rootFoo = 1;\n",
+      "packages/x/src/foo.ts": "export const nestedFoo = 2;\n",
+    });
+    await scan(root, { kind: "full" });
+    const brief = await buildTaskContext(await getDb(root), root, {
+      targets: ["src/foo.ts"],
+      budgetBytes: 20_000,
+    });
+    expect(brief.targets[0]).toMatchObject({
+      status: "resolved",
+      kind: "file",
+      path: "src/foo.ts",
+    });
+  });
+
+  it("retrieves covering tests independently and navigates to the caller line", async () => {
+    const files: Record<string, string> = {
+      "src/api.ts": "export function run() { return 1; }\n",
+    };
+    for (let index = 0; index < 31; index += 1) {
+      files[`src/a${String(index).padStart(2, "0")}.ts`] =
+        "import { run } from './api.js';\nexport const value = run();\n";
+    }
+    files["src/z.test.ts"] = `${Array.from(
+      { length: 60 },
+      (_, index) => `// setup ${index + 1}`,
+    ).join("\n")}\nimport { run } from './api.js';\nrun();\n`;
+    root = await makeProject(files);
+    await scan(root, { kind: "full" });
+
+    const brief = await buildTaskContext(await getDb(root), root, {
+      targets: ["src/api.ts"],
+      intent: "review",
+      budgetBytes: 100_000,
+    });
+    const coveringTest = brief.evidence.find(
+      (item) => item.kind === "reference" && item.source?.path === "src/z.test.ts",
+    );
+    expect(coveringTest?.source?.startLine).toBeGreaterThan(40);
+    expect(brief.text).toContain("run();");
+    expect(brief.budget.truncated).toBe(true);
+    expect(brief.omissions.plannerCandidates).toBeGreaterThan(0);
+  });
+
+  it("expands graph context from a task-only authored-memory match", async () => {
+    root = await makeProject({
+      "src/api.ts": "export function run() { return 1; }\n",
+      "src/api.test.ts": "import { run } from './api.js';\nrun();\n",
+    });
+    await scan(root, { kind: "full" });
+    const db = await getDb(root);
+    remember(db, {
+      kind: "gotcha",
+      title: "Flibbertigibbet failure",
+      body: "Quuxwomble is the diagnostic marker.",
+      anchors: [{ path: "src/api.ts", symbol: "run" }],
+    });
+
+    const brief = await buildTaskContext(db, root, {
+      task: "diagnose quuxwomble",
+      intent: "debug",
+      budgetBytes: 30_000,
+    });
+    expect(
+      brief.evidence.some(
+        (item) => item.kind === "reference" && item.source?.path === "src/api.test.ts",
+      ),
+    ).toBe(true);
+  });
+
   it("does not guess when a symbol target is ambiguous", async () => {
     root = await makeProject({
       "src/a.ts": "export function run() { return 'a'; }\n",
@@ -241,6 +335,37 @@ describe("budgeted task context", () => {
     });
     expect(brief.evidence.find((item) => item.id === `memory:${memory.id}`)?.source).toMatchObject({
       path: "src/b.ts",
+      symbol: "second",
+    });
+  });
+
+  it("uses the exact targeted symbol when one memory has several anchors in a file", async () => {
+    root = await makeProject({
+      "src/shared.ts": [
+        "export function first() { return 1; }",
+        "",
+        "export function second() { return 2; }",
+        "",
+      ].join("\n"),
+    });
+    await scan(root, { kind: "full" });
+    const db = await getDb(root);
+    const memory = remember(db, {
+      kind: "constraint",
+      title: "Shared symbol rule",
+      body: "Both entry points retain their behavior.",
+      anchors: [
+        { path: "src/shared.ts", symbol: "first" },
+        { path: "src/shared.ts", symbol: "second" },
+      ],
+    });
+
+    const brief = await buildTaskContext(db, root, {
+      targets: ["second"],
+      budgetBytes: 20_000,
+    });
+    expect(brief.evidence.find((item) => item.id === `memory:${memory.id}`)?.source).toMatchObject({
+      path: "src/shared.ts",
       symbol: "second",
     });
   });
