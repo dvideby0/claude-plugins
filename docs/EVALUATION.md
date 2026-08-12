@@ -168,9 +168,12 @@ measurements as zeros:
 Additional fixtures must expand the oracle before any Joern/CPG production
 adoption or broad FLOW-001 precision claim. The first HTTP case now covers one
 condition, caught exception, await, registration pattern, and response effect;
-callbacks, uncaught exceptions, loops/switches, events, database/filesystem
-effects, overloads, and unresolved dynamic behavior still need independently
-reviewed cases.
+callbacks, events, database/filesystem effects, overloads, and unresolved
+dynamic behavior still need independently reviewed cases. Explicit returns,
+uncaught throws, loops, and switches have an end-to-end native-query regression,
+but that is contract coverage rather than provider-neutral precision/recall
+evidence. Loop iteration and switch-case expansion remain unimplemented and
+unmeasured.
 
 ## Adding a fixture
 

@@ -99,6 +99,11 @@ export interface ExecutionPathView {
   conditions: string[];
   terminalNodeId: string | null;
   terminalEffect: string | null;
+  terminalOutcome: {
+    kind: "terminal-effect" | "return" | "throw" | "gap";
+    label: string;
+    external: string | null;
+  };
   certainty: string;
   complete: boolean;
 }
@@ -127,7 +132,7 @@ export interface ExecutionAssertedOverlayView {
 }
 
 export interface ExecutionFlowView {
-  schemaVersion: 3;
+  schemaVersion: 4;
   model: "entry-to-effect";
   note?: string | null;
   entries: ExecutionEntrySummary[];

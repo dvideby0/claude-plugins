@@ -762,7 +762,7 @@ export function createMcpServer(options: McpServerOptions): McpServer {
 
   server.tool(
     "flow",
-    "Evidence-backed execution paths from recognized entries to terminal effects. Defaults to the deterministic framework-adapter model when available; use mode 'calls' for the older call-graph orientation view. Returned paths preserve branches, awaits, provenance, uncertainty, freshness, explicit gaps, and unresolved call targets that keep a path incomplete.",
+    "Evidence-backed execution paths from recognized entries to terminal outcomes and effects. Defaults to the deterministic framework-adapter model when available; use mode 'calls' for the older call-graph orientation view. Returned paths preserve branches, awaits, returns, uncaught throws, provenance, uncertainty, freshness, explicit gaps, and unresolved call targets that keep a path incomplete.",
     {
       ...projectRootArg,
       mode: z

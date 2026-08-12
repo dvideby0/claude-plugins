@@ -1885,7 +1885,7 @@ async function paneFlow(workspace, pane) {
 function flowModeControls(active, hasExecution) {
   return `<div class="flow-mode" role="group" aria-label="Flow model">
     <button data-flow-mode="execution" class="${active === "execution" ? "active" : ""}"
-            ${hasExecution ? "" : "disabled"}>Entry → effect</button>
+            ${hasExecution ? "" : "disabled"}>Entry → outcome</button>
     <button data-flow-mode="calls" class="${active === "calls" ? "active" : ""}">Call graph</button>
   </div>`;
 }
@@ -1909,8 +1909,8 @@ async function paneExecutionFlow(workspace, pane, index) {
   pane.innerHTML = `
     <div class="graph-bar">
       <div>
-        <strong>Entry-to-effect paths</strong>
-        <span class="sub">Branches and terminal effects with source evidence</span>
+        <strong>Entry-to-outcome paths</strong>
+        <span class="sub">Branches, effects, returns, throws, and gaps with source evidence</span>
       </div>
       <div class="graph-controls">
         <label class="execution-overlay-toggle" title="Show current authored relations beside deterministic paths">
@@ -1977,6 +1977,36 @@ async function paneExecutionFlow(workspace, pane, index) {
       ${cards || '<div class="sub">No current assertions touch this flow.</div>'}
       ${overlay.truncated ? '<p class="execution-overlay-limit">Only the first 128 matching assertions are shown.</p>' : ""}
     </section>`;
+  }
+
+  function renderTerminalOutcome(path, terminalNode) {
+    const outcome = path.terminalOutcome ||
+      (terminalNode
+        ? {
+            kind: terminalNode.kind,
+            label: terminalNode.label,
+            external: terminalNode.target?.external || null,
+          }
+        : null);
+    if (!outcome) {
+      return `<span class="execution-gap">${path.complete ? "Handler exit" : "Incomplete path"}</span>`;
+    }
+    if (outcome.kind === "terminal-effect") {
+      const effect = outcome.external || outcome.label;
+      return `<span class="${path.complete ? "execution-effect" : "execution-gap"}">Effect · ${esc(effect)}${path.complete ? "" : " · incomplete"}</span>`;
+    }
+    if (outcome.kind === "throw") {
+      const thrown = outcome.label.replace(/^throw\b\s*/i, "");
+      return `<span class="execution-gap">Uncaught exception${thrown ? ` · ${esc(thrown)}` : ""}${path.complete ? "" : " · incomplete"}</span>`;
+    }
+    if (outcome.kind === "return") {
+      const returned = outcome.label.replace(/^return\b\s*/i, "");
+      return `<span class="${path.complete ? "execution-exit" : "execution-gap"}">Return${returned ? ` · ${esc(returned)}` : ""}${path.complete ? "" : " · incomplete"}</span>`;
+    }
+    if (outcome.kind === "gap") {
+      return `<span class="execution-gap">Gap · ${esc(outcome.label)}</span>`;
+    }
+    return `<span class="${path.complete ? "execution-exit" : "execution-gap"}">${esc(outcome.label)}</span>`;
   }
 
   function renderRail() {
@@ -2089,11 +2119,7 @@ async function paneExecutionFlow(workspace, pane, index) {
                     .join("")}
                 </ol>
                 <footer>
-                  ${
-                    path.terminalEffect
-                      ? `<span class="${path.complete ? "execution-effect" : "execution-gap"}">Effect · ${esc(path.terminalEffect)}${path.complete ? "" : " · incomplete"}</span>`
-                      : `<span class="execution-gap">${path.complete ? "Handler exit" : "Incomplete path"}</span>`
-                  }
+                  ${renderTerminalOutcome(path, terminal)}
                 </footer>
               </article>`;
             })
@@ -2132,6 +2158,12 @@ async function paneExecutionFlow(workspace, pane, index) {
 
 function showExecutionNode(workspace, node, entry, inspector, origin) {
   const target = node.target || {};
+  const externalLabel =
+    node.kind === "return" || node.kind === "throw"
+      ? "control outcome"
+      : node.kind === "terminal-effect"
+        ? "external effect"
+        : "external target";
   inspector.innerHTML = `
     <button class="close" aria-label="Close">×</button>
     <span class="execution-kicker">${esc(node.kind.replaceAll("-", " "))}</span>
@@ -2145,7 +2177,7 @@ function showExecutionNode(workspace, node, entry, inspector, origin) {
       <div><span>certainty</span><strong>${esc(node.certainty)}</strong></div>
       <div><span>producer</span><strong>${esc(entry.producer.id)} v${esc(entry.producer.version)}</strong></div>
       ${node.resolution !== "not-applicable" ? `<div><span>target resolution</span><strong>${esc(node.resolution)}</strong></div>` : ""}
-      ${target.external ? `<div><span>external effect</span><strong>${esc(target.external)}</strong></div>` : ""}
+      ${target.external ? `<div><span>${externalLabel}</span><strong>${esc(target.external)}</strong></div>` : ""}
       ${target.symbol ? `<div><span>target symbol</span><strong>${esc(target.symbol)}</strong></div>` : ""}
     </div>
     <div class="execution-inspector-actions">

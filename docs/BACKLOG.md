@@ -280,9 +280,14 @@ early returns. This closes the three-real-flow and early-return dogfood gaps,
 but only the standalone `GET /api/search` fixture is scored through the
 provider-neutral EVAL-001 precision/recall report. Switches, loops, uncaught
 exceptions, interprocedural non-response effects, and broader formal path
-evaluation remain open. Execution-flow schema v3 also exposes resolved,
-unresolved, external, and not-applicable target states; unresolved calls count
-as source-anchored gaps and keep traversing paths incomplete. Current authored
+evaluation remain outside that scored oracle. Query-level regressions now cover
+explicit returns, uncaught throws, loops, and switches end to end. Execution-flow
+schema v4 gives every path a typed terminal outcome, preserves the legacy
+effect-only field, and presents loop/switch handling as incomplete gaps rather
+than fabricated expansion. It also keeps resolved, unresolved, external, and
+not-applicable target states distinct; unresolved calls count as source-anchored
+gaps and keep traversing paths incomplete. Actual switch-case and loop-iteration
+expansion remains open pending provider evaluation. Current authored
 relations can be requested through the native query, HTTP API, and MCP `flow`
 operation and displayed with the desktop's opt-in Asserted overlay. The overlay
 remains separate from deterministic paths, excludes stale evidence, and cannot
