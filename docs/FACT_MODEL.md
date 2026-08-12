@@ -173,3 +173,11 @@ anchored diagnostic, and makes each path that traverses it incomplete. Resolved
 calls, external effects, and nodes for which resolution does not apply remain
 distinct states. The query does not guess a same-file or member-call target from
 its spelling merely to make a path look complete.
+
+Execution-flow response schema v4 adds one `terminalOutcome` to every enumerated
+path while retaining `terminalEffect` for compatible effect-only consumers. The
+outcome distinguishes a recognized external effect, an ordinary return, an
+uncaught throw, and an explicit analysis gap. A path that is bounded before a
+terminal node receives a synthetic gap outcome instead of an unexplained null.
+Return and throw nodes use `resolution: not-applicable`; their `return` and
+`exception` markers describe control outcomes, not resolved external targets.

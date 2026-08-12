@@ -195,6 +195,11 @@ truncation are preserved as visible diagnostics and keep affected paths
 incomplete. Call and await nodes now expose whether their target actually
 resolved; unresolved dispatch is counted and source-anchored as a gap, and any
 path through it stays incomplete even when a later HTTP response is recognized.
+A query-level regression covers explicit returns, uncaught throws, loops, and
+switches end to end. Every enumerated path now reports a typed terminal outcome,
+so clients can distinguish a response effect, return, exception, and gap without
+inferring semantics from a null effect field. Loop iterations and switch cases
+are still not expanded; their outcome remains explicitly incomplete.
 A checked-in dogfood regression scans this repository itself and locks the
 branches, response effects, evidence, provenance, and resolution limits for
 `GET /api/search`, `ANY /api/watch`, and `POST /api/workspaces`. The adapter
@@ -233,8 +238,10 @@ workspace now queries paths, symbols, components, flows, findings, relations,
 and memories across all indexed repositories and opens file-backed results in
 the indexed file drawer. Flow now defaults to a question-centered
 entry-to-effect path workspace when deterministic entries exist, with branches,
-terminal effects, evidence, provenance, freshness, uncertainty, and the older
-call graph as a secondary mode. Precise range-highlighted source display,
+typed terminal outcomes and effects, evidence, provenance, freshness,
+uncertainty, and the older call graph as a secondary mode. Returns and uncaught
+throws no longer appear as generic handler exits. Precise range-highlighted
+source display,
 synchronized code/graph selection, saved paths, callers/callees, change
 comparison, knowledge editing, and index-health explanations remain open.
 

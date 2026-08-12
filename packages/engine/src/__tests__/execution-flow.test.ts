@@ -300,28 +300,107 @@ export async function route(path: string, res: unknown): Promise<void> {
     expect(target()).toEqual({ path: null, symbol: "query", external: "" });
   });
 
-  it("keeps paths incomplete after an unsupported control-flow gap", async () => {
+  it("distinguishes returns, uncaught throws, and unsupported control-flow gaps", async () => {
     root = await makeProject({
       "src/http.ts": `
 function sendJson(_res: unknown, _status: number, _body: unknown): void {}
-export function route(path: string, res: unknown): void {
+export function route(path: string, res: unknown, mode: string): boolean {
+  if (path === "/return") {
+    return true;
+  }
+  if (path === "/throw") {
+    throw new Error("bad");
+  }
   if (path === "/loop") {
     while (ready()) { work(); }
     sendJson(res, 200, {});
+    return true;
   }
+  if (path === "/switch") {
+    switch (mode) {
+      case "write": work(); break;
+      default: break;
+    }
+    sendJson(res, 204, {});
+    return true;
+  }
+  return false;
 }
 `,
     });
-    await scan(root, { full: true, kind: "execution-gap" });
+    await scan(root, { full: true, kind: "execution-outcomes" });
     const db = await getDb(root);
-    const entry = db.executionFlow().entries[0];
-    const view = db.executionFlow(entry.id);
+    const views = new Map(
+      db.executionFlow().entries.map((entry) => [entry.route, db.executionFlow(entry.id)]),
+    );
 
-    expect(view.selected?.paths).toHaveLength(1);
-    expect(view.selected?.paths[0]).toMatchObject({
-      terminalEffect: "http:response:200",
-      complete: false,
-    });
+    const returnView = views.get("/return");
+    expect(returnView?.selected?.paths).toEqual([
+      expect.objectContaining({
+        complete: true,
+        terminalEffect: null,
+        terminalOutcome: expect.objectContaining({ kind: "return", external: "return" }),
+      }),
+    ]);
+    expect(returnView?.selected?.nodes).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ kind: "return", resolution: "not-applicable" }),
+      ]),
+    );
+
+    const throwView = views.get("/throw");
+    expect(throwView?.selected?.paths).toEqual([
+      expect.objectContaining({
+        complete: true,
+        terminalEffect: null,
+        terminalOutcome: expect.objectContaining({ kind: "throw", external: "exception" }),
+      }),
+    ]);
+    expect(throwView?.selected?.nodes).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ kind: "throw", resolution: "not-applicable" }),
+      ]),
+    );
+
+    const loopView = views.get("/loop");
+    expect(loopView?.selected?.paths).toEqual([
+      expect.objectContaining({
+        terminalEffect: "http:response:200",
+        terminalOutcome: {
+          kind: "terminal-effect",
+          label: "Respond HTTP 200",
+          external: "http:response:200",
+        },
+        complete: false,
+      }),
+    ]);
+    expect(loopView?.selected?.diagnostics).toEqual([
+      expect.stringContaining("contains loop; paths through it are incomplete"),
+    ]);
+
+    const switchView = views.get("/switch");
+    expect(switchView?.selected?.paths).toEqual([
+      expect.objectContaining({
+        terminalEffect: "http:response:204",
+        terminalOutcome: {
+          kind: "terminal-effect",
+          label: "Respond HTTP 204",
+          external: "http:response:204",
+        },
+        complete: false,
+      }),
+    ]);
+    expect(switchView?.selected?.diagnostics).toEqual([
+      expect.stringContaining("contains switch; paths through it are incomplete"),
+    ]);
+    expect(switchView?.selected?.nodes).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          kind: "terminal-effect",
+          resolution: "external",
+        }),
+      ]),
+    );
   });
 
   it("returns current authored relations only in the opt-in asserted overlay", async () => {
@@ -343,7 +422,7 @@ export function route(path: string, res: unknown): void {
 
     const deterministic = db.executionFlow(entry.id);
     const withAssertions = db.executionFlow(entry.id, 24, true);
-    expect(deterministic.schemaVersion).toBe(3);
+    expect(deterministic.schemaVersion).toBe(4);
     expect(deterministic.selected?.assertedOverlay).toMatchObject({
       enabled: false,
       relations: [],

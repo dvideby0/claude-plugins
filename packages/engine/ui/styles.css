@@ -1831,8 +1831,13 @@ button:disabled {
   border-color: color-mix(in srgb, var(--ok) 55%, var(--border));
 }
 
-.execution-step.kind-gap {
+.execution-step.kind-gap,
+.execution-step.kind-throw {
   border-color: var(--warn);
+}
+
+.execution-step.kind-return {
+  border-color: color-mix(in srgb, var(--info) 55%, var(--border));
 }
 
 .execution-step.resolution-unresolved {
@@ -1866,6 +1871,7 @@ button:disabled {
 }
 
 .execution-effect,
+.execution-exit,
 .execution-gap {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 10.5px;
@@ -1873,6 +1879,10 @@ button:disabled {
 
 .execution-effect {
   color: var(--ok);
+}
+
+.execution-exit {
+  color: var(--info);
 }
 
 .execution-gap {

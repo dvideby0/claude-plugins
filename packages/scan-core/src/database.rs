@@ -851,14 +851,12 @@ fn execution_node_has_unresolved_target(node: &ExecutionNodeRow) -> bool {
 }
 
 fn execution_node_resolution(node: &ExecutionNodeRow) -> &'static str {
-    if execution_node_has_unresolved_target(node) {
-        "unresolved"
-    } else if matches!(node.kind.as_str(), "call" | "await") {
-        "resolved"
-    } else if !node.external.is_empty() {
-        "external"
-    } else {
-        "not-applicable"
+    match node.kind.as_str() {
+        "call" | "await" if execution_node_has_unresolved_target(node) => "unresolved",
+        "call" | "await" if !node.external.is_empty() => "external",
+        "call" | "await" => "resolved",
+        "terminal-effect" if !node.external.is_empty() => "external",
+        _ => "not-applicable",
     }
 }
 
@@ -1138,13 +1136,11 @@ fn walk_execution_paths(
     let certainty = weakest_certainty(certainty, &node.certainty);
     node_ids.push(node.id.clone());
     if node.terminal {
-        let complete = node_ids
-            .iter()
-            .all(|id| {
-                nodes.get(id).is_some_and(|visited| {
-                    visited.kind != "gap" && !execution_node_has_unresolved_target(visited)
-                })
-            });
+        let complete = node_ids.iter().all(|id| {
+            nodes.get(id).is_some_and(|visited| {
+                visited.kind != "gap" && !execution_node_has_unresolved_target(visited)
+            })
+        });
         paths.push(ExecutionPath {
             node_ids: node_ids.clone(),
             edge_ordinals: edge_ordinals.clone(),
@@ -1300,7 +1296,7 @@ fn execution_flow_json(
 
     let Some(entry_id) = selected_entry_id else {
         return serde_json::to_string(&serde_json::json!({
-            "schemaVersion": 3,
+            "schemaVersion": 4,
             "model": "entry-to-effect",
             "note": if entries.is_empty() {
                 Some("No deterministic execution entries are indexed. Re-index after installing an adapter that recognizes this repository's entrypoints.")
@@ -1315,7 +1311,7 @@ fn execution_flow_json(
     };
     let Some(entry) = entries.iter().find(|entry| entry.id == entry_id) else {
         return serde_json::to_string(&serde_json::json!({
-            "schemaVersion": 3,
+            "schemaVersion": 4,
             "model": "entry-to-effect",
             "note": "The requested execution entry is not present in the current index.",
             "entries": entry_values,
@@ -1450,6 +1446,26 @@ fn execution_flow_json(
                 .terminal_node_id
                 .as_ref()
                 .and_then(|id| nodes.get(id));
+            let terminal_outcome = terminal.map_or_else(
+                || {
+                    serde_json::json!({
+                        "kind": "gap",
+                        "label": "Path ended before a terminal outcome",
+                        "external": serde_json::Value::Null,
+                    })
+                },
+                |node| {
+                    serde_json::json!({
+                        "kind": node.kind,
+                        "label": node.label,
+                        "external": if node.external.is_empty() {
+                            serde_json::Value::Null
+                        } else {
+                            serde_json::Value::String(node.external.clone())
+                        },
+                    })
+                },
+            );
             serde_json::json!({
                 "id": format!("{}:path:{index}", entry.id),
                 "nodeIds": path.node_ids,
@@ -1457,6 +1473,7 @@ fn execution_flow_json(
                 "conditions": path.conditions,
                 "terminalNodeId": path.terminal_node_id,
                 "terminalEffect": terminal.filter(|node| node.kind == "terminal-effect").map(|node| node.external.clone()),
+                "terminalOutcome": terminal_outcome,
                 "certainty": path.certainty,
                 "complete": path.complete,
             })
@@ -1464,7 +1481,7 @@ fn execution_flow_json(
         .collect::<Vec<_>>();
 
     serde_json::to_string(&serde_json::json!({
-        "schemaVersion": 3,
+        "schemaVersion": 4,
         "model": "entry-to-effect",
         "entries": entry_values,
         "diagnostics": inventory_diagnostics,
