@@ -2,7 +2,7 @@
 //!
 //! One call does the whole pass — walk, hash, parse — because crossing the FFI
 //! boundary per file would cost more than the parsing saves. Everything below
-//! is shaped to match what the TypeScript pipeline already produces.
+//! exposes stable, product-level facts to the Node orchestration boundary.
 //!
 //! Every entry point that touches the repository runs as an AsyncTask on the
 //! libuv pool: a synchronous FFI call blocks the daemon's event loop for the
@@ -79,6 +79,22 @@ pub struct NativeScan {
     pub parse_ms: u32,
 }
 
+#[napi(object)]
+pub struct NativeSourceFile {
+    pub path: String,
+    pub lang: String,
+    pub content_sha: String,
+    pub is_test: bool,
+    pub content: String,
+}
+
+#[napi(object)]
+pub struct NativePathPolicy {
+    pub language: String,
+    pub ignored: bool,
+    pub noise: bool,
+}
+
 fn require_dir(root: &str) -> Result<()> {
     if Path::new(root).is_dir() {
         Ok(())
@@ -101,8 +117,8 @@ fn scan_sync(root: &str) -> NativeScan {
     let files: Vec<NativeFile> = scanned
         .par_iter()
         .map_init(parse::Engines::new, |engines, file| {
-            let parseable = !walk::is_noise(&file.path)
-                && parse::grammar_for(&file.path, file.lang).is_some();
+            let parseable =
+                !walk::is_noise(&file.path) && parse::grammar_for(&file.path, file.lang).is_some();
 
             let parsed = if parseable {
                 parse::parse(engines, &file.path, file.lang, &file.content)
@@ -181,6 +197,17 @@ pub fn scan_repo(root: String) -> Result<AsyncTask<ScanTask>> {
     Ok(AsyncTask::new(ScanTask { root }))
 }
 
+/// Classify a watcher path through the Rust-owned repository policy.
+#[napi]
+pub fn source_path_policy(path: String) -> NativePathPolicy {
+    let normalized = path.replace('\\', "/");
+    NativePathPolicy {
+        language: walk::classify(&normalized).to_string(),
+        ignored: walk::is_watch_ignored_path(&normalized),
+        noise: walk::is_noise(&normalized),
+    }
+}
+
 #[napi(object)]
 pub struct NativeMatch {
     pub path: String,
@@ -239,13 +266,17 @@ fn search_sync(
             if hits.is_empty() {
                 return;
             }
-            let mut bounded = matches.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            let mut bounded = matches
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
             bounded.extend(hits);
             bounded.sort_by(ORDER);
             bounded.truncate(cap);
         });
 
-    let mut out = matches.into_inner().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut out = matches
+        .into_inner()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     out.sort_by(ORDER);
     out
 }
@@ -322,29 +353,24 @@ pub fn search_structural(
     }))
 }
 
-pub struct WalkTask {
+pub struct ReadRepoFilesTask {
     root: String,
 }
 
 #[napi]
-impl Task for WalkTask {
-    type Output = Vec<NativeFile>;
-    type JsValue = Vec<NativeFile>;
+impl Task for ReadRepoFilesTask {
+    type Output = Vec<NativeSourceFile>;
+    type JsValue = Vec<NativeSourceFile>;
 
     fn compute(&mut self) -> Result<Self::Output> {
         Ok(walk::walk(Path::new(&self.root))
             .into_iter()
-            .map(|file| NativeFile {
+            .map(|file| NativeSourceFile {
                 path: file.path,
                 lang: file.lang.to_string(),
-                loc: file.loc,
-                bytes: file.bytes,
                 content_sha: file.content_sha,
                 is_test: file.is_test,
-                parsed: false,
-                symbols: Vec::new(),
-                imports: Vec::new(),
-                refs: Vec::new(),
+                content: file.content,
             })
             .collect())
     }
@@ -354,9 +380,9 @@ impl Task for WalkTask {
     }
 }
 
-/// Walk only — used to compare phases against the TypeScript walker.
-#[napi(ts_return_type = "Promise<Array<NativeFile>>")]
-pub fn walk_repo(root: String) -> Result<AsyncTask<WalkTask>> {
+/// Read the bounded source inventory for deterministic content analyzers.
+#[napi(ts_return_type = "Promise<Array<NativeSourceFile>>")]
+pub fn read_repo_files(root: String) -> Result<AsyncTask<ReadRepoFilesTask>> {
     require_dir(&root)?;
-    Ok(AsyncTask::new(WalkTask { root }))
+    Ok(AsyncTask::new(ReadRepoFilesTask { root }))
 }

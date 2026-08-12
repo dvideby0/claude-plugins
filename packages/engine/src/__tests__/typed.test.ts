@@ -11,7 +11,6 @@ import {
 import { neighbourhood } from "../memory/context.js";
 import { remember } from "../memory/store.js";
 import { scan } from "../scan/scan.js";
-import { loadNative } from "../scan/source.js";
 import { cleanup, makeProject } from "./helpers.js";
 
 const PROJECT = {
@@ -54,9 +53,6 @@ export function wipe() {
 `,
 };
 
-/** The fast pass ships only in the native core; the fallback records no refs. */
-const hasNative = Boolean(loadNative());
-
 let root: string;
 afterEach(async () => {
   if (root) await cleanup(root);
@@ -68,15 +64,10 @@ describe("typed resolution", () => {
     await scan(root, { kind: "full" });
     const db = await getDb(root);
 
-    // The fast pass only exists in the native core, so this baseline is
-    // asserted where there is one. Typed resolution below replaces these rows
-    // outright and is therefore checked on both paths.
-    if (hasNative) {
-      // Import-based resolution sees makeStore, because it is imported by name.
-      expect(referencesTo(db, "makeStore").total).toBe(2);
-      // It cannot see `store.add(...)`: nothing named `add` was ever imported.
-      expect(referencesTo(db, "add").total).toBe(0);
-    }
+    // Import-based resolution sees makeStore, because it is imported by name.
+    expect(referencesTo(db, "makeStore").total).toBe(2);
+    // It cannot see `store.add(...)`: nothing named `add` was ever imported.
+    expect(referencesTo(db, "add").total).toBe(0);
 
     const result = resolveTypes(db, root);
     expect(result.ran).toBe(true);
@@ -166,7 +157,7 @@ describe("typed resolution", () => {
     // drop here and to come back when the typed pass runs again — which is
     // what the daemon schedules after any scan.
     await scan(root, { kind: "full", full: true });
-    if (hasNative) expect(referencesTo(db, "add").total).toBe(0);
+    expect(referencesTo(db, "add").total).toBe(0);
 
     resolveTypes(db, root);
     expect(referencesTo(db, "add").total).toBe(2);

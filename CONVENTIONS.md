@@ -48,18 +48,13 @@ Only additive migrations are supported, on purpose. Anything destructive should
 be an explicit, reviewed change, not something that happens when a daemon
 starts.
 
-## The two parsers must agree
+## Repository inventory has one implementation
 
-`packages/scan-core/src/parse.rs` is the default path;
-`packages/engine/src/scan/parse.ts` is the fallback when no native build
-exists. Any change to symbol or reference extraction lands in both, or the same
-repository produces different answers depending on which ran — and the suite
-passes on one path while the product is wrong on the other.
-
-`node scripts/bench.mjs <repo>` compares them on real code: file sets, hashes,
-line counts, symbols, imports. It is the check that they still agree.
-
-The suite runs both ways in CI. `SDLC_NATIVE=0` forces the fallback.
+`packages/scan-core` owns walking, source classification, ignore policy,
+hashing and Tree-sitter extraction. Watcher decisions and content analyzers
+must call that Rust boundary rather than reproduce its path rules in
+TypeScript. A missing platform binary is a broken installation, not a reason to
+silently downgrade to a second scanner with different evidence coverage.
 
 ## Record the vocabulary, not just the shape
 
@@ -162,13 +157,16 @@ ships unpacked. Rust build intermediates live outside the package
 (`CARGO_TARGET_DIR`, set in `scan-core/build.mjs`) or they get bundled and
 break codesigning.
 
+TypeScript does not delete output for removed source files. The engine's
+`prebuild` must clean its exact `dist` directory before compiling, or retired
+runtime code remains in the packaged desktop even though it disappeared from
+`src`.
+
 ## Working on this repository
 
 ```bash
 npm run build && npm test -w @sdlc/engine
-SDLC_NATIVE=0 npm test -w @sdlc/engine   # the fallback path must pass too
 node scripts/smoke.mjs                    # end to end through the bridge
-node scripts/bench.mjs <repo>             # the two parsers still agree
 ```
 
 A schema change additionally needs a run against an **existing** store, not

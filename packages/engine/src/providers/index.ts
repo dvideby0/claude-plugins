@@ -129,12 +129,14 @@ export async function detectProviders(refresh = false): Promise<ProviderStatus[]
     {
       id: "tree-sitter",
       name: "Tree-sitter syntax index",
-      available: true,
+      available: Boolean(native),
       bundled: true,
       version: null,
       capabilities: ["files", "symbols", "imports", "structural-search"],
       trust: "syntax",
-      detail: native ? "Bundled Rust scanner active." : "Bundled WASM fallback active.",
+      detail: native
+        ? "Bundled Rust scanner active."
+        : "Bundled Rust source runtime is unavailable.",
     },
     {
       id: "scip-typescript",
@@ -153,7 +155,7 @@ export async function detectProviders(refresh = false): Promise<ProviderStatus[]
       detail: !scip
         ? "Bundled indexer is missing."
         : !scipRuntime
-          ? "Native SCIP snapshot/import support is unavailable; syntax indexing still works."
+          ? "Bundled Rust source and SCIP snapshot support is unavailable."
           : "Ready to evaluate against an app-owned, attested source snapshot.",
     },
     {

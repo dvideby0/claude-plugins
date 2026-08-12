@@ -13,7 +13,7 @@
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { FindingInput } from "../findings/types.js";
-import type { ScannedFile } from "../scan/walk.js";
+import type { SourceTextFile } from "../scan/source.js";
 
 /** Shell fragments that turn a config value into remote code execution. */
 const DANGEROUS_COMMAND: Array<{ pattern: RegExp; why: string }> = [
@@ -206,7 +206,7 @@ function lineOf(content: string, needle: string): number | undefined {
 
 // --- package.json install hooks --------------------------------------------
 
-function checkInstallScripts(files: ScannedFile[]): FindingInput[] {
+function checkInstallScripts(files: SourceTextFile[]): FindingInput[] {
   const findings: FindingInput[] = [];
 
   for (const file of files) {
@@ -266,7 +266,7 @@ const OBFUSCATED: Array<{ pattern: RegExp; title: string }> = [
   },
 ];
 
-function checkObfuscatedPayloads(files: ScannedFile[]): FindingInput[] {
+function checkObfuscatedPayloads(files: SourceTextFile[]): FindingInput[] {
   const findings: FindingInput[] = [];
 
   for (const file of files) {
@@ -315,7 +315,7 @@ function checkObfuscatedPayloads(files: ScannedFile[]): FindingInput[] {
 const UNTRUSTED_INTERPOLATION =
   /\$\{\{\s*github\.event\.(?:issue|pull_request|comment|review|discussion)\.[a-z_.]*(?:title|body|label|name|ref|head_ref)/i;
 
-function checkWorkflows(files: ScannedFile[]): FindingInput[] {
+function checkWorkflows(files: SourceTextFile[]): FindingInput[] {
   const findings: FindingInput[] = [];
 
   for (const file of files) {
@@ -462,7 +462,7 @@ async function checkAgentConfigs(projectRoot: string): Promise<FindingInput[]> {
 
 export async function scanSupplyChain(
   projectRoot: string,
-  files: ScannedFile[],
+  files: SourceTextFile[],
 ): Promise<FindingInput[]> {
   return [
     ...checkInstallScripts(files),

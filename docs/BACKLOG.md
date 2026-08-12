@@ -115,14 +115,15 @@ Acceptance criteria:
 
 - One command reports symbol/reference/path precision and recall, indexing time, incremental time, peak memory, and store size.
 - Retrieval scenarios report recall at K, evidence coverage, packed tokens, and irrelevant-context rate.
-- Native and fallback extractors are compared against the same oracle.
+- Every selected syntax, compiler, and external provider is compared against
+  the same provider-neutral oracle.
 - Results are machine-readable and CI fails on agreed correctness regressions.
 - Benchmarks clearly separate cold, warm, and one-file-change runs.
 
 Progress (2026-08-11): the first checked-in TypeScript fixture covers a
 cross-file call, condition, early return, throw, await, and terminal HTTP
-response. `npm run eval` now runs the fallback scanner, native scanner,
-native scanner plus TypeScript checker prototype, and SCIP provider in isolated workers; it emits
+response. `npm run eval` now runs the native scanner, native scanner plus
+TypeScript checker prototype, and SCIP provider in isolated workers; it emits
 machine-readable targeted symbol/reference precision and recall, cold/warm/
 one-file-change timing where supported, prototype-store/artifact size, worker
 peak RSS, missing facts, and threshold failures. CI pins the official SCIP
@@ -176,9 +177,9 @@ Acceptance criteria:
 - A public symbol change invalidates known callers and dependent summaries.
 - The application can explain why an item is fresh or stale.
 - Deleted, renamed, and moved files do not leave orphan facts.
-- Native and fallback scanners share an explicit, tested source-inclusion
-  policy. Generated builds, packaged app copies, and app-owned artifacts cannot
-  enter trusted facts through either a full scan or a watch refresh, and the UI
+- Full scans and watch refreshes share an explicit, tested Rust
+  source-inclusion policy. Generated builds, packaged app copies, and app-owned
+  artifacts cannot enter trusted facts through either path, and the UI
   can explain why a path was included or excluded.
 
 Observed during the 2026-08-06 desktop walkthrough: creating the packaged app

@@ -15,6 +15,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { clearDaemon, logFile, ping, readDaemon, stateDir, writeDaemon } from "@sdlc/protocol";
 import { ENGINE_VERSION } from "../mcp/server.js";
+import { requireNative } from "../scan/source.js";
 import type { BridgeCommand } from "./harnesses.js";
 import { createHttpServer } from "./http.js";
 import { writeLauncher } from "./launcher.js";
@@ -75,6 +76,8 @@ async function resolveBridge(): Promise<BridgeCommand> {
 }
 
 async function main(): Promise<void> {
+  // The daemon must never advertise a partially functional indexing engine.
+  requireNative();
   await mkdir(stateDir(), { recursive: true });
 
   // Fast path for the common case. Do not remove an unresponsive record yet:

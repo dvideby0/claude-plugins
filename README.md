@@ -49,26 +49,19 @@ Walking and parsing were 95% of scan time and ran on one core. They now run in
 Rust on all of them — the `ignore` crate for the walk, native tree-sitter with
 rayon for parsing.
 
-Measured on a 10,557-file repository, 24.7 MB of source, M4 Max:
+Migration measurement on a 10,557-file repository, 24.7 MB of source, M4 Max:
 
-| Phase | TypeScript | Rust | |
+| Phase | Retired TS prototype | Rust | |
 |---|---|---|---|
 | walk | 1557 ms | 165 ms | 9.4× |
 | parse | 3154 ms | 179 ms | 17.6× |
 | **total** | **4711 ms** | **383 ms** | **12.3×** |
 
-The two implementations are held to producing the same answer, not just a
-faster one: `scripts/bench.mjs` compares file sets, content hashes, line
-counts, symbols and imports on every run. On that repository both produce
-23,643 symbols and 35,267 imports with zero differences.
-
-```bash
-node scripts/bench.mjs /path/to/repo
-```
-
-The native module is optional. Without it the engine falls back to the
-TypeScript path, and the test suite passes either way — `SDLC_NATIVE=0` forces
-the fallback.
+That comparison was the migration gate from the original TypeScript prototype.
+The duplicate walker and parser are now retired: the bundled Rust module is the
+single production source inventory and syntax engine. Startup fails with an
+actionable error if the platform binary is missing instead of silently using a
+weaker implementation with different reference coverage.
 
 ## Running it
 
@@ -157,9 +150,9 @@ bundling the engine, its content and the prebuilt native core, so installing
 the app is enough to make the plugin work.
 
 Native cores for all five targets are built per platform in CI
-(`.github/workflows/ci.yml`), which also runs the suite twice — once with the
-native core and once with `SDLC_NATIVE=0` — because the native module is an
-optional dependency and both paths have to hold.
+(`.github/workflows/ci.yml`). The engine treats the matching prebuilt core as a
+required runtime dependency, and packaging validates that the correct binary
+is present before signing.
 
 ## State
 

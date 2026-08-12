@@ -5,7 +5,7 @@ import { fingerprint } from "../findings/fingerprint.js";
 import { findCycles } from "../analyze/graph.js";
 import { scanSecrets } from "../analyze/secrets.js";
 import type { FindingInput } from "../findings/types.js";
-import type { ScannedFile } from "../scan/walk.js";
+import type { SourceTextFile } from "../scan/source.js";
 import { cleanup, makeProject } from "./helpers.js";
 
 function finding(overrides: Partial<FindingInput> = {}): FindingInput {
@@ -139,11 +139,9 @@ describe("finding lifecycle", () => {
 });
 
 describe("secret scanning", () => {
-  const file = (content: string, path = "src/config.ts"): ScannedFile => ({
+  const file = (content: string, path = "src/config.ts"): SourceTextFile => ({
     path,
     lang: "typescript",
-    loc: content.split("\n").length,
-    bytes: content.length,
     contentSha: "x",
     isTest: path.includes("test"),
     content,

@@ -1,17 +1,37 @@
 /**
  * Where scanned files come from.
  *
- * The native core walks and parses the whole repository on every core at once;
- * the TypeScript path does it one file at a time. Both produce the same rows —
- * that is checked by scripts/bench.mjs — so this picks the fast one when it is
- * present and falls back cleanly when it is not.
- *
- * Set SDLC_NATIVE=0 to force the TypeScript path.
+ * The bundled Rust core is the single production implementation. Keeping a
+ * weaker TypeScript walker/parser in parallel made source policy drift possible
+ * and forced every scanner change through two implementations.
  */
 
 import { createRequire } from "node:module";
-import type { ParseResult } from "./parse.js";
-import { isNoise, walk, type Lang } from "./walk.js";
+
+export type SourceLanguage =
+  | "typescript"
+  | "javascript"
+  | "python"
+  | "config"
+  | "docs"
+  | "other";
+
+export interface ParsedSymbol {
+  kind: "function" | "method" | "class" | "interface" | "type" | "enum" | "constant";
+  name: string;
+  startLine: number;
+  startColumn: number;
+  endLine: number;
+  endColumn: number;
+  exported: boolean;
+  defaultExport: boolean;
+  signature: string;
+}
+
+export interface ParsedSource {
+  symbols: ParsedSymbol[];
+  imports: string[];
+}
 
 /** A use of an imported name, before the specifier is resolved to a file. */
 export interface SourceRef {
@@ -23,17 +43,27 @@ export interface SourceRef {
 
 export interface SourceFile {
   path: string;
-  lang: Lang;
+  lang: SourceLanguage;
   loc: number;
   bytes: number;
   contentSha: string;
   isTest: boolean;
-  /** Present only on the TypeScript path, where parsing happens later. */
-  content: string | null;
-  /** Present only on the native path, where parsing already happened. */
-  parsed: ParseResult | null;
-  /** Uses of imported names. Native path only — see collectFiles. */
+  parsed: ParsedSource | null;
   refs: SourceRef[];
+}
+
+export interface SourceTextFile {
+  path: string;
+  lang: SourceLanguage;
+  contentSha: string;
+  isTest: boolean;
+  content: string;
+}
+
+export interface SourcePathPolicy {
+  language: SourceLanguage;
+  ignored: boolean;
+  noise: boolean;
 }
 
 interface NativeFile {
@@ -158,6 +188,10 @@ export interface NativeSnapshotManifest {
 
 export interface NativeCore {
   scanRepo(root: string): Promise<{ files: NativeFile[]; walkMs: number; parseMs: number }>;
+  /** Read source text through the same bounded inventory policy used by scans. */
+  readRepoFiles(root: string): Promise<SourceTextFile[]>;
+  /** Classify watcher paths through the Rust-owned repository policy. */
+  sourcePathPolicy(path: string): SourcePathPolicy;
   /** Present in native cores that can consume official SCIP protobuf output. */
   inspectScip?(path: string): Promise<NativeScipSummary>;
   /** Decode bounded semantic facts without exposing raw protobufs to Node. */
@@ -180,74 +214,74 @@ export interface NativeCore {
 
 let nativeLookedUp = false;
 let native: NativeCore | null = null;
+let nativeLoadFailure: string | null = null;
 
-/** Resolve the native core once. A missing binary is not an error. */
+/** Resolve the native core once so capability views can report an absent binary. */
 export function loadNative(): NativeCore | null {
   if (nativeLookedUp) return native;
   nativeLookedUp = true;
 
-  if (process.env.SDLC_NATIVE === "0") return null;
   try {
     const require = createRequire(import.meta.url);
-    native = require("@sdlc/scan-core") as NativeCore;
-  } catch {
+    const candidate = require("@sdlc/scan-core") as Partial<NativeCore>;
+    if (
+      typeof candidate.scanRepo !== "function" ||
+      typeof candidate.readRepoFiles !== "function" ||
+      typeof candidate.sourcePathPolicy !== "function"
+    ) {
+      throw new Error("the installed binary does not expose the current source-inventory API");
+    }
+    native = candidate as NativeCore;
+  } catch (error) {
+    nativeLoadFailure = error instanceof Error ? error.message : String(error);
     native = null;
   }
   return native;
 }
 
+/** Production indexing cannot silently downgrade to a less capable engine. */
+export function requireNative(): NativeCore {
+  const core = loadNative();
+  if (core) return core;
+  throw new Error(
+    `The bundled Rust scan core is unavailable${
+      nativeLoadFailure ? `: ${nativeLoadFailure}` : "."
+    } Reinstall or rebuild @sdlc/scan-core for this platform.`,
+  );
+}
+
+export function sourcePathPolicy(path: string): SourcePathPolicy {
+  return requireNative().sourcePathPolicy(path);
+}
+
+export async function readSourceFiles(projectRoot: string): Promise<SourceTextFile[]> {
+  return requireNative().readRepoFiles(projectRoot);
+}
+
 export interface CollectResult {
   files: SourceFile[];
-  engine: "native" | "typescript";
+  engine: "native";
   walkMs: number;
   parseMs: number;
 }
 
 export async function collectFiles(projectRoot: string): Promise<CollectResult> {
-  const core = loadNative();
-
-  if (core) {
-    const result = await core.scanRepo(projectRoot);
-    return {
-      engine: "native",
-      walkMs: result.walkMs,
-      parseMs: result.parseMs,
-      files: result.files.map((file) => ({
-        path: file.path,
-        lang: file.lang as Lang,
-        loc: file.loc,
-        bytes: file.bytes,
-        contentSha: file.contentSha,
-        isTest: file.isTest,
-        content: null,
-        // Noise is walked and recorded but never parsed, on either path.
-        parsed:
-          file.parsed && !isNoise(file.path)
-            ? { symbols: file.symbols as ParseResult["symbols"], imports: file.imports }
-            : null,
-        refs: file.parsed && !isNoise(file.path) ? file.refs : [],
-      })),
-    };
-  }
-
-  const started = Date.now();
-  const walked = await walk(projectRoot);
+  const result = await requireNative().scanRepo(projectRoot);
   return {
-    engine: "typescript",
-    walkMs: Date.now() - started,
-    parseMs: 0,
-    files: walked.map((file) => ({
+    engine: "native",
+    walkMs: result.walkMs,
+    parseMs: result.parseMs,
+    files: result.files.map((file) => ({
       path: file.path,
-      lang: file.lang,
+      lang: file.lang as SourceLanguage,
       loc: file.loc,
       bytes: file.bytes,
       contentSha: file.contentSha,
       isTest: file.isTest,
-      content: file.content,
-      parsed: null,
-      // Reference extraction lives in the native core only; without it the
-      // graph still works, symbol-level queries simply return nothing.
-      refs: [],
+      parsed: file.parsed
+        ? { symbols: file.symbols as ParsedSymbol[], imports: file.imports }
+        : null,
+      refs: file.parsed ? file.refs : [],
     })),
   };
 }

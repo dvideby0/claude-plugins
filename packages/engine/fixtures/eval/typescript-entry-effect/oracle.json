@@ -11,7 +11,6 @@
     "terminal-response"
   ],
   "providers": [
-    "typescript-fallback",
     "native-tree-sitter",
     "native-plus-typescript-checker",
     "scip-typescript"
@@ -34,10 +33,6 @@
     }
   ],
   "thresholds": {
-    "typescript-fallback": {
-      "symbols": { "minimumPrecision": 1, "minimumRecall": 1 },
-      "references": { "minimumRecall": 0, "maximumFalsePositives": 0 }
-    },
     "native-tree-sitter": {
       "symbols": { "minimumPrecision": 1, "minimumRecall": 1 },
       "references": { "minimumPrecision": 1, "minimumRecall": 1 }

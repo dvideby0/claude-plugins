@@ -9,7 +9,7 @@ import { extractSnippet } from "../findings/fingerprint.js";
 import type { FindingInput } from "../findings/types.js";
 import { collectGit } from "../scan/git.js";
 import { startRun } from "../scan/scan.js";
-import { walk } from "../scan/walk.js";
+import { readSourceFiles } from "../scan/source.js";
 import { auditDependencies } from "./deps.js";
 import { analyzeGraph } from "./graph.js";
 import { scanSecrets } from "./secrets.js";
@@ -85,7 +85,7 @@ export async function runAnalyzers(
   const db = await getDb(projectRoot);
   const git = await collectGit(projectRoot, "6 months ago", options.signal);
 
-  const files = await walk(projectRoot);
+  const files = await readSourceFiles(projectRoot);
   options.signal?.throwIfAborted();
   const contents = new Map(files.map((file) => [file.path, file.content]));
 

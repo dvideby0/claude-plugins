@@ -8,10 +8,10 @@ Status: executable symbol/reference corpus plus bounded Joern flow spike,
 Provider choice and product claims must be based on checked-in evidence rather
 than aggregate index counts. Each fixture declares its languages and applicable
 providers, and the evaluation command runs only those pipelines. The current
-TypeScript fixture compares the fallback scanner, native Tree-sitter scanner,
-native scanner plus existing TypeScript checker prototype, and official SCIP
-TypeScript provider. The Python/LangGraph fixture compares the fallback and
-native scanners with pinned `@sourcegraph/scip-python` 0.6.6. Each pipeline is
+TypeScript fixture compares the native Tree-sitter scanner, native scanner plus
+the existing TypeScript checker prototype, and official SCIP TypeScript
+provider. The Python/LangGraph fixture compares the native scanner with pinned
+`@sourcegraph/scip-python` 0.6.6. Each pipeline is
 isolated in its own process and scored through the same provider-neutral fact
 envelope. The checker pipeline only scores resolved references produced for the
 measured checker generation; it cannot receive credit for native baseline
@@ -77,7 +77,6 @@ entry-to-effect paths. The additional reviewed relation/path records successful
 LangGraph completion separately from the asserted application persistence
 effect. On the selected nine-symbol/nine-reference domain:
 
-- the fallback scanner finds 9/9 symbols and no resolved references;
 - the native scanner finds 9/9 symbols and 8/9 references, missing the
   same-file `build()` reference;
 - SCIP-Python finds 9/9 symbols and 9/9 references and passes official

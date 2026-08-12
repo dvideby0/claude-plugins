@@ -151,8 +151,22 @@ export interface NativeScan {
   walkMs: number
   parseMs: number
 }
+export interface NativeSourceFile {
+  path: string
+  lang: string
+  contentSha: string
+  isTest: boolean
+  content: string
+}
+export interface NativePathPolicy {
+  language: string
+  ignored: boolean
+  noise: boolean
+}
 /** Walk and parse a repository. Both phases use every core, off the event loop. */
 export declare function scanRepo(root: string): Promise<NativeScan>
+/** Classify a watcher path through the Rust-owned repository policy. */
+export declare function sourcePathPolicy(path: string): NativePathPolicy
 export interface NativeMatch {
   path: string
   line: number
@@ -174,5 +188,5 @@ export interface NativeMatch {
  * grammar each file needs.
  */
 export declare function searchStructural(root: string, query: string, languages?: Array<string> | undefined | null, limit?: number | undefined | null, textFilter?: string | undefined | null): Promise<Array<NativeMatch>>
-/** Walk only — used to compare phases against the TypeScript walker. */
-export declare function walkRepo(root: string): Promise<Array<NativeFile>>
+/** Read the bounded source inventory for deterministic content analyzers. */
+export declare function readRepoFiles(root: string): Promise<Array<NativeSourceFile>>

@@ -1,13 +1,11 @@
-import { describe, expect, it, afterEach } from "vitest";
 import { rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { afterEach, describe, expect, it } from "vitest";
 import { getDb } from "../db/db.js";
 import { impactOf, referencesTo } from "../graph/refs.js";
 import { buildBrief } from "../graph/brief.js";
 import { neighbourhood } from "../memory/context.js";
-import { parseFile } from "../scan/parse.js";
 import { EXTRACTION_VERSION, scan } from "../scan/scan.js";
-import { loadNative } from "../scan/source.js";
 import { resolveTypes } from "../graph/typed.js";
 import { cleanup, makeProject } from "./helpers.js";
 
@@ -107,13 +105,8 @@ afterEach(async () => {
   if (root) await cleanup(root);
 });
 
-// Reference extraction lives in the native core; without it these are empty
-// by design, so the suite still passes on a platform with no build.
-const native = loadNative();
-const withNative = native ? describe : describe.skip;
-
-withNative("symbol references", () => {
-  it("backfills references when a current fallback index gains native support", async () => {
+describe("symbol references", () => {
+  it("backfills references when a legacy TypeScript index gains native support", async () => {
     root = await makeProject(PROJECT);
     await scan(root, { kind: "full" });
     const db = await getDb(root);
@@ -308,27 +301,6 @@ describe("reference coverage", () => {
     expect(impactOf(db, "services/a/db.ts").resolved).toBe("services/a/db.ts");
   });
 
-  it("preserves default export identity in the TypeScript parser fallback", async () => {
-    const parsed = await parseFile(
-      "src/default.ts",
-      "typescript",
-      "export default function initialize() { return true; }",
-    );
-    expect(parsed.symbols.find((symbol) => symbol.name === "initialize")).toMatchObject({
-      exported: true,
-      defaultExport: true,
-    });
-  });
-
-  it("stores fallback parser columns as UTF-8 byte offsets", async () => {
-    const source = "/*😀*/ export function run() { return 1; }";
-    const parsed = await parseFile("src/unicode.ts", "typescript", source);
-    const symbol = parsed.symbols.find((candidate) => candidate.name === "run");
-    const start = source.indexOf("function");
-    expect(symbol?.startColumn).toBe(Buffer.byteLength(source.slice(0, start), "utf8"));
-    expect(symbol?.endColumn).toBe(Buffer.byteLength(source, "utf8"));
-  });
-
   it("finds covering tests outside the affected-file display page", async () => {
     root = await makeProject({
       "package.json": JSON.stringify({ name: "coverage-page", type: "module" }),
@@ -354,8 +326,8 @@ describe("reference coverage", () => {
     await scan(root, { kind: "full" });
     const db = await getDb(root);
 
-    // Model the supported fallback path explicitly even on a machine that has
-    // the native module, so this assertion runs in both CI variants.
+    // Model unavailable provider facts explicitly. The product must preserve
+    // unknown coverage rather than turning missing evidence into a false zero.
     db.run("DELETE FROM refs");
     db.run("UPDATE files SET ref_coverage = 'none'");
 
@@ -389,15 +361,13 @@ describe("reference coverage", () => {
     );
     await scan(root, { kind: "incremental" });
 
-    // A native rescan provides import-level facts for the changed source; the
-    // supported TypeScript fallback has no reference extractor. Neither path
-    // may inherit the untouched declaration's stronger typed label.
-    const rescannedCoverage = native ? "import" : "none";
-    expect(referencesTo(db, "run").referenceCoverage).toBe(rescannedCoverage);
-    expect(impactOf(db, "src/api.ts").referenceCoverage).toBe(rescannedCoverage);
-    expect(neighbourhood(db, "src/api.ts").file?.referenceCoverage).toBe(rescannedCoverage);
+    // A native rescan provides import-level facts for the changed source. It
+    // must not inherit the untouched declaration's stronger typed label.
+    expect(referencesTo(db, "run").referenceCoverage).toBe("import");
+    expect(impactOf(db, "src/api.ts").referenceCoverage).toBe("import");
+    expect(neighbourhood(db, "src/api.ts").file?.referenceCoverage).toBe("import");
 
-    // On the TypeScript fallback the same source has no reference extraction.
+    // Explicitly model a provider that supplied no reference facts.
     db.run("UPDATE files SET ref_coverage = 'none' WHERE path = 'src/app.ts'");
     expect(referencesTo(db, "run").referenceCoverage).toBe("none");
     expect(impactOf(db, "src/api.ts").referenceCoverage).toBe("none");

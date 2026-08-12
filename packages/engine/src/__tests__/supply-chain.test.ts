@@ -1,15 +1,17 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { scanSupplyChain } from "../analyze/supply-chain.js";
 import { scanUnicode } from "../analyze/unicode.js";
-import type { ScannedFile } from "../scan/walk.js";
+import type { SourceTextFile } from "../scan/source.js";
 import { cleanup, makeProject } from "./helpers.js";
 
-function file(path: string, content: string, lang: ScannedFile["lang"] = "config"): ScannedFile {
+function file(
+  path: string,
+  content: string,
+  lang: SourceTextFile["lang"] = "config",
+): SourceTextFile {
   return {
     path,
     lang,
-    loc: content.split("\n").length,
-    bytes: content.length,
     contentSha: "x",
     isTest: false,
     content,

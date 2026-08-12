@@ -78,7 +78,6 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - run: npm ci
       - run: npm run build
-      - run: npm run build -w @sdlc/scan-core
       - run: cargo test --manifest-path packages/scan-core/Cargo.toml
 
       - name: install official SCIP golden-test CLI
@@ -93,12 +92,8 @@ jobs:
       - name: evaluate code-intelligence providers
         run: npm run eval -w @sdlc/engine -- --json --require-scip-cli --scip-cli "$RUNNER_TEMP/scip"
 
-      # The engine must pass with and without the native core, because the
-      # native module is an optional dependency.
-      - name: test (native)
+      - name: test
         run: npm test -w @sdlc/engine
-      - name: test (typescript fallback)
-        run: SDLC_NATIVE=0 npm test -w @sdlc/engine
 
       - name: end to end
         run: |
