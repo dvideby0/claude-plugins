@@ -27,6 +27,7 @@ mod git_changes;
 mod http_flow;
 mod input_policy;
 mod parse;
+mod signature;
 mod provider;
 mod task_context;
 mod walk;
@@ -63,6 +64,12 @@ pub struct NativeGitChangeSet {
 pub struct NativeSymbol {
     pub kind: String,
     pub name: String,
+    /// Identity that survives cosmetic edits, unlike the positional id.
+    pub symbol_key: String,
+    /// The contract callers depend on: the declaration without its body.
+    pub interface_sha: String,
+    /// The implementation, absent where the declaration has no body.
+    pub body_sha: Option<String>,
     pub start_line: u32,
     pub start_column: u32,
     pub end_line: u32,
@@ -150,6 +157,11 @@ pub struct NativeFile {
     pub is_test: bool,
     /// False for files no grammar covers, or that were skipped as noise.
     pub parsed: bool,
+    /// The file's meaning with comments and formatting removed. Empty where no
+    /// grammar covers the file, which callers read as "not applicable".
+    pub syntax_sha: String,
+    /// The sorted set of modules and imported names this file depends on.
+    pub relation_set_sha: String,
     pub symbols: Vec<NativeSymbol>,
     pub imports: Vec<NativeImport>,
     /// Uses of imported names, for symbol-level reference resolution.
@@ -261,12 +273,17 @@ fn scan_sync(root: &str) -> NativeScan {
                 content_sha: file.content_sha.clone(),
                 is_test: file.is_test,
                 parsed: parseable,
+                syntax_sha: parsed.syntax_sha.clone(),
+                relation_set_sha: parsed.relation_set_sha.clone(),
                 symbols: parsed
                     .symbols
                     .into_iter()
                     .map(|symbol| NativeSymbol {
                         kind: symbol.kind,
                         name: symbol.name,
+                        symbol_key: symbol.symbol_key,
+                        interface_sha: symbol.interface_sha,
+                        body_sha: symbol.body_sha,
                         start_line: symbol.start_line,
                         start_column: symbol.start_column,
                         end_line: symbol.end_line,

@@ -64,7 +64,7 @@ authoritative relational rows.
 | Precise references | Partial | TypeScript enrichment improves results; official SCIP output can now be evaluated but is not yet imported from an immutable snapshot. |
 | Execution and data flow | Early vertical slice | One measured HTTP adapter produces real entry-to-response paths; the general view remains a heuristic call graph and data flow is not modeled. |
 | Human-readable system map | Promising | Components and ordered flows exist, but they are authored overlays rather than evidence-derived semantic objects. |
-| Incremental recomputation | Basic | Content hashes avoid some database rewrites, but invalidation is file-level and native scans still revisit the repository. |
+| Incremental recomputation | Explainable, not yet incremental | Syntax and interface signatures separate a change in meaning from a change in bytes, so a comment no longer drifts a map; one Rust policy decides and explains the input boundary. Repository walking still re-reads every file on every scan. |
 | Search and context retrieval | Measured experimental vertical slice | The primary brief has Rust-owned lexical/graph/change ranking, bounded source evidence, exact response budgets, and a pinned Aider comparison; broader coverage and task outcomes keep it experimental. |
 | Memories and notes | Basic | Anchored durable notes exist; search, evidence, validation, editing, and fine-grained staleness need work. |
 | Desktop experience | Functional shell | Useful maps and operational views exist, but it is not yet a complete code-intelligence workspace. |
@@ -134,7 +134,7 @@ Its prebuilt module is required on every supported application target.
 Important limits:
 
 - Typed enrichment is TypeScript-specific.
-- Stable symbol identity includes source position, so unrelated line movement can create avoidable churn.
+- The stored symbol id still includes source position, so unrelated line movement changes it. Cross-scan comparison now uses `symbol_key`, which does not.
 - “Incremental” currently limits database replacement, but repository walking, hashing, and native parsing are not yet a fine-grained persistent incremental pipeline.
 - Recursive filesystem watching has platform-dependent behavior and can silently fall back to no watcher.
 
@@ -212,13 +212,21 @@ The gap workflow in [`packages/engine/src/graph/gaps.ts`](../packages/engine/src
 
 Components, memberships, flows, tags, and memories let agents preserve information that parsers cannot discover. Drift is detected by comparing stored file hashes with current hashes.
 
-The current lifecycle is coarse:
+Schema v24 fixes the coarsest parts of that lifecycle. A comment-only edit no
+longer stales an anchored artifact: components, flow steps, relations, memory
+anchors, explorations and execution entries compare a comment-invariant syntax
+signature, while findings and source slices keep comparing content because a
+comment genuinely moves a line range. A symbol keeps a `symbol_key` that
+survives cosmetic edits, and `artifact_dependencies` lets a component declare
+the outside contracts it was drawn against, so a changed interface drifts the
+summary without any file inside the box changing. Every verdict now carries a
+sentence rather than a bare boolean.
 
-- a comment edit can stale an entire anchored artifact;
-- a symbol can move and lose identity despite retaining meaning;
-- semantic objects do not declare dependencies on facts or other derived objects;
+What remains coarse:
+
 - memory recall uses keyword matching rather than full-text, graph, or hybrid ranking;
 - provenance is mostly a source string rather than evidence records and authorship history;
+- prompt, model and semantic-result signatures have storage but no producer;
 - the desktop is better at viewing memories than creating, correcting, approving, or resolving them.
 
 ### MCP and context delivery
@@ -285,12 +293,15 @@ the Flow view remained the bounded call-graph prototype described above.
 
 The walkthrough also exposed an input-boundary defect: packaging output under
 `release/` entered the source inventory and appeared as an unexplained file in
-the newly drawn map. Rust now owns both inventory exclusions and watcher path
-classification, with explicit watcher exceptions for hidden agent configuration
-that is audited separately rather than added to the source map. It still does
-not apply an explainable generated-file policy for every repository. Source
-inclusion and exclusion must become user-visible before map coverage is a
-trustworthy product metric.
+the newly drawn map. That is now closed. A single Rust `input_policy` decision
+answers both the scan walk and the watcher and returns a typed reason for every
+path; generated output is decided by the repository's own committed
+`.gitignore`, with packaged-bundle and app-owned-storage rules that hold where
+none exists. Schema v23 records those decisions — a pruned directory once
+rather than its whole interior — and the Overview pane shows what was left out
+and which rule left it out, so map coverage now has an explainable denominator.
+Measured here, 218 walked files become 215 and the delta is exactly the four
+leaked paths.
 
 ### Tool integration
 

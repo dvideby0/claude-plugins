@@ -166,8 +166,12 @@ describe("knowledge retrieval", () => {
         { path: "src/checkout/service.ts", symbol: "checkoutOrder", stale: false },
       ],
     });
-    db.run("UPDATE files SET content_sha = ? WHERE path = ?", [
+    // A note is about what code means, so both signatures have to move for it
+    // to be stale. Changing content alone is a comment edit, which leaves the
+    // note standing — covered directly in the invalidation tests.
+    db.run("UPDATE files SET content_sha = ?, syntax_sha = ? WHERE path = ?", [
       "changed-after-memory-was-recorded",
+      "restructured-after-memory-was-recorded",
       "src/checkout/service.ts",
     ]);
     const staleMemory = await crossQuery(

@@ -71,19 +71,32 @@ export interface GapsResult {
 export function findGaps(db: Db, limit = 25): GapsResult {
   const gaps: Gap[] = [];
 
+  // Reading a file is understanding what it does, so reformatting it does not
+  // make it unread. Files with no syntax signature — an unparsed type, or an
+  // index predating them — fall back to content on both sides.
   const explored = new Map(
     db
-      .all<{ path: string; content_sha: string }>("SELECT path, content_sha FROM explorations")
-      .map((row) => [row.path, row.content_sha]),
+      .all<{ path: string; content_sha: string; syntax_sha: string | null }>(
+        "SELECT path, content_sha, syntax_sha FROM explorations",
+      )
+      .map((row) => [row.path, row.syntax_sha ?? row.content_sha]),
   );
   const isExplored = (path: string, sha: string | null): boolean =>
     Boolean(sha) && explored.get(path) === sha;
 
-  const files = db.all<{ path: string; content_sha: string; loc: number; churn: number }>(
-    `SELECT path, content_sha, loc, churn FROM files
+  const files = db.all<{
+    path: string;
+    content_sha: string;
+    syntax_sha: string | null;
+    loc: number;
+    churn: number;
+  }>(
+    `SELECT path, content_sha, syntax_sha, loc, churn FROM files
      WHERE present = 1 AND lang IN ('typescript','javascript','python') AND is_test = 0`,
   );
   const shaOf = new Map(files.map((file) => [file.path, file.content_sha]));
+  const meaningOf = (file: { path: string; content_sha: string; syntax_sha: string | null }) =>
+    file.syntax_sha ?? file.content_sha;
 
   // --- dispatch that the parser cannot follow -----------------------------
   for (const file of files) {
@@ -121,7 +134,7 @@ export function findGaps(db: Db, limit = 25): GapsResult {
         hint: "Read the registrations and record each one as a relation: which name maps to which function, and in what order they run.",
         // A file named for wiring outranks one that merely mentions a marker.
         score: (namedLikeWiring ? 140 : 100) + Math.min(file.churn, 20),
-        explored: isExplored(file.path, file.content_sha),
+        explored: isExplored(file.path, meaningOf(file)),
       });
     }
   }
@@ -145,7 +158,9 @@ export function findGaps(db: Db, limit = 25): GapsResult {
          SELECT 1 FROM relations rel
          JOIN files source ON source.path = rel.src_path AND source.present = 1
          WHERE rel.dst_symbol = s.name AND rel.dst_path = s.path
-           AND rel.content_sha IS NOT NULL AND rel.content_sha = source.content_sha
+           AND rel.content_sha IS NOT NULL
+           AND COALESCE(rel.syntax_sha, rel.content_sha)
+             = COALESCE(source.syntax_sha, source.content_sha)
        )
      LIMIT 400`,
   );
@@ -211,7 +226,8 @@ export function findGaps(db: Db, limit = 25): GapsResult {
      JOIN memories m ON m.id = a.memory_id
      LEFT JOIN files f ON f.path = a.path
      WHERE m.status = 'active'
-       AND (a.content_sha IS NULL OR f.path IS NULL OR f.present = 0 OR a.content_sha != f.content_sha)
+       AND (a.content_sha IS NULL OR f.path IS NULL OR f.present = 0
+            OR COALESCE(a.syntax_sha, a.content_sha) != COALESCE(f.syntax_sha, f.content_sha))
      LIMIT 20`,
   );
   for (const row of stale) {
@@ -234,7 +250,7 @@ export function findGaps(db: Db, limit = 25): GapsResult {
   const totals: Record<string, number> = {};
   for (const gap of gaps) totals[gap.kind] = (totals[gap.kind] ?? 0) + 1;
 
-  const exploredCount = files.filter((file) => isExplored(file.path, file.content_sha)).length;
+  const exploredCount = files.filter((file) => isExplored(file.path, meaningOf(file))).length;
   return {
     gaps: ranked,
     totals,

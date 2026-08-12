@@ -38,6 +38,14 @@ pub enum Grammar {
 pub struct Symbol {
     pub kind: String,
     pub name: String,
+    /// Identity that survives cosmetic edits, unlike the positional id the
+    /// store derives from `start_line`/`start_column`.
+    pub symbol_key: String,
+    /// The contract a caller depends on: the declaration without its body.
+    pub interface_sha: String,
+    /// The implementation. `None` where the declaration has no body, so a
+    /// signature that does not apply is absent rather than invented.
+    pub body_sha: Option<String>,
     pub start_line: u32,
     pub start_column: u32,
     pub end_line: u32,
@@ -71,6 +79,11 @@ pub struct Parsed {
     pub imports: Vec<Import>,
     pub refs: Vec<Reference>,
     pub execution_entries: Vec<crate::http_flow::ExecutionEntry>,
+    /// The file's meaning with comments and formatting removed. Empty when no
+    /// grammar covers the file, which callers read as "not applicable".
+    pub syntax_sha: String,
+    /// The sorted set of modules and imported names this file depends on.
+    pub relation_set_sha: String,
 }
 
 /// A name this file bound from an import: local alias -> exported name.
@@ -1481,6 +1494,8 @@ pub fn parse(engines: &mut Engines, path: &str, lang: &str, source: &str) -> Par
         let end_line = node.end_position().row as u32 + 1;
         let end_column = node.end_position().column as u32;
 
+        let (interface, body) = crate::signature::symbol_signatures(node, bytes);
+
         if label == "variable" {
             let value_kind = node
                 .child_by_field_name("value")
@@ -1510,6 +1525,9 @@ pub fn parse(engines: &mut Engines, path: &str, lang: &str, source: &str) -> Par
                     exported,
                     default_export,
                     signature: first_line(text),
+                    symbol_key: String::new(),
+                    interface_sha: interface,
+                    body_sha: body,
                 });
             } else if exported {
                 // Exported constants are a codebase's vocabulary — the closed
@@ -1526,6 +1544,9 @@ pub fn parse(engines: &mut Engines, path: &str, lang: &str, source: &str) -> Par
                     exported: true,
                     default_export,
                     signature: flattened(text),
+                    symbol_key: String::new(),
+                    interface_sha: interface,
+                    body_sha: body,
                 });
             }
             continue;
@@ -1554,7 +1575,23 @@ pub fn parse(engines: &mut Engines, path: &str, lang: &str, source: &str) -> Par
             exported,
             default_export,
             signature: first_line(text),
+            symbol_key: String::new(),
+            interface_sha: interface,
+            body_sha: body,
         });
+    }
+
+    // Same-named declarations in one file are distinguished by their order,
+    // which only moves when that duplicate set itself changes — unlike a line
+    // number, which moves whenever anything above it does.
+    let mut ordinals: std::collections::HashMap<(String, String), u32> =
+        std::collections::HashMap::new();
+    for symbol in &mut symbols {
+        let slot = ordinals
+            .entry((symbol.kind.clone(), symbol.name.clone()))
+            .or_insert(0);
+        symbol.symbol_key = crate::signature::symbol_key(path, &symbol.kind, &symbol.name, *slot);
+        *slot += 1;
     }
 
     let refs = collect_refs(tree.root_node(), bytes, &bindings, grammar);
@@ -1563,11 +1600,15 @@ pub fn parse(engines: &mut Engines, path: &str, lang: &str, source: &str) -> Par
     } else {
         crate::http_flow::extract(path, tree.root_node(), bytes)
     };
+    let syntax_sha = crate::signature::file_syntax_sha(tree.root_node(), bytes);
+    let relation_set_sha = crate::signature::relation_set_sha(&imports, &refs);
     Parsed {
         symbols,
         imports,
         refs,
         execution_entries,
+        syntax_sha,
+        relation_set_sha,
     }
 }
 

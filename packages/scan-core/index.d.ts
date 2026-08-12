@@ -134,6 +134,12 @@ export interface NativeGitChangeSet {
 export interface NativeSymbol {
   kind: string
   name: string
+  /** Identity that survives cosmetic edits, unlike the positional id. */
+  symbolKey: string
+  /** The contract callers depend on: the declaration without its body. */
+  interfaceSha: string
+  /** The implementation, absent where the declaration has no body. */
+  bodySha?: string
   startLine: number
   startColumn: number
   endLine: number
@@ -209,6 +215,13 @@ export interface NativeFile {
   isTest: boolean
   /** False for files no grammar covers, or that were skipped as noise. */
   parsed: boolean
+  /**
+   * The file's meaning with comments and formatting removed. Empty where no
+   * grammar covers the file, which callers read as "not applicable".
+   */
+  syntaxSha: string
+  /** The sorted set of modules and imported names this file depends on. */
+  relationSetSha: string
   symbols: Array<NativeSymbol>
   imports: Array<NativeImport>
   /** Uses of imported names, for symbol-level reference resolution. */

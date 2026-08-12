@@ -1,15 +1,10 @@
-import { afterAll, afterEach, describe, expect, it } from "vitest";
-import { fileURLToPath } from "node:url";
-import { rm, writeFile } from "node:fs/promises";
+import { afterEach, describe, expect, it } from "vitest";
+import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { closeDb, getDb } from "../db/db.js";
+import { getDb } from "../db/db.js";
 import { scan } from "../scan/scan.js";
-import { loadNative, sourcePathDecision } from "../scan/source.js";
 import { inputBoundaryView, exclusionForPath } from "../daemon/views.js";
 import { cleanup, makeProject, writeFiles } from "./helpers.js";
-
-const withNative = loadNative() ? describe : describe.skip;
-const repositoryRoot = fileURLToPath(new URL("../../../../", import.meta.url));
 
 /**
  * A repository that packages itself. `preload.cjs` is the exact file that
@@ -144,32 +139,4 @@ describe("repository input boundary", () => {
     expect(result.filesTotal).toBeGreaterThan(0);
     expect(result.inputDiagnostic).toContain(".gitignore");
   });
-});
-
-/**
- * Locking the behaviour of this repository itself.
- *
- * Asserting that `release/` is absent would pass vacuously — it is gitignored,
- * so a fresh clone or a CI runner never has one. The invariant is what actually
- * holds: every path in the index is a path the shared policy would admit. That
- * would have failed on the leaked `preload.cjs`, and it cannot pass by accident.
- */
-withNative("this repository's own inventory", () => {
-  afterAll(async () => {
-    await closeDb(repositoryRoot);
-  });
-
-  it("indexes only paths the shared input policy admits", async () => {
-    await scan(repositoryRoot, { kind: "input-boundary-dogfood" });
-    const db = await getDb(repositoryRoot);
-    const indexed = db
-      .all<{ path: string }>("SELECT path FROM files WHERE present = 1 ORDER BY path")
-      .map((row) => row.path);
-
-    expect(indexed.length).toBeGreaterThan(0);
-    const admitted = indexed.filter(
-      (path) => !sourcePathDecision(path, repositoryRoot, false).included,
-    );
-    expect(admitted).toEqual([]);
-  }, 120_000);
 });

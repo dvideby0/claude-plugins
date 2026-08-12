@@ -87,6 +87,16 @@ not preserve an end coordinate remain navigable by file/symbol but omit an
 invented range. Shared compiler-only declarations are grouped before projection
 so their freshness does not depend on source-row order.
 
+Schema v24 gives freshness a second comparison. Artifacts describing what code
+*means* — components, flow steps, relations, memory anchors, explorations,
+execution entries — compare a comment-invariant syntax signature, so
+reformatting a file does not make a claim about it stale. Artifacts anchored to
+a *line range* keep comparing content, because a comment genuinely moves those
+lines and a stale line number presented as current is a silent error. Every
+verdict carries the reason and the basis actually compared; a file with no
+parser, or a store predating signatures, reports `unverified` rather than
+borrowing a comparison it did not make.
+
 Legacy authored relations retain their authored-artifact generation through the
 relation update timestamp. They use a null source signature and remain
 `unverified` while their source anchor matches, or `stale` after it changes,

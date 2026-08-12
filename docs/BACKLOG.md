@@ -244,6 +244,47 @@ under `release/` caused its bundled `preload.cjs` to enter the live inventory an
 immediately appear as an unexplained, drifting map file. Resolve this as an
 input-boundary rule, not as a one-off special case for this repository.
 
+Progress (2026-08-12, input boundary and signature hierarchy): one Rust
+`input_policy` module now owns a single inclusion decision that returns a typed
+reason, and both the scan walk and the watcher ask it, so the two cannot drift.
+An explicit `EntryKind` settles the hidden-segment rule the previous pair of
+functions disagreed on. The generated-output rule consults the repository's own
+committed `.gitignore` and only that; `.ignore`, the global gitignore,
+`$GIT_DIR/info/exclude` and parent directories stay excluded because determinism
+across clones is what the earlier rule was protecting. Packaged-bundle and
+app-owned-storage rules hold where a repository has no `.gitignore`. Schema v23
+records the decisions the walk actually made — a pruned directory once, never
+its interior — with true per-reason totals beside a bounded sample, surfaced in
+the existing overview and in a file-view error that names the rule. A catch-all
+`.gitignore` relaxes once with a diagnostic rather than reporting an empty
+repository. Measured on this repository: 218 walked files become 215, and
+`git check-ignore` confirms the delta is exactly the four leaked paths.
+
+Schema v24 adds comment-invariant `syntax_sha` per file, `interface_sha` and
+`body_sha` per symbol, a stable `symbol_key` that survives cosmetic edits, a
+`relation_set_sha`, an `artifact_dependencies` table and a `file_moves` audit
+trail. `EXTRACTION_VERSION` 19 promotes one full rescan, since a migration
+cannot fill parser-produced columns. Components, flow steps, relations, memory
+anchors, explorations and execution entries now compare meaning; findings and
+source slices deliberately keep comparing content, because a comment really does
+move a line range. A moved contract invalidates the *summaries* written against
+it through recorded interface dependencies, computed at read time — it does not
+re-parse callers, whose own facts would rebuild identically. Renames correlate
+only on a Git rename or an exact content match with a one-to-one pairing, and
+authored knowledge follows; anything ambiguous degrades as before, and
+`orphanedOverlays` lists what still points at deleted code instead of dropping
+it. The evaluation harness's existing comment-append probe now reports
+`filesReparsed: 1, filesMeaningChanged: 0, executionEntriesStale: 0`. Parse time
+rose from 100.0 ms to 111.0 ms on this repository.
+
+Open: a Python docstring is a string expression, not a comment, so editing one
+still moves the syntax signature. The relation-set signature is recorded but not
+yet used to skip whole-repository edge re-resolution. Prompt, model and
+semantic-result signatures have storage but no producer — that belongs to
+SEM-001. Repository walking is still not incremental: every scan re-reads and
+re-hashes every file. Findings on paths a new rule excludes are still closed as
+`fixed` rather than retired, which this change makes visible.
+
 ## P1 — first differentiated product slice
 
 ### FLOW-001: TypeScript entry-to-effect flow MVP

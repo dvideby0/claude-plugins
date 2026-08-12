@@ -17,7 +17,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-const DATABASE_SCHEMA_VERSION: u32 = 23;
+const DATABASE_SCHEMA_VERSION: u32 = 24;
 const FIRST_VERSIONED_SCHEMA: u32 = 17;
 const SCHEMA_V17_SQL: &str = include_str!("database_schema_v17.sql");
 const SCHEMA_V18_SQL: &str = include_str!("database_schema_v18.sql");
@@ -26,6 +26,7 @@ const SCHEMA_V20_SQL: &str = include_str!("database_schema_v20.sql");
 const SCHEMA_V21_SQL: &str = include_str!("database_schema_v21.sql");
 const SCHEMA_V22_SQL: &str = include_str!("database_schema_v22.sql");
 const SCHEMA_V23_SQL: &str = include_str!("database_schema_v23.sql");
+const SCHEMA_V24_SQL: &str = include_str!("database_schema_v24.sql");
 const SEARCH_KINDS: &[&str] = &[
     "file",
     "symbol",
@@ -507,6 +508,9 @@ fn apply_migration(connection: &Connection, version: u32) -> Result<()> {
         23 => connection
             .execute_batch(SCHEMA_V23_SQL)
             .map_err(|error| database_error("Cannot install SQLite schema v23", error)),
+        24 => connection
+            .execute_batch(SCHEMA_V24_SQL)
+            .map_err(|error| database_error("Cannot install SQLite schema v24", error)),
         _ => Err(invalid_argument(format!(
             "No SQLite migration is registered for schema v{version}"
         ))),
@@ -1260,8 +1264,18 @@ fn execution_flow_json(
             "SELECT e.id, e.kind, e.label, e.method, e.route, e.path, e.symbol,
                     e.start_line, e.end_line, e.producer_id, e.producer_version,
                     e.producer_kind, e.certainty, e.input_sha,
-                    CASE WHEN f.present = 1 AND f.content_sha = e.input_sha
-                         THEN 'current' ELSE 'stale' END AS freshness,
+                    -- Freshness is about meaning, so it compares syntax where
+                    -- both sides have it. A comment added above a route does
+                    -- not change what the route does. Content is the fallback
+                    -- for an index predating syntax signatures, which must
+                    -- report stale rather than claim an unverifiable current.
+                    CASE
+                      WHEN f.present != 1 THEN 'stale'
+                      WHEN e.syntax_sha IS NOT NULL AND f.syntax_sha IS NOT NULL
+                        THEN CASE WHEN f.syntax_sha = e.syntax_sha THEN 'current' ELSE 'stale' END
+                      WHEN f.content_sha = e.input_sha THEN 'current'
+                      ELSE 'stale'
+                    END AS freshness,
                     (SELECT COUNT(*) FROM execution_nodes n
                      WHERE n.entry_id = e.id AND n.kind = 'terminal-effect') AS terminal_effects,
                     (SELECT COUNT(*) FROM execution_nodes n

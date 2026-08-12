@@ -19,6 +19,12 @@ export type SourceLanguage =
 export interface ParsedSymbol {
   kind: "function" | "method" | "class" | "interface" | "type" | "enum" | "constant";
   name: string;
+  /** Identity that survives cosmetic edits, unlike the positional `id`. */
+  symbolKey: string;
+  /** The contract callers depend on: the declaration without its body. */
+  interfaceSha: string;
+  /** The implementation. Absent where the declaration has no body. */
+  bodySha?: string;
   startLine: number;
   startColumn: number;
   endLine: number;
@@ -32,6 +38,10 @@ export interface ParsedSource {
   symbols: ParsedSymbol[];
   imports: ParsedImport[];
   executionEntries: ParsedExecutionEntry[];
+  /** The file's meaning with comments and formatting removed. */
+  syntaxSha: string;
+  /** The sorted set of modules and imported names this file depends on. */
+  relationSetSha: string;
 }
 
 export interface ParsedImport {
@@ -162,9 +172,14 @@ interface NativeFile {
   contentSha: string;
   isTest: boolean;
   parsed: boolean;
+  syntaxSha: string;
+  relationSetSha: string;
   symbols: Array<{
     kind: string;
     name: string;
+    symbolKey: string;
+    interfaceSha: string;
+    bodySha?: string;
     startLine: number;
     startColumn: number;
     endLine: number;
@@ -405,6 +420,8 @@ export async function collectFiles(projectRoot: string): Promise<CollectResult> 
             symbols: file.symbols as ParsedSymbol[],
             imports: file.imports,
             executionEntries: file.executionEntries,
+            syntaxSha: file.syntaxSha,
+            relationSetSha: file.relationSetSha,
           }
         : null,
       refs: file.parsed ? file.refs : [],
