@@ -1,0 +1,149 @@
+Here are summaries of some files present in my git repository.
+Do not propose changes to these files, treat them as *read-only*.
+If you need to edit any of these files, ask me to *add them to the chat* first.
+
+package.json
+
+src/analytics.ts:
+│export function trackAnalyticsEvent(name: string): string {
+⋮
+│export function summarizeAnalyticsWindow(events: string[]): number {
+│  return events.length;
+⋮
+
+src/api.ts:
+⋮
+│export async function postCheckout(cartId: string, key: string):
+Promise<CheckoutResult> {
+│  return submitCheckout(cartId, key);
+⋮
+
+src/auth.ts:
+│export function authenticateSession(token: string): boolean {
+⋮
+│export function refreshAuthentication(token: string): string {
+│  return `${token}-refreshed`;
+⋮
+
+src/cart.ts:
+│export interface CartItem {
+⋮
+│export interface Cart {
+│  id: string;
+│  items: CartItem[];
+⋮
+│export async function loadCart(cartId: string): Promise<Cart> {
+│  return { id: cartId, items: [{ sku: "fixture-sku", quantity: 1 }] };
+⋮
+
+src/catalog.ts:
+│export function searchCatalog(term: string): string[] {
+⋮
+│export function normalizeCatalogQuery(term: string): string {
+│  return term.trim().toLowerCase();
+⋮
+
+src/checkout.test.ts:
+⋮
+│export async function checkoutAcceptsReservedInventory(): Promise<boolean> {
+│  const result = await submitCheckout("cart-1", "stable-request-key");
+│  return result.status === "accepted" && Boolean(result.reservationId);
+⋮
+
+src/checkout.ts:
+⋮
+│export type CheckoutStatus = "accepted" | "empty" | "unavailable";
+│
+│export interface CheckoutResult {
+│  status: CheckoutStatus;
+│  reservationId?: string;
+⋮
+│export async function submitCheckout(
+│  cartId: string,
+│  idempotencyKey: string,
+⋮
+
+src/coupons.ts:
+│export function applyCoupon(total: number, percent: number): number {
+⋮
+│export function validateCoupon(code: string): boolean {
+│  return code.startsWith("SAVE-");
+⋮
+
+src/inventory.ts:
+⋮
+│export interface InventoryReservation {
+│  id: string;
+│  ok: boolean;
+⋮
+│export async function reserveInventory(items: CartItem[]):
+Promise<InventoryReservation> {
+│  return { id: `reservation-${items.length}`, ok: items.length > 0 };
+⋮
+
+src/ledger.ts:
+│export interface CheckoutRecord {
+⋮
+│export async function recordCheckout(record: CheckoutRecord): Promise<void> {
+│  void record;
+⋮
+
+src/notifications.ts:
+│export async function sendCheckoutEmail(address: string): Promise<string> {
+⋮
+│export async function sendShippingSms(phone: string): Promise<string> {
+│  return `sms:${phone}`;
+⋮
+
+src/pricing.ts:
+│export function calculateCatalogPrice(base: number, taxRate: number): number {
+⋮
+│export function formatCatalogPrice(value: number): string {
+│  return `$${value.toFixed(2)}`;
+⋮
+
+src/profile.ts:
+│export interface CustomerProfile {
+⋮
+│export function updateCustomerProfile(profile: CustomerProfile, name: string):
+CustomerProfile {
+│  return { ...profile, displayName: name };
+⋮
+
+src/recommendations.ts:
+│export function recommendProducts(history: string[]): string[] {
+⋮
+│export function rankRecommendations(products: string[]): string[] {
+│  return [...products].sort();
+⋮
+
+src/reports.ts:
+│export function buildRevenueReport(values: number[]): number {
+⋮
+│export function renderRevenueReport(total: number): string {
+│  return `revenue:${total}`;
+⋮
+
+src/reviews.ts:
+│export interface ProductReview {
+⋮
+│export function publishProductReview(review: ProductReview): string {
+│  return `${review.productId}:${review.rating}`;
+⋮
+
+src/shipping.ts:
+│export function quoteShipment(postalCode: string): number {
+⋮
+│export function chooseShippingCarrier(price: number): string {
+│  return price > 10 ? "parcel" : "post";
+⋮
+
+src/wishlist.ts:
+│export function addWishlistItem(items: string[], productId: string): string[] {
+⋮
+│export function removeWishlistItem(items: string[], productId: string):
+string[] {
+│  return items.filter((item) => item !== productId);
+⋮
+
+tsconfig.json

@@ -63,7 +63,7 @@ export interface TaskContextBrief {
   intent: TaskIntent;
   targets: TaskTargetResolution[];
   strategy: TaskContextPlan["strategy"] & {
-    sourcePacking: "rank-order-utf8-budget";
+    sourcePacking: "rank-order-path-diverse-utf8-budget";
     evaluationStatus: "experimental";
   };
   /** Standalone task briefing, including the selected source excerpts. */
@@ -90,6 +90,14 @@ interface MaterializedEvidence {
   candidate: TaskContextCandidate;
   source?: TaskEvidenceRef["source"];
   excerpt?: string;
+}
+
+function excerptOmissions(items: readonly MaterializedEvidence[]): number {
+  return items.filter((item) => item.source?.excerptTruncated).length;
+}
+
+function unavailableSources(items: readonly MaterializedEvidence[]): number {
+  return items.filter((item) => item.source?.error).length;
 }
 
 function utf8Bytes(value: string): number {
@@ -249,7 +257,7 @@ function buildResponse(
     targets: plan.targets,
     strategy: {
       ...plan.strategy,
-      sourcePacking: "rank-order-utf8-budget",
+      sourcePacking: "rank-order-path-diverse-utf8-budget",
       evaluationStatus: "experimental",
     },
     text: renderText(plan, selected),
@@ -355,10 +363,10 @@ export async function buildTaskContext(
   const budget = requestedBudget(options.budgetBytes);
   const plan = db.taskContext(task, targets, options.intent ?? "understand", DEFAULT_CANDIDATE_LIMIT);
   const selected: MaterializedEvidence[] = [];
-  let excerptOmissions = 0;
-  let unavailableSources = 0;
+  const fullById = new Map<string, MaterializedEvidence>();
+  const excerptedPaths = new Set<string>();
 
-  const base = buildResponse(plan, selected, budget, excerptOmissions, unavailableSources);
+  const base = buildResponse(plan, selected, budget, 0, 0);
   if (responseBytes(base) > budget) {
     throw new Error(
       `The task and target metadata require ${responseBytes(base)} bytes; increase brief budgetBytes.`,
@@ -367,43 +375,97 @@ export async function buildTaskContext(
 
   for (const candidate of plan.candidates) {
     const full = await materialize(projectRoot, candidate);
-    const unavailable = full.source?.error ? 1 : 0;
-    const variants: MaterializedEvidence[] = [full];
-    if (full.excerpt && utf8Bytes(full.excerpt) > COMPACT_EXCERPT_BYTES) {
-      variants.push({
-        ...full,
-        source: full.source ? { ...full.source, excerptTruncated: true } : undefined,
-        excerpt: truncateUtf8(full.excerpt, COMPACT_EXCERPT_BYTES),
-      });
-    }
-    if (full.excerpt) {
-      variants.push({
-        ...full,
-        source: full.source ? { ...full.source, excerptTruncated: true } : undefined,
-        excerpt: undefined,
-      });
-    }
+    fullById.set(candidate.id, full);
+    const compact =
+      full.excerpt && utf8Bytes(full.excerpt) > COMPACT_EXCERPT_BYTES
+        ? {
+            ...full,
+            source: full.source ? { ...full.source, excerptTruncated: true } : undefined,
+            excerpt: truncateUtf8(full.excerpt, COMPACT_EXCERPT_BYTES),
+          }
+        : null;
+    const withoutExcerpt = full.excerpt
+      ? {
+          ...full,
+          source: full.source ? { ...full.source, excerptTruncated: true } : undefined,
+          excerpt: undefined,
+        }
+      : null;
+    // A run of high-ranked facts from one file should not spend the complete
+    // response budget repeating overlapping source. Keep every fact in rank
+    // order, but prefer metadata-only evidence after that path already has an
+    // excerpt. This leaves room for the next dependency, caller, test, or
+    // authored note to enter the same briefing.
+    const repeatsExcerptedPath = full.source
+      ? excerptedPaths.has(full.source.path)
+      : false;
+    const variants: MaterializedEvidence[] = repeatsExcerptedPath
+      ? [withoutExcerpt, full, compact].filter(
+          (variant): variant is MaterializedEvidence => variant !== null,
+        )
+      : [full, compact, withoutExcerpt].filter(
+          (variant): variant is MaterializedEvidence => variant !== null,
+        );
 
     let accepted: MaterializedEvidence | undefined;
     for (const variant of variants) {
-      const trialExcerptOmissions = excerptOmissions + (variant.source?.excerptTruncated ? 1 : 0);
+      const trialItems = [...selected, variant];
       const trial = buildResponse(
         plan,
-        [...selected, variant],
+        trialItems,
         budget,
-        trialExcerptOmissions,
-        unavailableSources + unavailable,
+        excerptOmissions(trialItems),
+        unavailableSources(trialItems),
       );
       if (responseBytes(trial) <= budget) {
         accepted = variant;
-        excerptOmissions = trialExcerptOmissions;
-        unavailableSources += unavailable;
         break;
       }
     }
-    if (!accepted) break;
+    if (!accepted) continue;
     selected.push(accepted);
+    if (accepted.excerpt && accepted.source) excerptedPaths.add(accepted.source.path);
   }
 
-  return buildResponse(plan, selected, budget, excerptOmissions, unavailableSources);
+  // The diversity pass deliberately prefers one excerpt per path. If the
+  // response still has room after selecting facts, enrich repeated-path facts
+  // in original rank order so larger budgets do not sacrifice available code.
+  for (let index = 0; index < selected.length; index += 1) {
+    const current = selected[index]!;
+    if (current.excerpt || current.source?.error) continue;
+    const full = fullById.get(current.candidate.id);
+    if (!full?.excerpt) continue;
+    const compact =
+      utf8Bytes(full.excerpt) > COMPACT_EXCERPT_BYTES
+        ? {
+            ...full,
+            source: full.source ? { ...full.source, excerptTruncated: true } : undefined,
+            excerpt: truncateUtf8(full.excerpt, COMPACT_EXCERPT_BYTES),
+          }
+        : null;
+    for (const variant of [full, compact].filter(
+      (item): item is MaterializedEvidence => item !== null,
+    )) {
+      const trialItems = selected.with(index, variant);
+      const trial = buildResponse(
+        plan,
+        trialItems,
+        budget,
+        excerptOmissions(trialItems),
+        unavailableSources(trialItems),
+      );
+      if (responseBytes(trial) <= budget) {
+        selected[index] = variant;
+        break;
+      }
+    }
+  }
+
+  return buildResponse(
+    plan,
+    selected,
+    budget,
+    excerptOmissions(selected),
+    unavailableSources(selected),
+  );
 }

@@ -98,6 +98,13 @@ the desktop do not each invent search syntax or ranking. Tantivy, a vector
 sidecar, and source-body chunking remain deferred until evaluation shows this
 baseline failing a named workload.
 
+QUERY-001 applies the rule again at evaluation time. SDLC does not reproduce
+Aider's repository-map graph or PageRank implementation. A digest-pinned map
+from Aider 0.86.2 is checked in as the cheap context baseline, and the app-owned
+planner is scored against that real artifact at a fixed budget. Aider remains
+an evaluation dependency rather than a bundled Python runtime while the first
+corpus shows mixed quality and materially higher token use.
+
 ### External enrichers, not mandatory dependencies
 
 SCIP indexes, CodeQL databases, language servers, compiler metadata, test coverage, and runtime traces can all enrich the common model when present. They should be adapters with explicit provenance and capability discovery. Core indexing and the desktop experience must remain useful without downloading a heavyweight external analysis suite.

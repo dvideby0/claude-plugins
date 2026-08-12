@@ -1,0 +1,146 @@
+{
+  "schemaVersion": 1,
+  "scenario": "typescript-checkout-task-context",
+  "sourceDirectory": "source",
+  "tokenizer": {
+    "library": "js-tiktoken",
+    "version": "1.0.21",
+    "encoding": "o200k_base"
+  },
+  "baseline": {
+    "artifact": "aider-map.txt",
+    "sourceSha256": "ebea8a4ce069f9b9490470f8227f1bade627bcb25e4c4cb0bd66262c309fae5c",
+    "artifactSha256": "d1b975a3ff7cdd958aec758e1c6df15901b2177958eb94b619fa19a7f229977f",
+    "mapTokens": 1600,
+    "generator": {
+      "id": "aider-chat",
+      "version": "0.86.2",
+      "model": "gpt-4o-mini",
+      "command": [
+        "uvx",
+        "--python",
+        "3.12",
+        "--from",
+        "aider-chat==0.86.2",
+        "aider",
+        "--show-repo-map",
+        "--map-tokens",
+        "1600",
+        "--model",
+        "gpt-4o-mini",
+        "--no-show-model-warnings",
+        "--no-check-update",
+        "--analytics-disable",
+        "--no-gitignore",
+        "--chat-history-file",
+        "/tmp/sdlc-aider-1600-chat.md",
+        "--input-history-file",
+        "/tmp/sdlc-aider-1600-input.md",
+        "--llm-history-file",
+        "/tmp/sdlc-aider-1600-llm.md"
+      ],
+      "normalization": "The CLI preamble was removed, line endings were normalized to LF, and trailing whitespace was removed."
+    }
+  },
+  "setup": {
+    "memories": [
+      {
+        "kind": "constraint",
+        "title": "Checkout idempotency requirement",
+        "body": "Every retry must reuse the caller-supplied idempotency key when recordCheckout is written.",
+        "anchors": [
+          {
+            "path": "src/checkout.ts",
+            "symbol": "submitCheckout"
+          }
+        ]
+      }
+    ]
+  },
+  "promotion": {
+    "eligible": false,
+    "blockers": [
+      "No change-relevance retrieval scenario is measured yet.",
+      "The first corpus covers one small TypeScript domain only."
+    ]
+  },
+  "scenarios": [
+    {
+      "id": "review-inventory-reservation",
+      "task": "review submitCheckout inventory reservation",
+      "targets": [],
+      "intent": "review",
+      "budgetBytes": 6000,
+      "rankK": 5,
+      "relevantPaths": [
+        "src/checkout.ts",
+        "src/inventory.ts",
+        "src/cart.ts",
+        "src/ledger.ts",
+        "src/api.ts",
+        "src/checkout.test.ts"
+      ],
+      "requiredEvidence": [
+        {
+          "path": "src/checkout.ts",
+          "symbol": "submitCheckout"
+        },
+        {
+          "path": "src/inventory.ts",
+          "symbol": "reserveInventory"
+        },
+        {
+          "path": "src/checkout.test.ts"
+        }
+      ],
+      "thresholds": {
+        "minimumSdlcRecallAtK": 0.166667,
+        "minimumSdlcEvidenceCoverage": 0.333333,
+        "maximumSdlcIrrelevantContextRate": 0,
+        "maximumSdlcPackedTokens": 1600,
+        "minimumRecallDeltaVsAider": -0.166666,
+        "minimumEvidenceCoverageDeltaVsAider": -0.666667,
+        "maximumIrrelevantContextRateDeltaVsAider": -0.7,
+        "maximumPackedTokenRatioVsAider": 1.65
+      }
+    },
+    {
+      "id": "debug-idempotency",
+      "task": "debug checkout idempotency requirement",
+      "targets": [],
+      "intent": "debug",
+      "budgetBytes": 6000,
+      "rankK": 4,
+      "relevantPaths": [
+        "src/checkout.ts",
+        "src/ledger.ts",
+        "src/api.ts",
+        "src/checkout.test.ts"
+      ],
+      "requiredEvidence": [
+        {
+          "kind": "memory",
+          "title": "Checkout idempotency requirement"
+        },
+        {
+          "path": "src/checkout.ts",
+          "symbol": "submitCheckout"
+        },
+        {
+          "path": "src/ledger.ts",
+          "symbol": "recordCheckout"
+        }
+      ],
+      "thresholds": {
+        "minimumSdlcRecallAtK": 0.5,
+        "minimumSdlcEvidenceCoverage": 0.666667,
+        "maximumSdlcIrrelevantContextRate": 0,
+        "maximumSdlcPackedTokens": 1600,
+        "minimumRecallDeltaVsAider": 0.25,
+        "minimumEvidenceCoverageDeltaVsAider": 0,
+        "maximumIrrelevantContextRateDeltaVsAider": -0.8,
+        "maximumPackedTokenRatioVsAider": 1.65
+      }
+    }
+  ]
+}
