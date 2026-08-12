@@ -75,6 +75,17 @@ Start the app, which starts the engine:
 npm run desktop
 ```
 
+After indexing a TypeScript/JavaScript project, open **Flow** and select an
+entry-to-outcome step. The side inspector shows the exact indexed source range,
+its evidence status, and a route to the full file or resolved target definition.
+The same bounded source surface is used by call-graph nodes, symbols, findings,
+and file-backed search results. Each historical range is checked against the
+source revision that produced it, not merely the latest inventory row. If the
+working file no longer matches that revision, the app labels the evidence stale
+rather than presenting the old range as current. Evidence created before
+revision tracking, or by a live external tool without an attested source
+snapshot, is labeled unverified.
+
 In the desktop app, **Settings** now shows the available code-intelligence
 providers. Add and index a TypeScript/JavaScript project, open its **Overview**,
 and choose **Evaluate SCIP** to compare the current prototype's document,

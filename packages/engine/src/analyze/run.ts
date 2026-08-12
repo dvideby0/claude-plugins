@@ -9,7 +9,7 @@ import { extractSnippet } from "../findings/fingerprint.js";
 import type { FindingInput } from "../findings/types.js";
 import { collectGit } from "../scan/git.js";
 import { startRun } from "../scan/scan.js";
-import { readSourceFiles } from "../scan/source.js";
+import { readSourceFiles, type SourceTextFile } from "../scan/source.js";
 import { auditDependencies } from "./deps.js";
 import { analyzeGraph } from "./graph.js";
 import { scanSecrets } from "./secrets.js";
@@ -47,6 +47,39 @@ const TOOL_PREFIXES: Record<string, string> = {
   "supply-chain": "supply-chain/",
   unicode: "unicode/",
 };
+
+/** These analyzers consume the immutable `readSourceFiles` snapshot below. */
+const SNAPSHOT_EVIDENCE_TOOLS = new Set(["secrets", "supply-chain", "unicode"]);
+
+/**
+ * Attribute ranges to the source generation their producer actually used.
+ * Unattested subprocess output still keeps its historical snippet-based
+ * identity; the snippet is an anchor, not a claim that the revision is proven.
+ */
+export function attributeFindingEvidence(
+  outcome: AnalyzerOutcome,
+  sources: ReadonlyMap<string, SourceTextFile>,
+  indexedShaFor: (path: string) => string | null,
+): FindingInput[] {
+  return outcome.findings.map((finding) => {
+    if (!finding.path) return finding;
+    if (Object.prototype.hasOwnProperty.call(finding, "evidenceSha")) return finding;
+    if (outcome.tool === "graph") {
+      return { ...finding, evidenceSha: indexedShaFor(finding.path) };
+    }
+
+    const source = sources.get(finding.path);
+    const snippet =
+      finding.snippet || !source
+        ? {}
+        : { snippet: extractSnippet(source.content, finding.lineStart, finding.lineEnd) };
+    if (!SNAPSHOT_EVIDENCE_TOOLS.has(outcome.tool)) {
+      return { ...finding, ...snippet, evidenceSha: null };
+    }
+    if (!source) return { ...finding, evidenceSha: null };
+    return { ...finding, ...snippet, evidenceSha: source.contentSha };
+  });
+}
 
 /**
  * Rules that a test file legitimately trips on purpose.
@@ -87,7 +120,7 @@ export async function runAnalyzers(
 
   const files = await readSourceFiles(projectRoot);
   options.signal?.throwIfAborted();
-  const contents = new Map(files.map((file) => [file.path, file.content]));
+  const sources = new Map(files.map((file) => [file.path, file]));
 
   const outcomes: AnalyzerOutcome[] = [
     ...(await runProjectTools(projectRoot, options.signal)),
@@ -136,17 +169,19 @@ export async function runAnalyzers(
     findings: graphFindings,
   });
 
-  // Attach the code each finding points at so fingerprints survive line moves.
-  const withSnippets = (findings: FindingInput[]): FindingInput[] =>
-    findings.map((finding) => {
-      if (finding.snippet || !finding.path) return finding;
-      const content = contents.get(finding.path);
-      if (!content) return finding;
-      return {
-        ...finding,
-        snippet: extractSnippet(content, finding.lineStart, finding.lineEnd),
-      };
-    });
+  const indexedShaByPath = new Map<string, string | null>();
+  const indexedShaFor = (path: string): string | null => {
+    if (!indexedShaByPath.has(path)) {
+      indexedShaByPath.set(
+        path,
+        db.get<{ content_sha: string }>(
+          "SELECT content_sha FROM files WHERE path = ? AND present = 1",
+          [path],
+        )?.content_sha ?? null,
+      );
+    }
+    return indexedShaByPath.get(path) ?? null;
+  };
 
   let created = 0;
   let updated = 0;
@@ -161,7 +196,11 @@ export async function runAnalyzers(
   const runId = await startRun(db, "tools", git.sha);
   db.transaction(() => {
     for (const outcome of outcomes) {
-      const summary = recordFindings(db, runId, withSnippets(outcome.findings));
+      const summary = recordFindings(
+        db,
+        runId,
+        attributeFindingEvidence(outcome, sources, indexedShaFor),
+      );
       created += summary.created;
       updated += summary.updated;
       reopened += summary.reopened;

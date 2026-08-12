@@ -104,6 +104,13 @@ export async function crossQuery(
             excerpt: hit.excerpt,
             score: hit.score,
             updatedAt: hit.updatedAt,
+            ...(hit.lineStart
+              ? {
+                  lineStart: hit.lineStart,
+                  lineEnd: hit.lineEnd ?? hit.lineStart,
+                }
+              : {}),
+            ...(hit.kind === "finding" ? { evidenceSha: hit.evidenceSha } : {}),
             ...(memory
               ? {
                   memoryKind: memory.kind,

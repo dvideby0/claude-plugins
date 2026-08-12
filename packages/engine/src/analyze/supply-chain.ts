@@ -10,9 +10,12 @@
  * because a hardcoded incident list is stale the week after it is written.
  */
 
-import { readFile } from "node:fs/promises";
-import { join } from "node:path";
 import type { FindingInput } from "../findings/types.js";
+import {
+  readWorkspaceText,
+  sourceContentSha,
+  WorkspaceTextLimitError,
+} from "../lib/workspace-path.js";
 import type { SourceTextFile } from "../scan/source.js";
 
 /** Shell fragments that turn a config value into remote code execution. */
@@ -218,7 +221,6 @@ function checkInstallScripts(files: SourceTextFile[]): FindingInput[] {
     } catch {
       continue;
     }
-
     for (const hook of INSTALL_HOOKS) {
       const script = parsed.scripts?.[hook];
       if (!script) continue;
@@ -395,10 +397,26 @@ async function checkAgentConfigs(projectRoot: string): Promise<FindingInput[]> {
   for (const relative of AGENT_CONFIG_FILES) {
     let content: string;
     try {
-      content = await readFile(join(projectRoot, relative), "utf-8");
-    } catch {
+      content = await readWorkspaceText(projectRoot, relative);
+    } catch (cause) {
+      if (cause instanceof WorkspaceTextLimitError) {
+        findings.push({
+          ruleId: "supply-chain/agent-config-too-large",
+          category: "security",
+          severity: "high",
+          confidence: "definite",
+          source: "deps",
+          title: "Agent config exceeds the safe inspection limit",
+          description: `${relative} is too large for SDLC to inspect safely. The consuming tool may still execute commands from it, so this analysis is incomplete.`,
+          suggestion: "Reduce or split the configuration, then rerun analysis before trusting it.",
+          path: relative,
+          evidenceSha: null,
+          symbol: "oversized-agent-config",
+        });
+      }
       continue;
     }
+    const evidenceSha = sourceContentSha(content);
 
     let leaves: JsonLeaf[];
     if (relative.endsWith(".toml")) {
@@ -429,6 +447,7 @@ async function checkAgentConfigs(projectRoot: string): Promise<FindingInput[]> {
           path: relative,
           lineStart: leaf.line ?? lineOf(content, leaf.value),
           snippet: leaf.value.slice(0, 200),
+          evidenceSha,
           symbol: key,
         });
         continue;
@@ -452,6 +471,7 @@ async function checkAgentConfigs(projectRoot: string): Promise<FindingInput[]> {
         path: relative,
         lineStart: leaf.line ?? lineOf(content, leaf.value),
         snippet: leaf.value.slice(0, 200),
+        evidenceSha,
         symbol: key,
       });
     }

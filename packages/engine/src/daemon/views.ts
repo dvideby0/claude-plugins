@@ -107,6 +107,9 @@ export interface FindingRow {
   status: string;
   path: string | null;
   lineStart: number | null;
+  lineEnd: number | null;
+  /** Indexed file revision that produced this finding's evidence range. */
+  contentSha: string | null;
   title: string;
   description: string;
   suggestion: string | null;
@@ -149,12 +152,14 @@ export function findingsView(db: Db, limit = 200, status = "open"): FindingsView
     status: string;
     path: string | null;
     line_start: number | null;
+    line_end: number | null;
+    content_sha: string | null;
     title: string;
     description: string;
     suggestion: string | null;
     occurrences: number;
   }>(
-    `SELECT id, rule_id, category, severity, confidence, source, status, path, line_start,
+    `SELECT id, rule_id, category, severity, confidence, source, status, path, line_start, line_end, content_sha,
             title, description, suggestion, occurrences
      FROM findings WHERE ${filter}
      ORDER BY ${SEVERITY_ORDER}, path LIMIT ?`,
@@ -186,6 +191,8 @@ export function findingsView(db: Db, limit = 200, status = "open"): FindingsView
       status: row.status,
       path: row.path,
       lineStart: row.line_start,
+      lineEnd: row.line_end,
+      contentSha: row.content_sha,
       title: row.title,
       description: row.description,
       suggestion: row.suggestion,
@@ -217,39 +224,124 @@ export function memoriesView(db: Db, limit = 200): MemoriesView {
   };
 }
 
+export interface FileSymbolView {
+  kind: string;
+  name: string;
+  startLine: number;
+  endLine: number;
+  exported: boolean;
+}
+
 export interface FileView {
+  /** False when a finding points at readable source excluded from the index. */
+  indexed: boolean;
   path: string;
   lang: string;
   loc: number;
+  contentSha: string;
   churn: number;
   isTest: boolean;
   importers: string[];
   imports: string[];
   externals: string[];
-  symbols: Array<{ kind: string; name: string; startLine: number; exported: boolean }>;
+  symbols: FileSymbolView[];
+  symbolsTotal: number;
+  /** Exact-name declarations requested for authored navigation. */
+  symbolMatches: FileSymbolView[];
+  symbolMatchTotal: number;
   findings: FindingRow[];
   /** Which drawn component this file belongs to, if anyone has drawn one. */
   component: { id: string; name: string } | null;
 }
 
-export function fileView(db: Db, path: string): FileView | null {
+function findingsForPath(db: Db, path: string): FindingRow[] {
+  return db
+    .all<{
+      id: string;
+      rule_id: string;
+      category: string;
+      severity: string;
+      confidence: string;
+      source: string;
+      status: string;
+      line_start: number | null;
+      line_end: number | null;
+      content_sha: string | null;
+      title: string;
+      description: string;
+      suggestion: string | null;
+      occurrences: number;
+    }>(
+      `SELECT id, rule_id, category, severity, confidence, source, status, line_start, line_end, content_sha,
+              title, description, suggestion, occurrences
+       FROM findings WHERE path = ? AND status IN ${OPEN} ORDER BY ${SEVERITY_ORDER}`,
+      [path],
+    )
+    .map((row) => ({
+      id: row.id,
+      ruleId: row.rule_id,
+      category: row.category,
+      severity: row.severity,
+      confidence: row.confidence,
+      source: row.source,
+      status: row.status,
+      path,
+      lineStart: row.line_start,
+      lineEnd: row.line_end,
+      contentSha: row.content_sha,
+      title: row.title,
+      description: row.description,
+      suggestion: row.suggestion,
+      occurrences: row.occurrences,
+    }));
+}
+
+const FILE_SYMBOL_LIMIT = 200;
+
+function symbolsForPath(db: Db, path: string, name?: string): FileSymbolView[] {
+  const where = name === undefined ? "path = ?" : "path = ? AND name = ?";
+  return db
+    .all<{
+      kind: string;
+      name: string;
+      start_line: number;
+      end_line: number;
+      exported: number;
+    }>(
+      `SELECT kind, name, start_line, end_line, exported
+       FROM symbols WHERE ${where} ORDER BY start_line, start_column LIMIT ?`,
+      name === undefined ? [path, FILE_SYMBOL_LIMIT] : [path, name, FILE_SYMBOL_LIMIT],
+    )
+    .map((symbol) => ({
+      kind: symbol.kind,
+      name: symbol.name,
+      startLine: symbol.start_line,
+      endLine: symbol.end_line,
+      exported: symbol.exported === 1,
+    }));
+}
+
+export function fileView(db: Db, path: string, requestedSymbol?: string): FileView | null {
   const file = db.get<{
     path: string;
     lang: string;
     loc: number;
+    content_sha: string;
     churn: number;
     is_test: number;
-  }>("SELECT path, lang, loc, churn, is_test FROM files WHERE path = ? AND present = 1", [path]);
+  }>("SELECT path, lang, loc, content_sha, churn, is_test FROM files WHERE path = ? AND present = 1", [path]);
   if (!file) return null;
 
   const column = <T extends string>(sql: string, params: Array<string | number>): T[] =>
     db.all<Record<string, T>>(sql, params).map((row) => Object.values(row)[0] as T);
 
   return {
+    indexed: true,
     component: componentOf(db, file.path),
     path: file.path,
     lang: file.lang,
     loc: file.loc,
+    contentSha: file.content_sha,
     churn: file.churn,
     isTest: file.is_test === 1,
     importers: column<string>(
@@ -264,52 +356,53 @@ export function fileView(db: Db, path: string): FileView | null {
       "SELECT DISTINCT external FROM edges WHERE src_path = ? AND external IS NOT NULL ORDER BY external LIMIT 100",
       [path],
     ),
-    symbols: db
-      .all<{ kind: string; name: string; start_line: number; exported: number }>(
-        "SELECT kind, name, start_line, exported FROM symbols WHERE path = ? ORDER BY start_line LIMIT 200",
-        [path],
-      )
-      .map((symbol) => ({
-        kind: symbol.kind,
-        name: symbol.name,
-        startLine: symbol.start_line,
-        exported: symbol.exported === 1,
-      })),
-    findings: db
-      .all<{
-        id: string;
-        rule_id: string;
-        category: string;
-        severity: string;
-        confidence: string;
-        source: string;
-        status: string;
-        line_start: number | null;
-        title: string;
-        description: string;
-        suggestion: string | null;
-        occurrences: number;
-      }>(
-        `SELECT id, rule_id, category, severity, confidence, source, status, line_start,
-                title, description, suggestion, occurrences
-         FROM findings WHERE path = ? AND status IN ${OPEN} ORDER BY ${SEVERITY_ORDER}`,
-        [path],
-      )
-      .map((row) => ({
-        id: row.id,
-        ruleId: row.rule_id,
-        category: row.category,
-        severity: row.severity,
-        confidence: row.confidence,
-        source: row.source,
-        status: row.status,
-        path,
-        lineStart: row.line_start,
-        title: row.title,
-        description: row.description,
-        suggestion: row.suggestion,
-        occurrences: row.occurrences,
-      })),
+    symbols: symbolsForPath(db, path),
+    symbolsTotal: db.count("SELECT COUNT(*) AS n FROM symbols WHERE path = ?", [path]),
+    symbolMatches: requestedSymbol ? symbolsForPath(db, path, requestedSymbol) : [],
+    symbolMatchTotal: requestedSymbol
+      ? db.count("SELECT COUNT(*) AS n FROM symbols WHERE path = ? AND name = ?", [
+          path,
+          requestedSymbol,
+        ])
+      : 0,
+    findings: findingsForPath(db, path),
+  };
+}
+
+/**
+ * Build the same drawer model for readable source that is absent from the
+ * deterministic inventory, but only when an analyzer has already recorded a
+ * finding for that exact path. This preserves the index boundary and avoids
+ * turning the desktop endpoint into an arbitrary hidden-file reader.
+ */
+export function unindexedFindingFileView(
+  db: Db,
+  path: string,
+  source: { lang: string; loc: number; contentSha: string },
+): FileView | null {
+  const hasFinding = db.get<{ present: number }>(
+    "SELECT 1 AS present FROM findings WHERE path = ? LIMIT 1",
+    [path],
+  );
+  if (!hasFinding) return null;
+
+  return {
+    indexed: false,
+    path,
+    lang: source.lang,
+    loc: source.loc,
+    contentSha: source.contentSha,
+    churn: 0,
+    isTest: false,
+    importers: [],
+    imports: [],
+    externals: [],
+    symbols: [],
+    symbolsTotal: 0,
+    symbolMatches: [],
+    symbolMatchTotal: 0,
+    findings: findingsForPath(db, path),
+    component: null,
   };
 }
 

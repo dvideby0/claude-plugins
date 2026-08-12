@@ -102,11 +102,21 @@ withNative("deterministic execution flow", () => {
       expect.arrayContaining([
         expect.objectContaining({
           kind: "call",
-          target: expect.objectContaining({ path: "src/search.ts", symbol: "normalizeSearchQuery" }),
+          target: expect.objectContaining({
+            path: "src/search.ts",
+            symbol: "normalizeSearchQuery",
+            startLine: 2,
+            endLine: 5,
+          }),
         }),
         expect.objectContaining({
           kind: "await",
-          target: expect.objectContaining({ path: "src/search.ts", symbol: "crossQuery" }),
+          target: expect.objectContaining({
+            path: "src/search.ts",
+            symbol: "crossQuery",
+            startLine: 6,
+            endLine: 6,
+          }),
           resolution: "resolved",
         }),
         expect.objectContaining({
@@ -206,11 +216,15 @@ export async function route(path: string, res: unknown): Promise<void> {
     expect(targets.get("/default")).toEqual({
       path: "src/service.ts",
       symbol: "defaultFn",
+      startLine: 2,
+      endLine: 2,
       external: "",
     });
     expect(targets.get("/alias")).toEqual({
       path: "src/service.ts",
       symbol: "original",
+      startLine: 3,
+      endLine: 3,
       external: "",
     });
     const wrapped = db
@@ -218,9 +232,9 @@ export async function route(path: string, res: unknown): Promise<void> {
       .selected?.nodes.filter((node) => node.kind === "call");
     expect(wrapped).toHaveLength(3);
     expect(wrapped?.map((node) => node.target)).toEqual([
-      { path: "src/service.ts", symbol: "original", external: "" },
-      { path: "src/service.ts", symbol: "original", external: "" },
-      { path: "src/service.ts", symbol: "original", external: "" },
+      { path: "src/service.ts", symbol: "original", startLine: 3, endLine: 3, external: "" },
+      { path: "src/service.ts", symbol: "original", startLine: 3, endLine: 3, external: "" },
+      { path: "src/service.ts", symbol: "original", startLine: 3, endLine: 3, external: "" },
     ]);
   });
 
@@ -248,11 +262,15 @@ export function route(path: string, res: unknown): void {
     expect(calls?.[0]?.target).toEqual({
       path: "src/factory.ts",
       symbol: "factory",
+      startLine: 2,
+      endLine: 2,
       external: "",
     });
     expect(calls?.[1]?.target).toEqual({
       path: null,
       symbol: "factory()",
+      startLine: null,
+      endLine: null,
       external: "",
     });
   });
@@ -288,7 +306,13 @@ export async function route(path: string, res: unknown): Promise<void> {
     expect(target()?.path).toBeNull();
 
     expect(resolveTypes(db, root).ran).toBe(true);
-    expect(target()).toEqual({ path: "src/service.ts", symbol: "query", external: "" });
+    expect(target()).toEqual({
+      path: "src/service.ts",
+      symbol: "query",
+      startLine: 2,
+      endLine: 2,
+      external: "",
+    });
 
     const { writeFile } = await import("node:fs/promises");
     await writeFile(
@@ -297,7 +321,13 @@ export async function route(path: string, res: unknown): Promise<void> {
        export const service = new Service();`,
     );
     await scan(root, { kind: "execution-typed-target-change" });
-    expect(target()).toEqual({ path: null, symbol: "query", external: "" });
+    expect(target()).toEqual({
+      path: null,
+      symbol: "query",
+      startLine: null,
+      endLine: null,
+      external: "",
+    });
   });
 
   it("distinguishes returns, uncaught throws, and unsupported control-flow gaps", async () => {

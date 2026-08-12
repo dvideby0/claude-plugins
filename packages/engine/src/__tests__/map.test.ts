@@ -76,6 +76,7 @@ describe("the drawn map", () => {
     const flow = systemMap(db).flows[0];
     expect(flow?.steps.map((step) => step.component)).toEqual(["API", "API", "Core"]);
     expect(flow?.steps.every((step) => step.resolves)).toBe(true);
+    expect(flow?.steps.every((step) => /^[a-f0-9]{16}$/.test(step.contentSha ?? ""))).toBe(true);
   });
 
   it("marks a step whose file has gone", async () => {

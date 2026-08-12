@@ -34,6 +34,9 @@ interface NativeKnowledgeHit {
   path: string;
   symbol: string;
   updated_at: string | null;
+  line_start: number | null;
+  line_end: number | null;
+  evidence_sha: string | null;
   score: number;
   excerpt: string;
 }
@@ -46,6 +49,9 @@ export interface KnowledgeHit {
   path: string;
   symbol: string;
   updatedAt: string | null;
+  lineStart: number | null;
+  lineEnd: number | null;
+  evidenceSha: string | null;
   score: number;
   excerpt: string;
 }
@@ -74,7 +80,13 @@ export interface ExecutionNodeView {
   label: string;
   path: string;
   symbol: string;
-  target: { path: string | null; symbol: string; external: string };
+  target: {
+    path: string | null;
+    symbol: string;
+    startLine: number | null;
+    endLine: number | null;
+    external: string;
+  };
   evidence: { path: string; startLine: number; endLine: number };
   certainty: string;
   resolution: "resolved" | "unresolved" | "external" | "not-applicable";
@@ -114,7 +126,7 @@ export interface ExecutionAssertionView {
   label: string | null;
   from: { path: string; symbol: string | null };
   to: { path: string | null; symbol: string | null };
-  evidence: { path: string; startLine: number | null; text: string };
+  evidence: { path: string; startLine: number | null; text: string; contentSha: string };
   provenance: {
     source: string;
     certainty: "asserted";
@@ -266,6 +278,9 @@ export class Db {
       path: row.path,
       symbol: row.symbol,
       updatedAt: row.updated_at,
+      lineStart: row.line_start,
+      lineEnd: row.line_end,
+      evidenceSha: row.evidence_sha,
       score: row.score,
       excerpt: row.excerpt,
     }));

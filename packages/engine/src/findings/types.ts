@@ -34,6 +34,8 @@ export interface FindingInput {
   lineEnd?: number;
   /** Code at the finding site — used for fingerprinting and drift detection. */
   snippet?: string;
+  /** Exact full-file revision from which this finding's range and snippet came. */
+  evidenceSha?: string | null;
   /** Enclosing symbol name, when known. Makes fingerprints survive line moves. */
   symbol?: string;
 }

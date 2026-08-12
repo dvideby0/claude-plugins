@@ -17,12 +17,13 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-const DATABASE_SCHEMA_VERSION: u32 = 20;
+const DATABASE_SCHEMA_VERSION: u32 = 21;
 const FIRST_VERSIONED_SCHEMA: u32 = 17;
 const SCHEMA_V17_SQL: &str = include_str!("database_schema_v17.sql");
 const SCHEMA_V18_SQL: &str = include_str!("database_schema_v18.sql");
 const SCHEMA_V19_SQL: &str = include_str!("database_schema_v19.sql");
 const SCHEMA_V20_SQL: &str = include_str!("database_schema_v20.sql");
+const SCHEMA_V21_SQL: &str = include_str!("database_schema_v21.sql");
 const SEARCH_KINDS: &[&str] = &[
     "file",
     "symbol",
@@ -495,6 +496,9 @@ fn apply_migration(connection: &Connection, version: u32) -> Result<()> {
         20 => connection
             .execute_batch(SCHEMA_V20_SQL)
             .map_err(|error| database_error("Cannot install SQLite schema v20", error)),
+        21 => connection
+            .execute_batch(SCHEMA_V21_SQL)
+            .map_err(|error| database_error("Cannot install SQLite schema v21", error)),
         _ => Err(invalid_argument(format!(
             "No SQLite migration is registered for schema v{version}"
         ))),
@@ -697,10 +701,15 @@ fn search_knowledge_json(
                 d.path,
                 d.symbol,
                 d.updated_at,
+                COALESCE(s.start_line, f.line_start) AS line_start,
+                COALESCE(s.end_line, f.line_end) AS line_end,
+                f.content_sha AS evidence_sha,
                 -bm25(knowledge_fts, 10.0, 1.0, 6.0, 8.0) AS score,
                 snippet(knowledge_fts, -1, '[', ']', ' … ', 24) AS excerpt
          FROM knowledge_fts
          JOIN search_documents d ON d.rowid = knowledge_fts.rowid
+         LEFT JOIN symbols s ON d.kind = 'symbol' AND s.id = d.source_id
+         LEFT JOIN findings f ON d.kind = 'finding' AND f.id = d.source_id
          WHERE knowledge_fts MATCH ?1 AND d.active = 1",
     );
     let mut values = vec![
@@ -773,6 +782,8 @@ struct ExecutionNodeRow {
     symbol: String,
     target_path: Option<String>,
     target_symbol: String,
+    target_start_line: Option<u32>,
+    target_end_line: Option<u32>,
     external: String,
     start_line: u32,
     end_line: u32,
@@ -815,6 +826,7 @@ struct ExecutionAssertionRow {
     evidence_line: Option<u32>,
     confidence: String,
     source: String,
+    content_sha: String,
 }
 
 fn execution_entry_value(entry: &ExecutionEntryRow) -> serde_json::Value {
@@ -871,6 +883,8 @@ fn execution_node_value(node: &ExecutionNodeRow) -> serde_json::Value {
         "target": {
             "path": node.target_path,
             "symbol": node.target_symbol,
+            "startLine": node.target_start_line,
+            "endLine": node.target_end_line,
             "external": node.external,
         },
         "evidence": {
@@ -1001,7 +1015,7 @@ fn execution_asserted_overlay(
                 CASE WHEN typeof(r.evidence_line) = 'integer'
                            AND r.evidence_line BETWEEN 1 AND 4294967295
                      THEN r.evidence_line ELSE NULL END,
-                r.confidence, r.source
+                r.confidence, r.source, r.content_sha
          FROM relations r
          JOIN files f ON f.path = r.src_path
                      AND f.present = 1
@@ -1038,6 +1052,7 @@ fn execution_asserted_overlay(
                 evidence_line: row.get(8)?,
                 confidence: row.get(9)?,
                 source: row.get(10)?,
+                content_sha: row.get(11)?,
             })
         })
         .map_err(|error| database_error("Cannot query execution assertions", error))?
@@ -1068,6 +1083,7 @@ fn execution_asserted_overlay(
                 "path": assertion.src_path,
                 "startLine": assertion.evidence_line,
                 "text": assertion.evidence,
+                "contentSha": assertion.content_sha,
             },
             "provenance": {
                 "source": assertion.source,
@@ -1323,10 +1339,25 @@ fn execution_flow_json(
 
     let mut node_statement = connection
         .prepare(
-            "SELECT id, ordinal, kind, label, path, symbol, target_path,
-                    target_symbol, external, start_line, end_line, certainty,
-                    terminal, detail
-             FROM execution_nodes WHERE entry_id = ?1 ORDER BY ordinal LIMIT 512",
+            "SELECT n.id, n.ordinal, n.kind, n.label, n.path, n.symbol, n.target_path,
+                    n.target_symbol,
+                    (SELECT s.start_line
+                     FROM refs r JOIN symbols s ON s.id = r.dst_symbol_id
+                     WHERE r.src_path = n.path
+                       AND r.src_line = n.target_line
+                       AND r.src_column = n.target_column
+                       AND r.dst_path = n.target_path
+                     ORDER BY s.start_line, s.start_column LIMIT 1) AS target_start_line,
+                    (SELECT s.end_line
+                     FROM refs r JOIN symbols s ON s.id = r.dst_symbol_id
+                     WHERE r.src_path = n.path
+                       AND r.src_line = n.target_line
+                       AND r.src_column = n.target_column
+                       AND r.dst_path = n.target_path
+                     ORDER BY s.start_line, s.start_column LIMIT 1) AS target_end_line,
+                    n.external, n.start_line, n.end_line, n.certainty,
+                    n.terminal, n.detail
+             FROM execution_nodes n WHERE n.entry_id = ?1 ORDER BY n.ordinal LIMIT 512",
         )
         .map_err(|error| database_error("Cannot prepare execution node query", error))?;
     let node_rows = node_statement
@@ -1340,12 +1371,14 @@ fn execution_flow_json(
                 symbol: row.get(5)?,
                 target_path: row.get(6)?,
                 target_symbol: row.get(7)?,
-                external: row.get(8)?,
-                start_line: row.get(9)?,
-                end_line: row.get(10)?,
-                certainty: row.get(11)?,
-                terminal: row.get::<_, i64>(12)? != 0,
-                detail: row.get(13)?,
+                target_start_line: row.get(8)?,
+                target_end_line: row.get(9)?,
+                external: row.get(10)?,
+                start_line: row.get(11)?,
+                end_line: row.get(12)?,
+                certainty: row.get(13)?,
+                terminal: row.get::<_, i64>(14)? != 0,
+                detail: row.get(15)?,
             })
         })
         .map_err(|error| database_error("Cannot query execution nodes", error))?
