@@ -75,7 +75,7 @@ withNative("deterministic execution flow", () => {
       gaps: 0,
       producer: {
         id: "sdlc-http-route-adapter",
-        version: "6",
+        version: "7",
         kind: "framework",
       },
       certainty: "inferred",
@@ -165,13 +165,14 @@ export async function original(): Promise<number> { return 2; }
       "src/http.ts": `
 import localDefault from "./service.js";
 import { original as localAlias } from "./service.js";
+namespace NS { export type Fn = () => Promise<number>; }
 function sendJson(_res: unknown, _status: number, _body: unknown): void {}
 export async function route(path: string, res: unknown): Promise<void> {
   if (path === "/default") { await localDefault(); sendJson(res, 200, {}); }
   if (path === "/alias") { await localAlias(); sendJson(res, 200, {}); }
   if (path === "/wrapped") {
     localAlias!();
-    (localAlias as () => Promise<number>)();
+    (/* before */ localAlias as NS.Fn /* after */)();
     (localAlias satisfies () => Promise<number>)();
     sendJson(res, 200, {});
   }

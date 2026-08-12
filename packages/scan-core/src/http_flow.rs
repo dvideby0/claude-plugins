@@ -10,7 +10,7 @@ use sha2::{Digest, Sha256};
 use tree_sitter::Node;
 
 const PRODUCER_ID: &str = "sdlc-http-route-adapter";
-const PRODUCER_VERSION: &str = "6";
+const PRODUCER_VERSION: &str = "7";
 const MAX_ENTRIES_PER_FILE: usize = 128;
 const MAX_GUARD_ALTERNATIVES: usize = 256;
 const MAX_NODES_PER_ENTRY: usize = 256;
@@ -321,6 +321,37 @@ fn enclosing_symbol(mut node: Node, bytes: &[u8]) -> String {
     String::new()
 }
 
+fn first_expression_child(node: Node) -> Option<Node> {
+    let mut cursor = node.walk();
+    let child = node
+        .named_children(&mut cursor)
+        .find(|child| child.kind() != "comment");
+    child
+}
+
+fn last_expression_child(node: Node) -> Option<Node> {
+    let mut cursor = node.walk();
+    let child = node
+        .named_children(&mut cursor)
+        .filter(|child| child.kind() != "comment")
+        .last();
+    child
+}
+
+fn transparent_callee(node: Node) -> Option<Node> {
+    match node.kind() {
+        "parenthesized_expression"
+        | "non_null_expression"
+        | "as_expression"
+        | "satisfies_expression" => first_expression_child(node),
+        "instantiation_expression" => node
+            .child_by_field_name("function")
+            .or_else(|| first_expression_child(node)),
+        "type_assertion" => last_expression_child(node),
+        _ => None,
+    }
+}
+
 fn direct_call_target(node: Node) -> Option<Node> {
     match node.kind() {
         "identifier" => Some(node),
@@ -328,24 +359,23 @@ fn direct_call_target(node: Node) -> Option<Node> {
         "parenthesized_expression"
         | "non_null_expression"
         | "as_expression"
-        | "satisfies_expression" => {
-            let mut cursor = node.walk();
-            let child = node.named_children(&mut cursor).next()?;
-            direct_call_target(child)
-        }
-        "instantiation_expression" => {
-            let mut cursor = node.walk();
-            let function = node
-                .child_by_field_name("function")
-                .or_else(|| node.named_children(&mut cursor).next())?;
-            direct_call_target(function)
-        }
-        "type_assertion" => {
-            let mut cursor = node.walk();
-            let child = node.named_children(&mut cursor).last()?;
-            direct_call_target(child)
-        }
+        | "satisfies_expression"
+        | "instantiation_expression"
+        | "type_assertion" => direct_call_target(transparent_callee(node)?),
         _ => None,
+    }
+}
+
+fn invokes_member(node: Node) -> bool {
+    match node.kind() {
+        "member_expression" | "subscript_expression" => true,
+        "parenthesized_expression"
+        | "non_null_expression"
+        | "as_expression"
+        | "satisfies_expression"
+        | "instantiation_expression"
+        | "type_assertion" => transparent_callee(node).is_some_and(invokes_member),
+        _ => false,
     }
 }
 
@@ -579,7 +609,11 @@ fn ignored_call(call: &CallObservation) -> bool {
     if call.awaited {
         return false;
     }
-    if call.callee.contains('.') || call.callee.contains("?.") {
+    if call
+        .node
+        .child_by_field_name("function")
+        .is_some_and(invokes_member)
+    {
         return true;
     }
     matches!(
