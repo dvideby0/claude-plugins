@@ -192,14 +192,25 @@ describe("retrieval evaluation", () => {
     expect(review.sdlc.irrelevantContextRate).toBeLessThan(
       review.aider.irrelevantContextRate!,
     );
+    expect(review.sdlc).toMatchObject({
+      recallAtK: 0.5,
+      evidenceCoverage: 1,
+      packedTokens: 1450,
+      rankedPaths: ["src/checkout.ts", "src/inventory.ts", "src/checkout.test.ts"],
+      missingEvidence: [],
+    });
     const debug = report.scenarios.find((scenario) => scenario.id === "debug-idempotency")!;
     expect(debug.sdlc.recallAtK).toBeGreaterThan(debug.aider.recallAtK);
+    expect(debug.sdlc).toMatchObject({
+      recallAtK: 0.75,
+      evidenceCoverage: 1,
+      packedTokens: 1434,
+      rankedPaths: ["src/checkout.test.ts", "src/checkout.ts", "src/ledger.ts"],
+      missingEvidence: [],
+    });
     expect(debug.sdlc.matchedEvidence).toContainEqual({
       kind: "memory",
       title: "Checkout idempotency requirement",
     });
-    expect(debug.sdlc.missingEvidence).toEqual([
-      { path: "src/ledger.ts", symbol: "recordCheckout" },
-    ]);
   });
 });

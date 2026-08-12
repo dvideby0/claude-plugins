@@ -202,7 +202,7 @@ export interface TaskContextPlan {
   targets: TaskTargetResolution[];
   strategy: {
     retrieval: "fts5-plus-one-hop";
-    ranking: "deterministic-intent-weighted";
+    ranking: "deterministic-intent-multisignal-path-diverse";
     maxCandidates: number;
   };
   candidates: TaskContextCandidate[];

@@ -127,7 +127,7 @@ describe("budgeted task context", () => {
       expect.arrayContaining(["src/checkout.ts", "src/checkout.test.ts"]),
     );
     expect(brief.text).toContain("Source excerpt:");
-    expect(brief.text).toContain("Fact: finding:unsafe-redirect.");
+    expect(brief.evidence.some((item) => item.id === "finding:unsafe-redirect")).toBe(true);
     expect(
       brief.evidence.every(
         (item) =>
@@ -206,6 +206,7 @@ describe("budgeted task context", () => {
       (item) => item.source?.path === "src/checkout.ts",
     );
     expect(checkoutEvidence.length).toBeGreaterThan(1);
+    expect(brief.evidence.length).toBeLessThanOrEqual(3);
     expect(
       checkoutEvidence.filter((item) => item.source?.excerptIncluded).length,
     ).toBe(1);

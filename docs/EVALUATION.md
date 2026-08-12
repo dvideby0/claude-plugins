@@ -135,28 +135,30 @@ for both scenarios. The comparison artifact is the actual output of Aider's main
 [repository map](https://aider.chat/docs/repomap.html), not an SDLC imitation.
 It occupies 4,063 bytes and 982 `o200k_base` tokens.
 
-For `review submitCheckout inventory reservation`, SDLC scores 0.166667 path
-recall@5 and covers 1/3 required evidence; Aider scores 0.333333 and 3/3. SDLC
-returns only the relevant checkout path, while Aider exposes fourteen
-irrelevant paths among twenty (0.7). SDLC's complete response uses 5,635 bytes
-and 1,582 tokens, 1.610998 times the baseline token count. The missing reviewed
-items are the inventory declaration and covering checkout test.
+For `review submitCheckout inventory reservation`, SDLC now scores 0.5 path
+recall@5 and covers all three required facts; Aider scores 0.333333 and 3/3.
+SDLC returns the checkout declaration, inventory declaration, and covering test
+with no irrelevant path, while Aider exposes fourteen irrelevant paths among
+twenty (0.7). SDLC's complete response uses 5,182 bytes and 1,450 tokens,
+1.476578 times the baseline token count.
 
-For `debug checkout idempotency requirement`, SDLC scores 0.5 path recall@4,
-2/3 evidence coverage, and no irrelevant returned path. Aider scores 0.25,
-2/3, and 0.8 respectively. The equal evidence counts contain different facts:
-SDLC retrieves the authored constraint but misses `recordCheckout`; the symbol
-map retrieves `recordCheckout` but cannot contain the constraint. SDLC uses
-5,798 bytes and 1,588 tokens, 1.617108 times the Aider artifact.
+For `debug checkout idempotency requirement`, SDLC now scores 0.75 path
+recall@4, covers all three required facts, and returns no irrelevant path.
+Aider scores 0.25, 2/3, and 0.8 respectively. SDLC retrieves the covering test,
+authored constraint, anchored checkout declaration, and `recordCheckout`
+declaration through three ranked evidence units. The map retrieves the two code
+declarations but cannot contain the constraint. SDLC uses 5,084 bytes and 1,434
+tokens, 1.460285 times the Aider artifact.
 
-These measurements clear checked-in regression floors, but they do not promote
-QUERY-001. The corpus explicitly blocks promotion until change relevance and a
-broader multi-project/language sample are measured. The result also makes the
-next optimization concrete: improve review/test coverage and reduce response
-duplication before claiming the focused package is better than the cheap repo
-map. The source packer now avoids spending a tight budget on overlapping
-excerpts from one path, then restores those excerpts in rank order when a
-larger budget has room.
+These measurements clear tightened checked-in regression floors, but they do
+not promote QUERY-001. Intent words no longer become redundant lexical terms,
+the Rust ranker rewards corroborated evidence and penalizes repeated paths, and
+the source boundary reserves 2,000 bytes per admitted fact while avoiding
+duplicated prose already present in structured metadata. The corpus explicitly
+blocks promotion until change relevance and a broader multi-project/language
+sample are measured. The source packer avoids spending a tight budget on
+overlapping excerpts from one path, then restores those excerpts in rank order
+when a larger budget has room.
 
 To run only one retrieval fixture while retaining the provider corpus:
 

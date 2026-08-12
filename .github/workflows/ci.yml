@@ -29,7 +29,9 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
-      - run: npm ci
+      # This job invokes the native build explicitly below. Avoid unrelated
+      # workspace install hooks (notably Electron downloads) in the Rust matrix.
+      - run: npm ci --ignore-scripts
       - run: npm run build -w @sdlc/scan-core -- --target ${{ matrix.target }}
       - uses: actions/upload-artifact@v4
         with:

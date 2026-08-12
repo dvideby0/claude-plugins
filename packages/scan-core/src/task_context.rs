@@ -16,6 +16,9 @@ const INTENTS: &[&str] = &["implement", "debug", "refactor", "review", "understa
 const MAX_TASK_BYTES: usize = 512;
 const MAX_TARGET_BYTES: usize = 512;
 const MAX_TARGETS: usize = 8;
+const MULTI_SIGNAL_BOOST: i64 = 30;
+const MAX_MULTI_SIGNAL_BOOST: i64 = 90;
+const REPEATED_PATH_PENALTY: i64 = 120;
 
 #[derive(Clone, Debug)]
 struct FileMeta {
@@ -138,22 +141,77 @@ impl CandidateSet {
 
     fn ranked(mut self, intent: &str, limit: usize) -> (Vec<Candidate>, usize) {
         for candidate in self.values.values_mut() {
-            candidate.score += intent_boost(intent, candidate);
+            candidate.score += intent_boost(intent, candidate) + multi_signal_boost(candidate);
         }
         let total = self.values.len();
-        let mut values: Vec<Candidate> = self.values.into_values().collect();
-        values.sort_by(|left, right| {
-            right
-                .score
-                .cmp(&left.score)
-                .then_with(|| right.is_test.cmp(&left.is_test))
-                .then_with(|| left.kind.cmp(&right.kind))
-                .then_with(|| left.title.cmp(&right.title))
-                .then_with(|| left.id.cmp(&right.id))
-        });
-        values.truncate(limit);
-        (values, total.saturating_sub(limit))
+        let mut remaining: Vec<Candidate> = self.values.into_values().collect();
+        let mut path_counts = HashMap::<String, usize>::new();
+        let mut ranked = Vec::with_capacity(limit.min(total));
+        while !remaining.is_empty() && ranked.len() < limit {
+            remaining.sort_by(|left, right| {
+                marginal_score(right, &path_counts)
+                    .cmp(&marginal_score(left, &path_counts))
+                    .then_with(|| {
+                        path_repeat_count(left, &path_counts)
+                            .cmp(&path_repeat_count(right, &path_counts))
+                    })
+                    .then_with(|| right.score.cmp(&left.score))
+                    .then_with(|| right.is_test.cmp(&left.is_test))
+                    .then_with(|| left.kind.cmp(&right.kind))
+                    .then_with(|| left.title.cmp(&right.title))
+                    .then_with(|| left.id.cmp(&right.id))
+            });
+            let mut candidate = remaining.remove(0);
+            if let Some(path) = candidate.path.as_ref() {
+                let repeats = path_counts.get(path).copied().unwrap_or(0);
+                if repeats > 0 {
+                    candidate.score = candidate
+                        .score
+                        .saturating_sub(repeat_path_penalty(repeats))
+                        .max(0);
+                    candidate
+                        .reasons
+                        .insert("repeated-path diversity penalty".to_string());
+                }
+                *path_counts.entry(path.clone()).or_default() += 1;
+            }
+            ranked.push(candidate);
+        }
+        (ranked, total.saturating_sub(limit))
     }
+}
+
+fn multi_signal_boost(candidate: &Candidate) -> i64 {
+    let additional_signals = candidate.reasons.len().saturating_sub(1).min(3);
+    i64::try_from(additional_signals)
+        .unwrap_or(3)
+        .saturating_mul(MULTI_SIGNAL_BOOST)
+        .min(MAX_MULTI_SIGNAL_BOOST)
+}
+
+fn repeat_path_penalty(repeats: usize) -> i64 {
+    i64::try_from(repeats)
+        .unwrap_or(i64::MAX)
+        .saturating_mul(REPEATED_PATH_PENALTY)
+}
+
+fn marginal_score(candidate: &Candidate, path_counts: &HashMap<String, usize>) -> i64 {
+    candidate
+        .score
+        .saturating_sub(repeat_path_penalty(path_repeat_count(
+            candidate,
+            path_counts,
+        )))
+        .max(0)
+}
+
+fn path_repeat_count(candidate: &Candidate, path_counts: &HashMap<String, usize>) -> usize {
+    candidate
+        .path
+        .as_ref()
+        .and_then(|path| path_counts.get(path))
+        .copied()
+        .unwrap_or(0)
 }
 
 fn intent_boost(intent: &str, candidate: &Candidate) -> i64 {
@@ -1073,17 +1131,17 @@ fn authored_seed_anchors(
 fn add_lexical_candidates(
     connection: &Connection,
     candidates: &mut CandidateSet,
-    task: &str,
+    query: &str,
     seed_paths: &mut BTreeSet<String>,
     seed_symbols: &mut BTreeSet<String>,
     seed_anchor_symbols: &mut BTreeMap<String, String>,
     omissions: &mut RetrievalOmissions,
 ) -> Result<()> {
-    if task.trim().is_empty() {
+    if query.trim().is_empty() {
         return Ok(());
     }
     let hits: Vec<Value> = serde_json::from_str(&search_knowledge_json(
-        connection, task, "[]", 40, None,
+        connection, query, "[]", 40, None,
     )?)
     .map_err(|error| invalid_argument(format!("Cannot decode native knowledge search: {error}")))?;
     for (rank, hit) in hits.iter().enumerate() {
@@ -1167,6 +1225,18 @@ fn add_lexical_candidates(
         }
     }
     Ok(())
+}
+
+fn lexical_task_query(task: &str, intent: &str) -> String {
+    task.split_whitespace()
+        .filter(|token| {
+            token
+                .trim_matches(|character: char| !character.is_alphanumeric())
+                .to_lowercase()
+                != intent
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 fn collect_strings(
@@ -1652,10 +1722,11 @@ pub(crate) fn task_context_json(
         &mut seed_anchor_symbols,
         &mut explicit_targets,
     )?;
+    let lexical_query = lexical_task_query(&task, &intent);
     add_lexical_candidates(
         connection,
         &mut candidates,
-        &task,
+        &lexical_query,
         &mut seed_paths,
         &mut seed_symbols,
         &mut seed_anchor_symbols,
@@ -1733,7 +1804,7 @@ pub(crate) fn task_context_json(
         "targets": resolutions,
         "strategy": {
             "retrieval": "fts5-plus-one-hop",
-            "ranking": "deterministic-intent-weighted",
+            "ranking": "deterministic-intent-multisignal-path-diverse",
             "maxCandidates": limit,
         },
         "candidates": candidate_values,
@@ -1776,11 +1847,55 @@ mod tests {
         candidates.insert(candidate("file:a", 20, "explicit"));
         let (ranked, omitted) = candidates.ranked("understand", 10);
         assert_eq!(omitted, 0);
-        assert_eq!(ranked[0].score, 20);
+        assert_eq!(ranked[0].score, 50);
         assert_eq!(
             ranked[0].reasons.iter().cloned().collect::<Vec<_>>(),
             ["explicit".to_string(), "lexical".to_string()]
         );
+    }
+
+    #[test]
+    fn ranking_rewards_independent_signals_and_penalizes_repeated_paths() {
+        let mut candidates = CandidateSet::default();
+        let mut corroborated = candidate("file:a-one", 100, "lexical");
+        corroborated.path = Some("a".to_string());
+        corroborated.reasons.insert("graph".to_string());
+        candidates.insert(corroborated);
+
+        let mut same_path = candidate("file:a-two", 110, "lexical");
+        same_path.path = Some("a".to_string());
+        candidates.insert(same_path);
+
+        let mut different_path = candidate("file:b", 90, "lexical");
+        different_path.path = Some("b".to_string());
+        candidates.insert(different_path);
+
+        let (ranked, omitted) = candidates.ranked("implement", 3);
+        assert_eq!(omitted, 0);
+        assert_eq!(
+            ranked
+                .iter()
+                .map(|value| value.id.as_str())
+                .collect::<Vec<_>>(),
+            ["file:a-one", "file:b", "file:a-two"]
+        );
+        assert!(ranked[2]
+            .reasons
+            .contains("repeated-path diversity penalty"));
+        assert!(ranked[2].score < ranked[1].score);
+    }
+
+    #[test]
+    fn lexical_query_does_not_search_the_selected_intent_as_subject_matter() {
+        assert_eq!(
+            lexical_task_query("Review: submitCheckout inventory", "review"),
+            "submitCheckout inventory"
+        );
+        assert_eq!(
+            lexical_task_query("debug review routing", "debug"),
+            "review routing"
+        );
+        assert_eq!(lexical_task_query("review", "review"), "");
     }
 
     #[test]

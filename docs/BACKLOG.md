@@ -159,11 +159,12 @@ real Aider 0.86.2 output. A strict checked-in oracle measures recall at K,
 reviewed evidence coverage, irrelevant-path rate, complete response bytes, and
 exact `o200k_base` tokens without installing Aider in normal CI or
 reimplementing its ranking. Both sides stay inside a shared 1,600-token band.
-The idempotency scenario beats the map on recall and noise and retrieves the
-authored constraint, but misses the ledger declaration; the review scenario
-trails on recall and coverage while returning no irrelevant path. SDLC uses
-roughly 1.6 times the map's actual tokens. Regression floors pass, but
-promotion remains explicitly blocked on change relevance and a broader corpus.
+The idempotency scenario beats the map on recall, reviewed evidence coverage,
+and noise; the review scenario now retrieves its checkout, inventory, and test
+evidence while also beating the map on recall and noise. Both responses use
+less than 1.5 times the map's actual tokens. Tightened regression floors pass,
+but promotion remains explicitly blocked on change relevance and a broader
+corpus.
 
 ### STORE-001: Move workspace state under app ownership
 
@@ -363,21 +364,20 @@ ranking implementation was removed, while its single-target call remains
 compatible. Focused tests cover task-only and legacy MCP calls, the unchanged
 33-tool catalog, ambiguity, stale evidence, source/fact navigation, and exact
 budget accounting. This path reports itself as experimental: change relevance,
-broader corpus coverage, and a favorable Aider-style symbol-map comparison
-remain open before QUERY-001 can be called proven or redundant public tools can
-be retired.
+broader corpus coverage, and task outcomes remain open before QUERY-001 can be
+called proven or redundant public tools can be retired.
 
-Progress (2026-08-12, measured retrieval baseline): QUERY-001 now has the
-checked-in Aider comparison required above. The first two scenarios are mixed:
-the authored-memory debug task retrieves the stored rule and improves recall
-and noise but misses the ledger declaration, while the review task misses its
-inventory declaration and covering test. The structured brief costs roughly
-1.6 times the map's actual tokens inside the same ceiling. Tight-budget
-packing no longer repeats
-overlapping same-path excerpts before admitting other ranked facts, and larger
-budgets restore available excerpts afterward. QUERY-001 therefore remains
-experimental; the next proof work is change relevance, review/test ranking,
-response compaction, and a broader corpus rather than retiring MCP tools.
+Progress (2026-08-12, measured retrieval ranking): QUERY-001 now retrieves all
+reviewed evidence in both first-corpus tasks. Review recall@5 is 0.5 with the
+checkout declaration, inventory declaration, and covering test; debug recall@4
+is 0.75 with the authored constraint and ledger declaration. Both have zero
+irrelevant returned paths and use less than 1.5 times the map's actual tokens.
+The Rust ranker removes the selected intent from lexical subject terms, rewards
+independent corroborating signals, and applies a bounded repeated-path penalty.
+The thin source boundary reserves useful space per admitted fact and no longer
+duplicates ranking/provenance prose in its excerpt view. Tightened regression
+floors preserve the result. QUERY-001 remains experimental; the next proof work
+is change relevance and a broader corpus rather than retiring MCP tools.
 
 ### SEARCH-001: Lexical, structural, and graph-ranked retrieval
 
