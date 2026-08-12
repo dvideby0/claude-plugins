@@ -659,7 +659,7 @@ export function createHttpServer(options: HttpServerOptions): HttpServerHandle {
     }
 
     const workspaceMatch =
-      /^\/api\/workspaces\/([a-f0-9]{12})(?:\/(index|stop|graph|flow|map|component|findings|overview|file|memories|report|review))?$/.exec(
+      /^\/api\/workspaces\/([a-f0-9]{12})(?:\/(index|stop|graph|flow|execution-flow|map|component|findings|overview|file|memories|report|review))?$/.exec(
         path,
       );
     if (workspaceMatch) {
@@ -770,6 +770,17 @@ export function createHttpServer(options: HttpServerOptions): HttpServerHandle {
               ...(depth !== undefined ? { depth } : {}),
             }),
           );
+          return true;
+        }
+        if (sub === "execution-flow") {
+          const entryId = query.get("entryId") ?? undefined;
+          const rawMaxPaths = query.get("maxPaths");
+          const maxPaths = rawMaxPaths === null ? 24 : Number(rawMaxPaths);
+          if (!Number.isInteger(maxPaths) || maxPaths < 1 || maxPaths > 64) {
+            sendJson(res, 400, { error: "maxPaths must be an integer between 1 and 64." });
+            return true;
+          }
+          sendJson(res, 200, db.executionFlow(entryId, maxPaths));
           return true;
         }
         if (sub === "map") {

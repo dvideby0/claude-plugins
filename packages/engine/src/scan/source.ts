@@ -31,6 +31,55 @@ export interface ParsedSymbol {
 export interface ParsedSource {
   symbols: ParsedSymbol[];
   imports: string[];
+  executionEntries: ParsedExecutionEntry[];
+}
+
+export interface ParsedExecutionNode {
+  id: string;
+  ordinal: number;
+  kind: string;
+  label: string;
+  path: string;
+  symbol: string;
+  targetSymbol: string;
+  targetLine: number;
+  targetColumn: number;
+  external: string;
+  startLine: number;
+  endLine: number;
+  certainty: string;
+  terminal: boolean;
+  detail: string;
+}
+
+export interface ParsedExecutionEdge {
+  ordinal: number;
+  from: string;
+  to: string;
+  kind: string;
+  label: string;
+  path: string;
+  startLine: number;
+  certainty: string;
+}
+
+export interface ParsedExecutionEntry {
+  id: string;
+  kind: string;
+  label: string;
+  method: string;
+  route: string;
+  path: string;
+  symbol: string;
+  startLine: number;
+  endLine: number;
+  producerId: string;
+  producerVersion: string;
+  producerKind: string;
+  certainty: string;
+  nodes: ParsedExecutionNode[];
+  edges: ParsedExecutionEdge[];
+  diagnostics: string[];
 }
 
 /** A use of an imported name, before the specifier is resolved to a file. */
@@ -87,6 +136,7 @@ interface NativeFile {
   }>;
   imports: string[];
   refs: Array<{ name: string; module: string; line: number; column: number }>;
+  executionEntries: ParsedExecutionEntry[];
 }
 
 export interface NativeScipDocument {
@@ -279,7 +329,11 @@ export async function collectFiles(projectRoot: string): Promise<CollectResult> 
       contentSha: file.contentSha,
       isTest: file.isTest,
       parsed: file.parsed
-        ? { symbols: file.symbols as ParsedSymbol[], imports: file.imports }
+        ? {
+            symbols: file.symbols as ParsedSymbol[],
+            imports: file.imports,
+            executionEntries: file.executionEntries,
+          }
         : null,
       refs: file.parsed ? file.refs : [],
     })),

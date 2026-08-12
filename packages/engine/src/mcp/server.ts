@@ -762,17 +762,33 @@ export function createMcpServer(options: McpServerOptions): McpServer {
 
   server.tool(
     "flow",
-    "The call graph laid out as flow: entry points (route handlers, CLI commands, exported API) and what runs from each, layered by depth. Shared utilities are separated out so they do not obscure the path. Use to orient in an unfamiliar codebase.",
+    "Evidence-backed execution paths from recognized entries to terminal effects. Defaults to the deterministic framework-adapter model when available; use mode 'calls' for the older call-graph orientation view. Returned paths preserve branches, awaits, provenance, uncertainty, freshness, and explicit gaps.",
     {
       ...projectRootArg,
+      mode: z
+        .enum(["execution", "calls"])
+        .optional()
+        .describe("Execution paths by default when indexed; 'calls' requests the call graph."),
+      entryId: z
+        .string()
+        .max(512)
+        .optional()
+        .describe("Exact deterministic entry id returned by an earlier flow query."),
+      maxPaths: z.number().int().min(1).max(64).optional(),
       root: z.string().optional().describe("Start from one symbol. Omit for every entry point."),
       rootPath: z.string().optional().describe("Repository path that disambiguates root."),
       rootId: z.string().optional().describe("Exact declaration id returned by a previous flow."),
       depth: z.number().int().min(0).max(8).optional().describe("Layers to follow. Default 3, max 8."),
     },
-    async ({ projectRoot, root, rootPath, rootId, depth }) =>
+    async ({ projectRoot, mode, entryId, maxPaths, root, rootPath, rootId, depth }) =>
       wrap(async () => {
         const db = await getDb(resolveRoot(projectRoot));
+        const executionIndex = db.executionFlow();
+        if (mode === "execution" || entryId || (mode === undefined && executionIndex.entries.length > 0)) {
+          const selectedId =
+            entryId ?? (executionIndex.entries.length === 1 ? executionIndex.entries[0]?.id : undefined);
+          return selectedId ? db.executionFlow(selectedId, maxPaths) : executionIndex;
+        }
         const view = flowView(db, {
           ...(root ? { root } : {}),
           ...(rootPath ? { rootPath } : {}),

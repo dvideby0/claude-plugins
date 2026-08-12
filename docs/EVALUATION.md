@@ -1,7 +1,7 @@
 # Code-intelligence evaluation
 
-Status: executable symbol/reference corpus plus bounded Joern flow spike,
-2026-08-11.
+Status: executable symbol/reference corpus, measured HTTP flow slice, and
+bounded Joern flow spike, 2026-08-12.
 
 ## Purpose
 
@@ -54,9 +54,23 @@ standard-library symbol. A provider can only be compared for facts explicitly
 inside the selected domain.
 
 Oracle schema version 2 can also record reviewed entrypoints, relations,
-terminal effects, conditions, and complete entry-to-effect paths. The report
-publishes their counts and labels their scoring `unmeasured`; merely checking
-flow truth into the repository does not grant a provider path credit.
+terminal effects, conditions, and complete entry-to-effect paths. The ordinary
+evaluation command scores that truth for providers explicitly listed in the
+oracle's `measuredProviders`. A required provider that emits no candidate graph
+fails the declared thresholds; providers without a product adapter remain
+explicitly `unmeasured` and are rejected from `measuredProviders`. Merely
+checking flow truth into the repository, or running a separate provider beside
+the native adapter, does not grant that provider path credit.
+
+The TypeScript HTTP fixture exercises an explicit route guard, a caught
+exception, an `if` branch, an awaited cross-file call, and three terminal HTTP
+response paths. The bounded Rust HTTP adapter finds its one entrypoint, eight
+unique semantic relations (nine evidence-bearing occurrences), and all three
+paths at 1.0 precision/recall with matching evidence anchors. Repeated semantic
+relations consume evidence occurrences one-to-one, so one source location
+cannot satisfy multiple reviewed anchors. Branch-condition equivalence, runtime
+feasibility, and data-value propagation remain explicitly unmeasured. These are
+fixture results, not a broad TypeScript CFG claim.
 
 The separate opt-in Joern spike does score that reviewed flow truth. It uses
 Joern's official Python frontend and official GraphSON exporter, then applies a
@@ -136,16 +150,18 @@ The JSON report explicitly labels gaps instead of encoding unavailable
 measurements as zeros:
 
 - entry-to-effect path precision and recall outside the one opt-in
-  Python/LangGraph Joern scenario;
+  Python/LangGraph Joern scenario and the measured TypeScript HTTP adapter;
 - retrieval recall at K, evidence coverage, token packing, and irrelevant
   context rate;
 - warm and one-file-change SCIP indexing;
 - peak RSS of the external SCIP child process.
 
 Additional fixtures must expand the oracle before any Joern/CPG production
-adoption or broad FLOW-001 precision claim. Conditions, callbacks, exceptions,
-async transitions, HTTP registration, events, terminal effects, overloads, and
-unresolved dynamic behavior still need independently reviewed cases.
+adoption or broad FLOW-001 precision claim. The first HTTP case now covers one
+condition, caught exception, await, registration pattern, and response effect;
+callbacks, uncaught exceptions, loops/switches, events, database/filesystem
+effects, overloads, and unresolved dynamic behavior still need independently
+reviewed cases.
 
 ## Adding a fixture
 

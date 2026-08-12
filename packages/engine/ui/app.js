@@ -1862,14 +1862,245 @@ async function showComponent(workspace, id, options = {}) {
 
 /** Which entry point the flow is rooted at. */
 let flowRoot = null;
+let executionRoot = null;
+let flowDisplayMode = "execution";
 
 async function paneFlow(workspace, pane) {
+  let execution;
+  try {
+    execution = await api(`/api/workspaces/${workspace.id}/execution-flow`);
+  } catch (error) {
+    pane.innerHTML = `<div class="empty big"><p>Execution paths could not be loaded.</p><p class="sub">${esc(error.message)}</p></div>`;
+    return;
+  }
+  const hasExecution = execution.entries.length > 0;
+  if (hasExecution && flowDisplayMode === "execution") {
+    await paneExecutionFlow(workspace, pane, execution);
+  } else {
+    await paneCallFlow(workspace, pane, hasExecution);
+  }
+}
+
+function flowModeControls(active, hasExecution) {
+  return `<div class="flow-mode" role="group" aria-label="Flow model">
+    <button data-flow-mode="execution" class="${active === "execution" ? "active" : ""}"
+            ${hasExecution ? "" : "disabled"}>Entry → effect</button>
+    <button data-flow-mode="calls" class="${active === "calls" ? "active" : ""}">Call graph</button>
+  </div>`;
+}
+
+function bindFlowMode(workspace, pane) {
+  for (const button of pane.querySelectorAll("[data-flow-mode]")) {
+    button.addEventListener("click", () => {
+      if (button.disabled) return;
+      flowDisplayMode = button.dataset.flowMode;
+      void paneFlow(workspace, pane);
+    });
+  }
+}
+
+async function paneExecutionFlow(workspace, pane, index) {
+  state.flow?.destroy();
+  state.flow = null;
+  if (!executionRoot || !index.entries.some((entry) => entry.id === executionRoot)) {
+    executionRoot = index.entries[0].id;
+  }
+  pane.innerHTML = `
+    <div class="graph-bar">
+      <div>
+        <strong>Entry-to-effect paths</strong>
+        <span class="sub">Branches and terminal effects with source evidence</span>
+      </div>
+      ${flowModeControls("execution", true)}
+    </div>
+    <div class="flow-split execution-split">
+      <aside class="flow-rail" id="execution-rail"></aside>
+      <div class="execution-stage" id="execution-stage">
+        ${index.diagnostics?.length ? `<div class="execution-diagnostics"><strong>Inventory limits</strong>${index.diagnostics.map((diagnostic) => `<p>${esc(diagnostic)}</p>`).join("")}</div>` : ""}
+        <div class="loading">Tracing evidence…</div>
+      </div>
+    </div>
+    <aside class="inspector execution-inspector" id="execution-inspector" hidden></aside>
+  `;
+  bindFlowMode(workspace, pane);
+
+  const rail = document.getElementById("execution-rail");
+  const stage = document.getElementById("execution-stage");
+  const inspector = document.getElementById("execution-inspector");
+  const inventoryNotice = index.diagnostics?.length
+    ? `<div class="execution-diagnostics"><strong>Inventory limits</strong>${index.diagnostics.map((diagnostic) => `<p>${esc(diagnostic)}</p>`).join("")}</div>`
+    : "";
+
+  function renderRail() {
+    rail.innerHTML = `
+      <div class="rail-head">Recognized entries</div>
+      ${index.entries
+        .map(
+          (entry) => `<button class="rail-item ${entry.id === executionRoot ? "active" : ""}"
+                    data-entry-id="${esc(entry.id)}">
+            <span class="rail-name">${esc(entry.label)}</span>
+            <span class="rail-sub">${esc(entry.path.split("/").slice(-2).join("/"))}:${num(entry.evidence.startLine)}</span>
+            <span class="rail-count" title="Terminal effects">${num(entry.terminalEffects)}</span>
+          </button>`,
+        )
+        .join("")}
+      <div class="execution-rail-key"><span>${num(index.entries.length)} entries</span><span>number = effects</span></div>
+    `;
+    for (const button of rail.querySelectorAll("[data-entry-id]")) {
+      button.addEventListener("click", () => {
+        executionRoot = button.dataset.entryId;
+        renderRail();
+        void loadExecution();
+      });
+    }
+  }
+
+  async function loadExecution() {
+    stage.innerHTML = `${inventoryNotice}<div class="loading">Tracing evidence…</div>`;
+    inspector.hidden = true;
+    try {
+      const view = await api(
+        `/api/workspaces/${workspace.id}/execution-flow?entryId=${encodeURIComponent(executionRoot)}`,
+      );
+      const selected = view.selected;
+      if (!selected) {
+        stage.innerHTML = `<div class="empty">${esc(view.note || "This entry is no longer indexed.")}</div>`;
+        return;
+      }
+      const entry = selected.entry;
+      const nodes = new Map(selected.nodes.map((node) => [node.id, node]));
+      stage.innerHTML = `${inventoryNotice}
+        <div class="execution-head">
+          <div>
+            <span class="execution-kicker">${esc(entry.kind.replaceAll("-", " "))}</span>
+            <h2>${esc(entry.label)}</h2>
+            <button class="execution-evidence" data-entry-source="${esc(entry.path)}">
+              ${esc(entry.path)}:${num(entry.evidence.startLine)} · ${esc(entry.symbol || "module")}
+            </button>
+          </div>
+          <div class="execution-badges">
+            <span class="knowledge-pill">${esc(entry.certainty)}</span>
+            <span class="knowledge-pill ${entry.freshness === "current" ? "status-ok" : "status-warn"}">${esc(entry.freshness)}</span>
+            <span class="knowledge-pill">${esc(entry.producer.id)} v${esc(entry.producer.version)}</span>
+          </div>
+        </div>
+        <div class="execution-summary">
+          <div><strong>${num(selected.paths.length)}</strong><span>recognized paths</span></div>
+          <div><strong>${num(entry.terminalEffects)}</strong><span>terminal effects</span></div>
+          <div><strong>${num(entry.gaps)}</strong><span>explicit gaps</span></div>
+        </div>
+        ${
+          selected.diagnostics.length
+            ? `<div class="execution-diagnostics"><strong>Limits and gaps</strong>${selected.diagnostics
+                .map((diagnostic) => `<p>${esc(diagnostic)}</p>`)
+                .join("")}</div>`
+            : ""
+        }
+        <div class="execution-paths">
+          ${selected.paths
+            .map((path, pathIndex) => {
+              const terminal = path.terminalNodeId ? nodes.get(path.terminalNodeId) : null;
+              return `<article class="execution-path ${path.complete ? "" : "incomplete"}">
+                <header>
+                  <div><span>Path ${num(pathIndex + 1)}</span><strong>${esc(terminal?.label || "Unresolved exit")}</strong></div>
+                  <span class="knowledge-pill">${esc(path.certainty)}</span>
+                </header>
+                ${
+                  path.conditions.length
+                    ? `<div class="execution-conditions">${path.conditions
+                        .map((condition) => `<span>${esc(condition)}</span>`)
+                        .join("")}</div>`
+                    : '<div class="execution-conditions"><span>unconditional</span></div>'
+                }
+                <ol class="execution-steps">
+                  ${path.nodeIds
+                    .map((nodeId, stepIndex) => {
+                      const node = nodes.get(nodeId);
+                      if (!node) return "";
+                      return `<li>
+                        ${stepIndex ? '<span class="execution-arrow">→</span>' : ""}
+                        <button data-execution-node="${esc(node.id)}" class="execution-step kind-${esc(node.kind)}">
+                          <span class="execution-step-kind">${esc(node.kind.replaceAll("-", " "))}</span>
+                          <strong>${esc(node.label)}</strong>
+                          <small>${esc(node.evidence.path.split("/").slice(-2).join("/"))}:${num(node.evidence.startLine)}</small>
+                        </button>
+                      </li>`;
+                    })
+                    .join("")}
+                </ol>
+                <footer>
+                  ${
+                    path.terminalEffect
+                      ? `<span class="execution-effect">Effect · ${esc(path.terminalEffect)}</span>`
+                      : `<span class="execution-gap">${path.complete ? "Handler exit" : "Incomplete path"}</span>`
+                  }
+                </footer>
+              </article>`;
+            })
+            .join("")}
+        </div>
+      `;
+      stage.querySelector("[data-entry-source]")?.addEventListener("click", (event) => {
+        void showFile(workspace, entry.path, { forceDrawer: true, origin: event.currentTarget });
+      });
+      for (const button of stage.querySelectorAll("[data-execution-node]")) {
+        button.addEventListener("click", () => {
+          const node = nodes.get(button.dataset.executionNode);
+          if (node) showExecutionNode(workspace, node, entry, inspector, button);
+        });
+      }
+    } catch (error) {
+      stage.innerHTML = `<div class="empty">${esc(error.message)}</div>`;
+    }
+  }
+
+  renderRail();
+  await loadExecution();
+}
+
+function showExecutionNode(workspace, node, entry, inspector, origin) {
+  const target = node.target || {};
+  inspector.innerHTML = `
+    <button class="close" aria-label="Close">×</button>
+    <span class="execution-kicker">${esc(node.kind.replaceAll("-", " "))}</span>
+    <h4>${esc(node.label)}</h4>
+    <div class="sub">${esc(node.evidence.path)}:${num(node.evidence.startLine)}</div>
+    <div class="insp-section">
+      <h3 class="section">Why it is here</h3>
+      <p class="sub">${esc(node.detail)}</p>
+    </div>
+    <div class="insp-section execution-inspector-facts">
+      <div><span>certainty</span><strong>${esc(node.certainty)}</strong></div>
+      <div><span>producer</span><strong>${esc(entry.producer.id)} v${esc(entry.producer.version)}</strong></div>
+      ${target.external ? `<div><span>external effect</span><strong>${esc(target.external)}</strong></div>` : ""}
+      ${target.symbol ? `<div><span>target symbol</span><strong>${esc(target.symbol)}</strong></div>` : ""}
+    </div>
+    <div class="execution-inspector-actions">
+      <button data-open-evidence>Open evidence file</button>
+      ${target.path ? `<button data-open-target>Open target file</button>` : ""}
+    </div>
+  `;
+  inspector.hidden = false;
+  inspector.querySelector(".close").addEventListener("click", () => {
+    inspector.hidden = true;
+    origin.focus();
+  });
+  inspector.querySelector("[data-open-evidence]").addEventListener("click", (event) => {
+    void showFile(workspace, node.evidence.path, { forceDrawer: true, origin: event.currentTarget });
+  });
+  inspector.querySelector("[data-open-target]")?.addEventListener("click", (event) => {
+    void showFile(workspace, target.path, { forceDrawer: true, origin: event.currentTarget });
+  });
+}
+
+async function paneCallFlow(workspace, pane, hasExecution) {
   state.flow?.destroy();
   state.flow = null;
   pane.innerHTML = `
     <div class="graph-bar">
       <span id="flow-caption" class="sub"></span>
       <div class="graph-controls">
+        ${flowModeControls("calls", hasExecution)}
         <label class="ctl">depth
           <select id="flow-depth">
             <option value="2">2</option>
@@ -1886,6 +2117,7 @@ async function paneFlow(workspace, pane) {
     </div>
     <aside class="inspector" id="flow-inspector" hidden></aside>
   `;
+  bindFlowMode(workspace, pane);
 
   const rail = document.getElementById("flow-rail");
   const stage = document.getElementById("flow-stage");
@@ -1902,7 +2134,9 @@ async function paneFlow(workspace, pane) {
 
   const entryNodes = entryView.nodes.filter((node) => entryView.entries.includes(node.id));
   if (entryNodes.length === 0) {
-    pane.innerHTML = `<div class="empty big">
+    caption.textContent = "No call-graph entry points";
+    rail.innerHTML = '<div class="rail-head">Entry points</div>';
+    stage.innerHTML = `<div class="empty big">
       <p>No entry points found.</p>
       <p class="sub">Entry points come from the call graph — callable symbols nothing else calls.
       Re-index to build it.</p>

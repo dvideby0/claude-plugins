@@ -15,6 +15,15 @@ export const EVALUATION_PROVIDERS = [
 ] as const;
 export type EvaluationProvider = (typeof EVALUATION_PROVIDERS)[number];
 
+/** Providers whose own output can currently be projected into scored paths. */
+export const FLOW_EVALUATION_PROVIDERS = ["native-tree-sitter"] as const;
+
+export function supportsFlowEvaluationProvider(
+  provider: EvaluationProvider,
+): provider is (typeof FLOW_EVALUATION_PROVIDERS)[number] {
+  return provider === "native-tree-sitter";
+}
+
 export function isResolvedReferenceKind(kind: FactEdge["kind"]): boolean {
   return kind === "reference" || kind === "read" || kind === "write";
 }
@@ -79,6 +88,7 @@ const flowEvidenceSchema = z
 
 const entryToEffectSchema = z
   .object({
+    measuredProviders: z.array(evaluationProviderSchema),
     thresholds: flowThresholdSchema,
     entrypoints: z
       .array(
@@ -236,6 +246,30 @@ export const evaluationOracleSchema = z
       });
     }
     const thresholdProviders = new Set(Object.keys(oracle.thresholds));
+    const measuredFlowProviders = oracle.entryToEffect?.measuredProviders ?? [];
+    if (new Set(measuredFlowProviders).size !== measuredFlowProviders.length) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "Measured flow providers must be unique.",
+        path: ["entryToEffect", "measuredProviders"],
+      });
+    }
+    for (const provider of measuredFlowProviders) {
+      if (!providers.has(provider)) {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: `Flow provider ${provider} is not selected by the fixture.`,
+          path: ["entryToEffect", "measuredProviders"],
+        });
+      }
+      if (!supportsFlowEvaluationProvider(provider)) {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: `Flow provider ${provider} has no provider-owned entry-to-effect projection.`,
+          path: ["entryToEffect", "measuredProviders"],
+        });
+      }
+    }
     for (const provider of providers) {
       if (!thresholdProviders.has(provider)) {
         context.addIssue({

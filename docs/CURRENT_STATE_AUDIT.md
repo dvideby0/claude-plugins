@@ -36,7 +36,14 @@ silently changing fact coverage.
 
 The repository already validates the most important architectural choice: a reusable local engine, a daemon-served interface, a desktop supervisor, and thin tool integrations can be packaged as one system. The project is beyond a throwaway proof of concept. It has a meaningful schema, native parsing, a working MCP surface, a useful initial UI, packaging automation, and a healthy TypeScript test suite.
 
-The largest mismatch is terminology and depth around “flow.” The current deterministic model is primarily files, symbols, imports, and identifier references. Its flow and trace views traverse a call-like symbol graph; they do not yet model control-flow branches, conditions, exceptions, async transitions, data flow, framework dispatch, or terminal effects. The human map and memory layers are promising, but are mostly agent-authored and become stale at whole-file granularity.
+The largest remaining mismatch is breadth around “flow.” The general-purpose
+flow and trace views still traverse a call-like symbol graph. A first bounded
+HTTP vertical slice now models guarded entries, branches, caught exceptions,
+awaited calls, and response effects with evidence, but it is deliberately a
+framework adapter rather than a universal control/data-flow engine. Most
+languages, frameworks, dispatch styles, loops/switches, and data dependencies
+remain outside that slice. The human map and memory layers are promising, but
+are mostly agent-authored and become stale at whole-file granularity.
 
 The native-storage foundation now writes each workspace's SQLite database under
 the app-owned SDLC state directory and commits transactions directly through
@@ -55,7 +62,7 @@ authoritative relational rows.
 | App/engine/integration separation | Strong foundation | The package boundaries match the product direction. |
 | File and symbol indexing | Functional prototype | Required Rust TS/JS/Python extraction with Rust-owned inventory and watcher policy. |
 | Precise references | Partial | TypeScript enrichment improves results; official SCIP output can now be evaluated but is not yet imported from an immutable snapshot. |
-| Execution and data flow | Early | The current “flow” is a call graph with heuristic roots, not entry-to-effect program flow. |
+| Execution and data flow | Early vertical slice | One measured HTTP adapter produces real entry-to-response paths; the general view remains a heuristic call graph and data flow is not modeled. |
 | Human-readable system map | Promising | Components and ordered flows exist, but they are authored overlays rather than evidence-derived semantic objects. |
 | Incremental recomputation | Basic | Content hashes avoid some database rewrites, but invalidation is file-level and native scans still revisit the repository. |
 | Search and context retrieval | Early | Targeted briefs and a shared FTS5 cross-search exist; graph/task ranking and retrieval evaluation remain open. |
@@ -97,6 +104,17 @@ That is a good substrate for evolving toward base facts and derived overlays. Th
 external-content FTS5 index over those facts and authored overlays. The
 relational rows remain authoritative; transactional triggers maintain the
 derived search documents and their lifecycle state.
+
+[Schema v19](../packages/scan-core/src/database_schema_v19.sql) keeps
+deterministic framework-adapter execution graphs separate from agent-authored
+flows. Entries, nodes, control edges, diagnostics, producer/certainty metadata,
+evidence anchors, and per-file input hashes are replaced transactionally with
+their owning source file.
+
+[Schema v20](../packages/scan-core/src/database_schema_v20.sql) adds the exact
+source occurrence and local spelling for execution-call targets. Syntax and
+compiler reference passes can therefore refresh destination identity without
+guessing through import aliases or default-import names.
 
 The first versioned provider-neutral envelope is now documented in
 [`FACT_MODEL.md`](FACT_MODEL.md), and the legacy deterministic/asserted tables
@@ -163,6 +181,20 @@ This is useful call-graph navigation, but it should not be presented as determin
 - recognized external or terminal effects;
 - per-edge provenance and uncertainty in traversal.
 
+The first exception is the bounded Rust-owned HTTP adapter in
+[`packages/scan-core/src/http_flow.rs`](../packages/scan-core/src/http_flow.rs).
+For explicit `path === "/..."` guards it constructs a small operation/control
+graph, preserves bounded positive boolean route alternatives without inventing
+facts from negation, retains both `if` outcomes and caught exceptions, runs
+`finally` blocks before deferred returns or throws, labels the actually awaited
+call (including calls evaluated by a nested condition), skips deferred callback
+bodies, and recognizes concrete HTTP response effects only through the bounded
+response-helper contract. Native SQLite enumerates paths with node/path limits
+and cycle detection. Unsupported loop/switch control and bounded-input
+truncation are preserved as visible diagnostics and keep affected paths
+incomplete. The adapter currently proves the product shape for one measured
+route family; it does not fill the general gaps listed above.
+
 The gap workflow in [`packages/engine/src/graph/gaps.ts`](../packages/engine/src/graph/gaps.ts) and asserted relations in [`packages/engine/src/graph/relations.ts`](../packages/engine/src/graph/relations.ts) are valuable escape hatches. However, asserted relations are not yet a first-class overlay in the main flow and trace queries, so teaching the system a missed relationship does not consistently improve its answers.
 
 ### Human map and memory
@@ -193,10 +225,12 @@ The desktop app can supervise the daemon, add/index projects, inspect overview/m
 Today it remains primarily an operational viewer. A first global search
 workspace now queries paths, symbols, components, flows, findings, relations,
 and memories across all indexed repositories and opens file-backed results in
-the indexed file drawer. The next product step remains a question-centered
-workspace with source display, precise range navigation, callers/callees,
-saved paths, synchronized code and graph views, change comparison, knowledge
-editing, and index-health explanations.
+the indexed file drawer. Flow now defaults to a question-centered
+entry-to-effect path workspace when deterministic entries exist, with branches,
+terminal effects, evidence, provenance, freshness, uncertainty, and the older
+call graph as a secondary mode. Precise range-highlighted source display,
+synchronized code/graph selection, saved paths, callers/callees, change
+comparison, knowledge editing, and index-health explanations remain open.
 
 A live desktop walkthrough on 2026-08-06 confirmed that repository validation,
 deterministic rescanning, findings drill-down, stale-memory display, Claude and
@@ -261,9 +295,9 @@ explicit user-visible restore workflow for a generally corrupted store remain.
 
 The audit ran the following checks successfully against the working tree:
 
-- `npm test`: 35 engine test files and 292 tests passed.
+- `npm test`: 37 engine test files and 313 tests passed.
 - `npm run build`: native core, engine, bridge, protocol, and desktop passed.
-- `cargo test` in `packages/scan-core`: 30 Rust tests passed.
+- `cargo test` in `packages/scan-core`: 50 Rust tests passed.
 - The retired migration benchmark found 127 files, parsed 84, and reported 548
   symbols and 342 imports with no agreement differences. The Rust path took
   about 14 ms versus 158 ms for the former TypeScript path in that single run.
@@ -272,7 +306,7 @@ These numbers are a useful health snapshot, not a durable benchmark. The benchma
 
 ## Highest-risk gaps
 
-1. **The product promise outruns the flow model.** A call graph cannot yet support reliable entry-to-effect explanations.
+1. **The product promise still outruns flow coverage.** One measured HTTP slice now supports reliable entry-to-response explanations, but it cannot be generalized to unadapted frameworks or data flow.
 2. **There is no canonical fact/provenance/invalidation contract.** Adding more analyzers now could create incompatible edge types and expensive rebuild behavior.
 3. **Storage identity and general corruption recovery are incomplete.** Direct native persistence, rollback-safe migrations, and internal FTS retrieval remove the whole-export, schema-upgrade, and SQL-scan risks, but path-derived workspace ids and an explicit restore workflow still need product behavior and tests.
 4. **Retrieval quality is unmeasured.** More tools and embeddings could add complexity without reducing file reads or improving task outcomes.

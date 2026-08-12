@@ -1,0 +1,179 @@
+{
+  "schemaVersion": 2,
+  "scenario": "typescript-http-entry-effect",
+  "languages": ["typescript"],
+  "features": [
+    "http-route-guard",
+    "caught-exception",
+    "conditional-branch",
+    "await",
+    "terminal-response",
+    "entry-to-effect-path"
+  ],
+  "providers": ["native-tree-sitter"],
+  "change": {
+    "path": "src/search.ts",
+    "append": "\n// EVAL-001 incremental-change probe\n"
+  },
+  "symbols": [
+    { "path": "src/http.ts", "name": "sendJson", "startLine": 2 },
+    { "path": "src/http.ts", "name": "handleApi", "startLine": 4 },
+    { "path": "src/search.ts", "name": "normalizeSearchQuery", "startLine": 0 },
+    { "path": "src/search.ts", "name": "crossQuery", "startLine": 5 }
+  ],
+  "references": [
+    {
+      "sourcePath": "src/http.ts",
+      "targetPath": "src/search.ts",
+      "targetSymbol": "normalizeSearchQuery"
+    },
+    {
+      "sourcePath": "src/http.ts",
+      "targetPath": "src/search.ts",
+      "targetSymbol": "crossQuery"
+    }
+  ],
+  "thresholds": {
+    "native-tree-sitter": {
+      "symbols": { "minimumPrecision": 1, "minimumRecall": 1 },
+      "references": { "minimumPrecision": 1, "minimumRecall": 1 }
+    }
+  },
+  "entryToEffect": {
+    "measuredProviders": ["native-tree-sitter"],
+    "thresholds": {
+      "entrypoints": { "minimumPrecision": 1, "minimumRecall": 1 },
+      "relations": { "minimumPrecision": 1, "minimumRecall": 1 },
+      "paths": { "minimumPrecision": 1, "minimumRecall": 1 }
+    },
+    "entrypoints": [
+      {
+        "id": "http:GET:/api/search",
+        "registration": {
+          "path": "src/http.ts",
+          "startLine": 5,
+          "detail": "GET /api/search route guard"
+        },
+        "target": { "path": "src/http.ts", "symbol": "handleApi" }
+      }
+    ],
+    "relations": [
+      {
+        "id": "route-registration",
+        "kind": "register",
+        "source": { "external": "http:GET:/api/search" },
+        "target": { "path": "src/http.ts", "symbol": "handleApi" },
+        "certainty": "inferred",
+        "evidence": { "path": "src/http.ts", "startLine": 5 }
+      },
+      {
+        "id": "try-branch",
+        "kind": "branch",
+        "source": { "path": "src/http.ts", "symbol": "handleApi" },
+        "target": { "external": "condition:Try block" },
+        "certainty": "inferred",
+        "evidence": { "path": "src/http.ts", "startLine": 7 }
+      },
+      {
+        "id": "normalize-call",
+        "kind": "call",
+        "source": { "path": "src/http.ts", "symbol": "handleApi" },
+        "target": { "path": "src/search.ts", "symbol": "normalizeSearchQuery" },
+        "certainty": "inferred",
+        "evidence": { "path": "src/http.ts", "startLine": 8 }
+      },
+      {
+        "id": "normalization-catch",
+        "kind": "catch",
+        "source": { "external": "condition:Try block" },
+        "target": { "external": "http:response:400" },
+        "certainty": "inferred",
+        "evidence": { "path": "src/http.ts", "startLine": 7 }
+      },
+      {
+        "id": "invalid-branch",
+        "kind": "branch",
+        "source": { "path": "src/http.ts", "symbol": "handleApi" },
+        "target": { "external": "condition:(!term)" },
+        "certainty": "inferred",
+        "evidence": { "path": "src/http.ts", "startLine": 13 }
+      },
+      {
+        "id": "normalization-response-400",
+        "kind": "terminal-effect",
+        "source": { "path": "src/http.ts", "symbol": "handleApi" },
+        "target": { "external": "http:response:400" },
+        "certainty": "inferred",
+        "evidence": { "path": "src/http.ts", "startLine": 10 }
+      },
+      {
+        "id": "response-400",
+        "kind": "terminal-effect",
+        "source": { "path": "src/http.ts", "symbol": "handleApi" },
+        "target": { "external": "http:response:400" },
+        "certainty": "inferred",
+        "evidence": { "path": "src/http.ts", "startLine": 14 }
+      },
+      {
+        "id": "cross-query-await",
+        "kind": "await",
+        "source": { "path": "src/http.ts", "symbol": "handleApi" },
+        "target": { "path": "src/search.ts", "symbol": "crossQuery" },
+        "certainty": "inferred",
+        "evidence": { "path": "src/http.ts", "startLine": 17 }
+      },
+      {
+        "id": "response-200",
+        "kind": "terminal-effect",
+        "source": { "path": "src/http.ts", "symbol": "handleApi" },
+        "target": { "external": "http:response:200" },
+        "certainty": "inferred",
+        "evidence": { "path": "src/http.ts", "startLine": 18 }
+      }
+    ],
+    "paths": [
+      {
+        "id": "normalization-failed",
+        "entrypoint": "http:GET:/api/search",
+        "relations": [
+          "route-registration",
+          "try-branch",
+          "normalization-catch",
+          "normalization-response-400"
+        ],
+        "terminalRelation": "normalization-response-400",
+        "conditions": ["try block throws"],
+        "certainty": "inferred"
+      },
+      {
+        "id": "invalid-query",
+        "entrypoint": "http:GET:/api/search",
+        "relations": [
+          "route-registration",
+          "try-branch",
+          "normalize-call",
+          "invalid-branch",
+          "response-400"
+        ],
+        "terminalRelation": "response-400",
+        "conditions": ["try block completes", "when (!term)"],
+        "certainty": "inferred"
+      },
+      {
+        "id": "search-success",
+        "entrypoint": "http:GET:/api/search",
+        "relations": [
+          "route-registration",
+          "try-branch",
+          "normalize-call",
+          "invalid-branch",
+          "cross-query-await",
+          "response-200"
+        ],
+        "terminalRelation": "response-200",
+        "conditions": ["try block completes", "otherwise ((!term))"],
+        "certainty": "inferred"
+      }
+    ]
+  }
+}

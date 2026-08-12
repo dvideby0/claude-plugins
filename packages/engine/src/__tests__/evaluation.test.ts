@@ -1,4 +1,4 @@
-import { cp, mkdtemp, rename, rm } from "node:fs/promises";
+import { cp, mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -19,6 +19,11 @@ import {
   scipDocumentFilter,
   scipTestAssertions,
 } from "../eval/worker.js";
+import {
+  flowAcceptanceFailures,
+  scoreFlowGraph,
+  type CandidateFlowGraph,
+} from "../eval/flow.js";
 import { loadNative } from "../scan/source.js";
 
 const oracle: EvaluationOracle = evaluationOracleSchema.parse({
@@ -185,11 +190,62 @@ describe("evaluation scorer", () => {
     ).toThrow("Threshold configured for unselected provider scip-python");
   });
 
+  it("rejects flow scoring for providers without a provider-owned projection", () => {
+    expect(() =>
+      evaluationOracleSchema.parse({
+        ...oracle,
+        providers: ["native-tree-sitter", "native-plus-typescript-checker"],
+        thresholds: {
+          ...oracle.thresholds,
+          "native-plus-typescript-checker": oracle.thresholds["native-tree-sitter"],
+        },
+        entryToEffect: {
+          measuredProviders: ["native-plus-typescript-checker"],
+          thresholds: {
+            entrypoints: { minimumRecall: 1 },
+            relations: { minimumRecall: 1 },
+            paths: { minimumRecall: 1 },
+          },
+          entrypoints: [
+            {
+              id: "entry",
+              registration: { path: "src/a.ts", startLine: 1 },
+              target: { path: "src/a.ts", symbol: "entry" },
+            },
+          ],
+          relations: [
+            {
+              id: "effect",
+              kind: "terminal-effect",
+              source: { path: "src/a.ts", symbol: "entry" },
+              target: { external: "http:response:200" },
+              certainty: "inferred",
+              evidence: { path: "src/a.ts", startLine: 2 },
+            },
+          ],
+          paths: [
+            {
+              id: "path",
+              entrypoint: "entry",
+              relations: ["effect"],
+              terminalRelation: "effect",
+              conditions: [],
+              certainty: "inferred",
+            },
+          ],
+        },
+      }),
+    ).toThrow(
+      "Flow provider native-plus-typescript-checker has no provider-owned entry-to-effect projection",
+    );
+  });
+
   it("rejects entry-to-effect paths that do not resolve to a terminal relation", () => {
     expect(() =>
       evaluationOracleSchema.parse({
         ...oracle,
         entryToEffect: {
+          measuredProviders: ["native-tree-sitter"],
           thresholds: {
             entrypoints: { minimumRecall: 1 },
             relations: { minimumRecall: 1 },
@@ -225,6 +281,147 @@ describe("evaluation scorer", () => {
         },
       }),
     ).toThrow("must have kind terminal-effect");
+  });
+
+  it("matches repeated semantic relations to evidence anchors one-to-one", () => {
+    const flowOracle = evaluationOracleSchema.parse({
+      ...oracle,
+      entryToEffect: {
+        measuredProviders: ["native-tree-sitter"],
+        thresholds: {
+          entrypoints: { minimumRecall: 1 },
+          relations: { minimumRecall: 1 },
+          paths: { minimumRecall: 1 },
+        },
+        entrypoints: [
+          {
+            id: "entry",
+            registration: { path: "src/a.ts", startLine: 0 },
+            target: { path: "src/a.ts", symbol: "entry" },
+          },
+        ],
+        relations: [
+          {
+            id: "effect-a",
+            kind: "terminal-effect",
+            source: { path: "src/a.ts", symbol: "entry" },
+            target: { external: "http:response:400" },
+            certainty: "inferred",
+            evidence: { path: "src/a.ts", startLine: 4 },
+          },
+          {
+            id: "effect-b",
+            kind: "terminal-effect",
+            source: { path: "src/a.ts", symbol: "entry" },
+            target: { external: "http:response:400" },
+            certainty: "inferred",
+            evidence: { path: "src/a.ts", startLine: 8 },
+          },
+        ],
+        paths: [
+          {
+            id: "path-a",
+            entrypoint: "entry",
+            relations: ["effect-a"],
+            terminalRelation: "effect-a",
+            conditions: ["a"],
+            certainty: "inferred",
+          },
+          {
+            id: "path-b",
+            entrypoint: "entry",
+            relations: ["effect-b"],
+            terminalRelation: "effect-b",
+            conditions: ["b"],
+            certainty: "inferred",
+          },
+        ],
+      },
+    }).entryToEffect!;
+    const producer = { id: "fixture", version: "1", kind: "framework" as const };
+    const candidate: CandidateFlowGraph = {
+      entrypoints: [
+        {
+          id: "entry",
+          registration: { path: "src/a.ts", startLine: 0 },
+          target: { path: "src/a.ts", symbol: "entry" },
+          registrationRelation: "registration",
+          producer,
+        },
+      ],
+      relations: [
+        {
+          id: "effect",
+          kind: "terminal-effect",
+          source: { path: "src/a.ts", symbol: "entry" },
+          target: { external: "http:response:400" },
+          certainty: "inferred",
+          evidence: { path: "src/a.ts", startLine: 4 },
+          producer,
+        },
+      ],
+      paths: [
+        {
+          id: "path-a",
+          entrypoint: "entry",
+          relations: ["effect"],
+          terminalRelation: "effect",
+          conditions: ["a"],
+          certainty: "inferred",
+          producer,
+        },
+        {
+          id: "path-b",
+          entrypoint: "entry",
+          relations: ["effect"],
+          terminalRelation: "effect",
+          conditions: ["b"],
+          certainty: "inferred",
+          producer,
+        },
+      ],
+      diagnostics: [],
+    };
+
+    const scores = scoreFlowGraph(candidate, flowOracle);
+    expect(scores.relations).toMatchObject({ precision: 1, recall: 1 });
+    expect(scores.paths).toMatchObject({ precision: 1, recall: 1 });
+    expect(scores.missingRelationEvidence.map((relation) => relation.id)).toEqual(["effect-b"]);
+    expect(flowAcceptanceFailures(scores, flowOracle.thresholds, [])).toContain(
+      "1 relation evidence anchor(s) do not match the oracle.",
+    );
+
+    const surplusCandidate: CandidateFlowGraph = {
+      ...candidate,
+      relations: [
+        candidate.relations[0]!,
+        {
+          ...candidate.relations[0]!,
+          id: "effect-second",
+          evidence: { path: "src/a.ts", startLine: 8 },
+        },
+        {
+          ...candidate.relations[0]!,
+          id: "effect-surplus",
+          evidence: { path: "src/a.ts", startLine: 12 },
+        },
+      ],
+      paths: candidate.paths.map((path, index) =>
+        index === 1
+          ? { ...path, relations: ["effect-second"], terminalRelation: "effect-second" }
+          : path,
+      ),
+    };
+    const surplusScores = scoreFlowGraph(surplusCandidate, flowOracle);
+    expect(surplusScores.relations).toMatchObject({ precision: 1, recall: 1 });
+    expect(surplusScores.paths).toMatchObject({ precision: 1, recall: 1 });
+    expect(surplusScores.missingRelationEvidence).toEqual([]);
+    expect(surplusScores.surplusRelationEvidence.map((relation) => relation.id)).toEqual([
+      "effect-surplus",
+    ]);
+    expect(flowAcceptanceFailures(surplusScores, flowOracle.thresholds, [])).toContain(
+      "1 relation evidence anchor(s) do not match the oracle.",
+    );
   });
 
   it("only credits references produced by the measured compiler generation", () => {
@@ -316,6 +513,28 @@ describe("evaluation scorer", () => {
       await expect(
         runEvaluationWorker("native-plus-typescript-checker", altered, null),
       ).rejects.toThrow("TypeScript checker cold run did not run");
+    } finally {
+      await rm(altered, { recursive: true, force: true });
+    }
+  });
+
+  it.skipIf(!loadNative())("fails a measured flow provider that emits no adapter graph", async () => {
+    const fixture = fileURLToPath(
+      new URL("../../fixtures/eval/typescript-http-entry-effect/", import.meta.url),
+    );
+    const altered = await mkdtemp(join(tmpdir(), "sdlc-eval-no-flow-"));
+    await cp(fixture, altered, { recursive: true });
+    const sourcePath = join(altered, "src/http.ts");
+    const source = await readFile(sourcePath, "utf-8");
+    await writeFile(sourcePath, source.replace("if (path ===", "if (urlPath ==="));
+
+    try {
+      const report = await runEvaluationWorker("native-tree-sitter", altered, null);
+      expect(report.flow).not.toBeNull();
+      expect(report.passed).toBe(false);
+      expect(report.failures).toEqual(
+        expect.arrayContaining([expect.stringMatching(/entrypoints recall 0 is below 1/)]),
+      );
     } finally {
       await rm(altered, { recursive: true, force: true });
     }

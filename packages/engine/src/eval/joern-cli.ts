@@ -290,7 +290,9 @@ async function run(): Promise<JoernEvaluationRun> {
       (mismatch) =>
         mismatch.expectedEvidence.path === mismatch.actualEvidence.path &&
         mismatch.expectedEvidence.startLine === mismatch.actualEvidence.startLine,
-    );
+    ) &&
+      scores.missingRelationEvidence.length === 0 &&
+      scores.surplusRelationEvidence.length === 0;
     const nativeImage =
       (process.arch === "arm64" && image.Architecture === "arm64") ||
       (process.arch === "x64" && image.Architecture === "amd64");

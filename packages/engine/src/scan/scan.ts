@@ -27,7 +27,7 @@ import { sourceSignature } from "./signature.js";
  *
  * When the stored version is behind, the next scan is promoted to a full one.
  */
-export const EXTRACTION_VERSION = 9;
+export const EXTRACTION_VERSION = 17;
 
 export interface ScanOptions {
   /** Re-parse every file, ignoring content hashes. */
@@ -46,6 +46,7 @@ export interface ScanResult {
   unresolvedImports: number;
   externalPackages: number;
   references: number;
+  executionEntries: number;
   languages: Record<string, number>;
   gitAvailable: boolean;
   /** The bundled Rust source engine. */
@@ -192,6 +193,7 @@ async function doScan(projectRoot: string, options: ScanOptions = {}): Promise<S
       db.run("DELETE FROM symbols WHERE path = ?", [file.path]);
       db.run("DELETE FROM edges WHERE src_path = ?", [file.path]);
       db.run("DELETE FROM refs WHERE src_path = ?", [file.path]);
+      db.run("DELETE FROM execution_entries WHERE path = ?", [file.path]);
 
       for (const symbol of result.symbols) {
         db.run(
@@ -228,6 +230,84 @@ async function doScan(projectRoot: string, options: ScanOptions = {}): Promise<S
           [file.path, reference.line, reference.column, reference.name, reference.module],
         );
       }
+
+      for (const entry of file.isTest ? [] : result.executionEntries) {
+        db.run(
+          `INSERT INTO execution_entries(
+             id, kind, label, method, route, path, symbol, start_line, end_line,
+             producer_id, producer_version, producer_kind, certainty, input_sha, indexed_run
+           ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          [
+            entry.id,
+            entry.kind,
+            entry.label,
+            entry.method,
+            entry.route,
+            entry.path,
+            entry.symbol,
+            entry.startLine,
+            entry.endLine,
+            entry.producerId,
+            entry.producerVersion,
+            entry.producerKind,
+            entry.certainty,
+            file.contentSha,
+            runId,
+          ],
+        );
+        for (const node of entry.nodes) {
+          db.run(
+            `INSERT INTO execution_nodes(
+               id, entry_id, ordinal, kind, label, path, symbol, target_local,
+               target_symbol, target_line, target_column, external, start_line,
+               end_line, certainty, terminal, detail
+             ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            [
+              node.id,
+              entry.id,
+              node.ordinal,
+              node.kind,
+              node.label,
+              node.path,
+              node.symbol,
+              node.targetSymbol,
+              node.targetSymbol,
+              node.targetLine,
+              node.targetColumn,
+              node.external,
+              node.startLine,
+              node.endLine,
+              node.certainty,
+              node.terminal ? 1 : 0,
+              node.detail,
+            ],
+          );
+        }
+        for (const edge of entry.edges) {
+          db.run(
+            `INSERT INTO execution_edges(
+               entry_id, ordinal, src_id, dst_id, kind, label, path, start_line, certainty
+             ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            [
+              entry.id,
+              edge.ordinal,
+              edge.from,
+              edge.to,
+              edge.kind,
+              edge.label,
+              edge.path,
+              edge.startLine,
+              edge.certainty,
+            ],
+          );
+        }
+        entry.diagnostics.forEach((message, ordinal) => {
+          db.run(
+            "INSERT INTO execution_diagnostics(entry_id, ordinal, message) VALUES(?, ?, ?)",
+            [entry.id, ordinal, message],
+          );
+        });
+      }
     }
 
     // Files that disappeared: keep the row for history, retire their graph and
@@ -239,6 +319,7 @@ async function doScan(projectRoot: string, options: ScanOptions = {}): Promise<S
       db.run("DELETE FROM edges WHERE src_path = ?", [path]);
       db.run("DELETE FROM refs WHERE src_path = ?", [path]);
       db.run("DELETE FROM refs WHERE dst_path = ?", [path]);
+      db.run("DELETE FROM execution_entries WHERE path = ?", [path]);
       db.run(
         "UPDATE findings SET status = 'fixed', fixed_in_run = ? WHERE path = ? AND status IN ('open','regressed')",
         [runId, path],
@@ -318,6 +399,7 @@ async function doScan(projectRoot: string, options: ScanOptions = {}): Promise<S
     unresolvedImports: unresolved,
     externalPackages: externals,
     references: db.count("SELECT COUNT(*) AS n FROM refs WHERE dst_path IS NOT NULL"),
+    executionEntries: db.count("SELECT COUNT(*) AS n FROM execution_entries"),
     languages,
     gitAvailable: git.available,
     engine,

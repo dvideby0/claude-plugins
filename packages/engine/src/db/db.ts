@@ -12,6 +12,7 @@ import {
   workspaceIdentityKey,
   workspaceIdForCanonicalRoot,
 } from "../lib/workspace-path.js";
+import { TYPED_SPECIFIER, typedWorkspaceGeneration } from "../graph/typed-contract.js";
 
 export type Params = Array<string | number | null>;
 
@@ -47,6 +48,74 @@ export interface KnowledgeHit {
   updatedAt: string | null;
   score: number;
   excerpt: string;
+}
+
+export interface ExecutionEntrySummary {
+  id: string;
+  kind: string;
+  label: string;
+  method: string;
+  route: string;
+  path: string;
+  symbol: string;
+  evidence: { path: string; startLine: number; endLine: number };
+  producer: { id: string; version: string; kind: string };
+  certainty: string;
+  freshness: "current" | "stale";
+  generation: { inputSha: string };
+  terminalEffects: number;
+  gaps: number;
+}
+
+export interface ExecutionNodeView {
+  id: string;
+  ordinal: number;
+  kind: string;
+  label: string;
+  path: string;
+  symbol: string;
+  target: { path: string | null; symbol: string; external: string };
+  evidence: { path: string; startLine: number; endLine: number };
+  certainty: string;
+  terminal: boolean;
+  detail: string;
+}
+
+export interface ExecutionEdgeView {
+  id: number;
+  from: string;
+  to: string;
+  kind: string;
+  label: string;
+  evidence: { path: string; startLine: number };
+  certainty: string;
+}
+
+export interface ExecutionPathView {
+  id: string;
+  nodeIds: string[];
+  edgeIds: number[];
+  conditions: string[];
+  terminalNodeId: string | null;
+  terminalEffect: string | null;
+  certainty: string;
+  complete: boolean;
+}
+
+export interface ExecutionFlowView {
+  schemaVersion: 1;
+  model: "entry-to-effect";
+  note?: string | null;
+  entries: ExecutionEntrySummary[];
+  diagnostics: string[];
+  selected: {
+    entry: ExecutionEntrySummary;
+    nodes: ExecutionNodeView[];
+    edges: ExecutionEdgeView[];
+    paths: ExecutionPathView[];
+    diagnostics: string[];
+    truncated: boolean;
+  } | null;
 }
 
 /** Stable location for the current path-derived workspace identity. */
@@ -172,6 +241,11 @@ export class Db {
     }));
   }
 
+  /** Evidence-backed paths produced by bounded native framework adapters. */
+  executionFlow(entryId?: string, maxPaths = 24): ExecutionFlowView {
+    return JSON.parse(this.raw.executionFlow(entryId, maxPaths)) as ExecutionFlowView;
+  }
+
   /** Scalar helper for counts and aggregates. */
   count(sql: string, params: Params = []): number {
     const row = this.get<Record<string, unknown>>(sql, params);
@@ -186,6 +260,7 @@ export class Db {
 
   /** Re-attribute reference endpoints to stable declaration ids. */
   refreshReferenceIdentity(): void {
+    const currentTypedGeneration = typedWorkspaceGeneration(this);
     this.run(
       `UPDATE refs SET
          src_symbol = (
@@ -234,7 +309,49 @@ export class Db {
            (s.end_column - s.start_column) ASC,
            s.start_line ASC
          LIMIT 1
-       )`,
+        )`,
+    );
+    // Execution nodes retain the local callee spelling and exact source
+    // occurrence. Resolve through that occurrence rather than comparing names:
+    // import aliases intentionally use a different local and exported name.
+    // Keeping this beside reference identity also makes compiler-pass updates
+    // immediately visible without waiting for another repository scan.
+    this.run(
+      `UPDATE execution_nodes SET
+         target_path = (
+           SELECT r.dst_path FROM refs r
+           WHERE r.src_path = execution_nodes.path
+             AND r.src_line = execution_nodes.target_line
+             AND r.src_column = execution_nodes.target_column
+             AND r.dst_path IS NOT NULL
+             AND r.dst_symbol_id IS NOT NULL
+             AND ((r.specifier != ?1 AND r.specifier NOT LIKE ?2) OR EXISTS (
+               SELECT 1 FROM files source
+               WHERE source.path = r.src_path
+                 AND source.ref_coverage = 'typed'
+                 AND source.ref_generation = ?3
+             ))
+           LIMIT 1
+         ),
+         target_symbol = COALESCE((
+           SELECT COALESCE(s.name, r.name)
+           FROM refs r
+           LEFT JOIN symbols s ON s.id = r.dst_symbol_id
+           WHERE r.src_path = execution_nodes.path
+             AND r.src_line = execution_nodes.target_line
+             AND r.src_column = execution_nodes.target_column
+             AND r.dst_path IS NOT NULL
+             AND r.dst_symbol_id IS NOT NULL
+             AND ((r.specifier != ?1 AND r.specifier NOT LIKE ?2) OR EXISTS (
+               SELECT 1 FROM files source
+               WHERE source.path = r.src_path
+                 AND source.ref_coverage = 'typed'
+                 AND source.ref_generation = ?3
+             ))
+           LIMIT 1
+         ), execution_nodes.target_local)
+       WHERE execution_nodes.target_local != ''`,
+      [TYPED_SPECIFIER, `${TYPED_SPECIFIER}:%`, currentTypedGeneration],
     );
   }
 

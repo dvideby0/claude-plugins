@@ -1,4 +1,5 @@
 import type { CertaintyClass, FactEdgeKind, FactProducer } from "../facts/model.js";
+import type { ExecutionFlowView, ExecutionNodeView } from "../db/db.js";
 import {
   metricThresholdFailures,
   scoreMetric,
@@ -78,8 +79,176 @@ export interface FlowScores {
   paths: MetricScore<ComparableFlowPath>;
   entrypointMetadataMismatches: FlowEntrypointMetadataMismatch[];
   metadataMismatches: FlowMetadataMismatch[];
+  missingRelationEvidence: ExpectedFlowRelation[];
+  surplusRelationEvidence: ExpectedFlowRelation[];
   pathMetadataMismatches: FlowPathMetadataMismatch[];
   explicitlyUnmeasured: string[];
+}
+
+function executionNodeRelationKind(node: ExecutionNodeView): FactEdgeKind | null {
+  switch (node.kind) {
+    case "call":
+    case "await":
+    case "branch":
+    case "throw":
+    case "return":
+    case "terminal-effect":
+      return node.kind;
+    default:
+      return null;
+  }
+}
+
+function executionNodeTarget(node: ExecutionNodeView): FlowEntity {
+  return node.target.external
+    ? { external: node.target.external }
+    : node.target.path
+      ? {
+          path: node.target.path,
+          ...(node.target.symbol ? { symbol: node.target.symbol } : {}),
+        }
+      : node.kind === "branch"
+        ? { external: `condition:${node.label}` }
+        : node.target.symbol
+          ? { external: `unresolved-call:${node.target.symbol}` }
+          : { external: `${node.kind}:${node.label}` };
+}
+
+/**
+ * Project the persisted execution-path view into the same provider-neutral
+ * graph used by EVAL-001. Sequence edges remain presentation/CFG detail;
+ * scored relations describe the calls, control transfers, and effects they
+ * connect. This keeps the evaluation independent of native node ordinals.
+ */
+export function executionFlowCandidate(view: ExecutionFlowView): CandidateFlowGraph {
+  const selected = view.selected;
+  if (!selected) {
+    return {
+      entrypoints: [],
+      relations: [],
+      paths: [],
+      diagnostics: view.note ? [view.note] : ["No execution entry was selected."],
+    };
+  }
+  const entry = selected.entry;
+  const producerKind = ["parsed", "compiler", "framework", "runtime", "human", "llm"].includes(
+    entry.producer.kind,
+  )
+    ? (entry.producer.kind as FactProducer["kind"])
+    : "framework";
+  const producer: FactProducer = {
+    id: entry.producer.id,
+    version: entry.producer.version,
+    kind: producerKind,
+  };
+  const entrypointId = `http:${entry.method}:${entry.route}`;
+  const registrationId = `${entrypointId}:registration`;
+  const registration: CandidateFlowRelation = {
+    id: registrationId,
+    kind: "register",
+    source: { external: entrypointId },
+    target: { path: entry.path, ...(entry.symbol ? { symbol: entry.symbol } : {}) },
+    certainty: entry.certainty as CertaintyClass,
+    evidence: {
+      path: entry.evidence.path,
+      startLine: Math.max(0, entry.evidence.startLine - 1),
+      detail: `${entry.label} route guard`,
+    },
+    producer,
+  };
+  const nodeRelations = new Map<string, CandidateFlowRelation>();
+  const nodesById = new Map(selected.nodes.map((node) => [node.id, node]));
+  for (const node of selected.nodes) {
+    const kind = executionNodeRelationKind(node);
+    if (!kind) continue;
+    nodeRelations.set(node.id, {
+      id: `${entrypointId}:node:${node.ordinal}`,
+      kind,
+      source: { path: node.path, ...(node.symbol ? { symbol: node.symbol } : {}) },
+      target: executionNodeTarget(node),
+      certainty: node.certainty as CertaintyClass,
+      evidence: {
+        path: node.evidence.path,
+        startLine: Math.max(0, node.evidence.startLine - 1),
+        detail: node.detail,
+      },
+      producer,
+    });
+  }
+  const projectionDiagnostics: string[] = [];
+  const edgeRelations = new Map<number, CandidateFlowRelation>();
+  for (const edge of selected.edges) {
+    if (edge.kind !== "catch") continue;
+    const source = nodesById.get(edge.from);
+    const target = nodesById.get(edge.to);
+    if (!source || !target) {
+      projectionDiagnostics.push(
+        `${edge.evidence.path}:${edge.evidence.startLine}: catch transition references a missing execution node.`,
+      );
+      continue;
+    }
+    edgeRelations.set(edge.id, {
+      id: `${entrypointId}:edge:${edge.id}`,
+      kind: "catch",
+      source: executionNodeTarget(source),
+      target: executionNodeTarget(target),
+      certainty: edge.certainty as CertaintyClass,
+      evidence: {
+        path: edge.evidence.path,
+        startLine: Math.max(0, edge.evidence.startLine - 1),
+        detail: edge.label || "catch transition",
+      },
+      producer,
+    });
+  }
+  const relations = [registration, ...nodeRelations.values(), ...edgeRelations.values()];
+  const paths: CandidateFlowPath[] = selected.paths.flatMap((path, index) => {
+    const relationIds = [registrationId];
+    for (const [nodeIndex, nodeId] of path.nodeIds.entries()) {
+      if (nodeIndex > 0) {
+        const edgeId = path.edgeIds[nodeIndex - 1];
+        const edgeRelation = edgeId === undefined ? undefined : edgeRelations.get(edgeId);
+        if (edgeRelation) relationIds.push(edgeRelation.id);
+      }
+      const nodeRelation = nodeRelations.get(nodeId);
+      if (nodeRelation) relationIds.push(nodeRelation.id);
+    }
+    const terminalRelation = path.terminalNodeId
+      ? nodeRelations.get(path.terminalNodeId)
+      : undefined;
+    if (!terminalRelation || terminalRelation.kind !== "terminal-effect") return [];
+    return [
+      {
+        id: `${entrypointId}:path:${index}`,
+        entrypoint: entrypointId,
+        relations: relationIds,
+        terminalRelation: terminalRelation.id,
+        conditions: path.conditions,
+        certainty: path.certainty as CertaintyClass,
+        producer,
+      },
+    ];
+  });
+  return {
+    entrypoints: [
+      {
+        id: entrypointId,
+        registration: registration.evidence,
+        target: registration.target,
+        registrationRelation: registrationId,
+        producer,
+      },
+    ],
+    relations,
+    paths,
+    diagnostics: [
+      ...selected.diagnostics,
+      ...projectionDiagnostics,
+      ...selected.nodes
+        .filter((node) => node.kind === "gap")
+        .map((node) => `${node.evidence.path}:${node.evidence.startLine}: ${node.label}`),
+    ],
+  };
 }
 
 function relationEvidenceMatches(mismatch: FlowMetadataMismatch): boolean {
@@ -97,6 +266,8 @@ export function flowAcceptanceFailures(
   const relationEvidenceMismatches = scores.metadataMismatches.filter(
     (mismatch) => !relationEvidenceMatches(mismatch),
   );
+  const unmatchedEvidenceAnchors =
+    scores.missingRelationEvidence.length + scores.surplusRelationEvidence.length;
   return [
     ...metricThresholdFailures("entrypoints", scores.entrypoints, thresholds.entrypoints),
     ...metricThresholdFailures("relations", scores.relations, thresholds.relations),
@@ -104,8 +275,8 @@ export function flowAcceptanceFailures(
     ...(scores.entrypointMetadataMismatches.length > 0
       ? [`${scores.entrypointMetadataMismatches.length} entrypoint evidence anchor(s) do not match the oracle.`]
       : []),
-    ...(relationEvidenceMismatches.length > 0
-      ? [`${relationEvidenceMismatches.length} relation evidence anchor(s) do not match the oracle.`]
+    ...(relationEvidenceMismatches.length + unmatchedEvidenceAnchors > 0
+      ? [`${relationEvidenceMismatches.length + unmatchedEvidenceAnchors} relation evidence anchor(s) do not match the oracle.`]
       : []),
     ...diagnostics.map((diagnostic) => `Adapter diagnostic: ${diagnostic}`),
   ];
@@ -211,21 +382,49 @@ export function scoreFlowGraph(
     ];
   });
 
-  const expectedByRelation = new Map(
-    oracle.relations.map((relation) => [flowRelationKey(relation), relation]),
-  );
-  const metadataMismatches = candidate.relations.flatMap((actual) => {
-    const expected = expectedByRelation.get(flowRelationKey(actual));
-    if (
-      !expected ||
-      (expected.certainty === actual.certainty &&
-        expected.evidence.path === actual.evidence.path &&
-        expected.evidence.startLine === actual.evidence.startLine)
-    ) {
-      return [];
-    }
-    return [
-      {
+  const expectedByRelation = new Map<string, ExpectedFlowRelation[]>();
+  for (const relation of oracle.relations) {
+    const key = flowRelationKey(relation);
+    expectedByRelation.set(key, [...(expectedByRelation.get(key) ?? []), relation]);
+  }
+  const actualByRelation = new Map<string, ExpectedFlowRelation[]>();
+  for (const relation of candidateRelations) {
+    const key = flowRelationKey(relation);
+    actualByRelation.set(key, [...(actualByRelation.get(key) ?? []), relation]);
+  }
+  const metadataMismatches: FlowMetadataMismatch[] = [];
+  const missingRelationEvidence: ExpectedFlowRelation[] = [];
+  const surplusRelationEvidence: ExpectedFlowRelation[] = [];
+  for (const [key, expectedRelations] of expectedByRelation) {
+    const actualRelations = actualByRelation.get(key);
+    // A wholly absent semantic relation is already measured by relation recall.
+    // Occurrence matching below is for repeated evidence anchors of a relation
+    // that the provider otherwise claims to have found.
+    if (!actualRelations?.length) continue;
+    const remaining = [...expectedRelations];
+    for (const actual of actualRelations) {
+      let match = remaining.findIndex(
+        (expected) =>
+          expected.certainty === actual.certainty &&
+          expected.evidence.path === actual.evidence.path &&
+          expected.evidence.startLine === actual.evidence.startLine,
+      );
+      if (match >= 0) {
+        remaining.splice(match, 1);
+        continue;
+      }
+      match = remaining.findIndex(
+        (expected) =>
+          expected.evidence.path === actual.evidence.path &&
+          expected.evidence.startLine === actual.evidence.startLine,
+      );
+      if (match < 0 && remaining.length > 0) match = 0;
+      if (match < 0) {
+        surplusRelationEvidence.push(actual);
+        continue;
+      }
+      const expected = remaining.splice(match, 1)[0]!;
+      metadataMismatches.push({
         relation: {
           id: expected.id,
           kind: expected.kind,
@@ -236,9 +435,10 @@ export function scoreFlowGraph(
         actualCertainty: actual.certainty,
         expectedEvidence: expected.evidence,
         actualEvidence: actual.evidence,
-      },
-    ];
-  });
+      });
+    }
+    missingRelationEvidence.push(...remaining);
+  }
   const expectedPathByKey = new Map(
     expectedPaths.map((path, index) => [pathKey(path), oracle.paths[index]!] as const),
   );
@@ -261,6 +461,8 @@ export function scoreFlowGraph(
     paths: scoreMetric(expectedPaths, actualPaths, pathKey),
     entrypointMetadataMismatches,
     metadataMismatches,
+    missingRelationEvidence,
+    surplusRelationEvidence,
     pathMetadataMismatches,
     explicitlyUnmeasured: [
       "branch-condition equivalence",
