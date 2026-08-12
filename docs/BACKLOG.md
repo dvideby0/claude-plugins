@@ -253,7 +253,8 @@ Progress (2026-08-12, HTTP vertical slice): a bounded Rust Tree-sitter
 framework adapter now recognizes explicit TypeScript/JavaScript HTTP route
 guards and persists file-owned execution entries, operations, control edges,
 diagnostics, producer identity, certainty, source evidence, and input hashes in
-schema v19, with exact call-target occurrences added in schema v20. It retains
+schema v19, with exact call-target occurrences added in schema v20. Schema v21
+anchors finding ranges to the source revision that produced them. It retains
 bounded positive boolean route alternatives, `if` branches, caught explicit
 throws, `finally` transitions before deferred returns/throws, awaited calls,
 returns/throws, and recognized HTTP response effects. Conditional operations
@@ -309,8 +310,20 @@ Acceptance criteria:
 Progress (2026-08-12): the desktop now has a first global search workspace over
 the shared FTS5 index and can open file-backed results in the existing indexed
 file drawer. The first flow-centered entry-to-effect workspace is available for
-supported deterministic entries. Precise range navigation, exact source-text
-indexing, and synchronized source/graph/path selection remain open.
+supported deterministic entries. Flow steps, call-graph nodes, symbols,
+findings, entries, and resolved call targets now open bounded source slices at
+their indexed ranges. The desktop compares current source signatures with each
+selected evidence generation, visibly marks stale or unattested evidence,
+keeps the selected flow step synchronized with its source preview, and pages
+through source without exposing an unbounded file response. Historical finding
+ranges and authored flow assertions retain their producing source revision;
+live external-tool findings without an attested snapshot remain unverified.
+Resolved execution targets carry their exact declaration range from the Rust
+reference index rather than relying on a same-named-symbol guess; ambiguous
+authored symbol names require an explicit range selection instead of guessing.
+Exact source-text indexing, richer definition/reference and caller/callee
+navigation, graph-canvas selection synchronization, and multi-view selection
+persistence remain open.
 
 ### QUERY-001: One budgeted task-context query
 

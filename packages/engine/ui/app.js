@@ -90,6 +90,24 @@ function esc(value) {
   );
 }
 
+// Browser bidi handling must never let attacker-controlled format characters
+// reorder or disappear inside an evidence view. Replace the controls before
+// they reach HTML while preserving their exact code-point position.
+const SOURCE_FORMAT_CONTROL = /(?:\p{Cf}|[\u115f\u1160\u3164\uffa0])/gu;
+
+function sourceHtml(value) {
+  const source = String(value ?? "");
+  let html = "";
+  let cursor = 0;
+  for (const match of source.matchAll(SOURCE_FORMAT_CONTROL)) {
+    html += esc(source.slice(cursor, match.index));
+    const code = match[0].codePointAt(0).toString(16).toUpperCase().padStart(4, "0");
+    html += `<span class="source-control" title="Unicode format control U+${code}">⟦U+${code}⟧</span>`;
+    cursor = match.index + match[0].length;
+  }
+  return html + esc(source.slice(cursor));
+}
+
 const num = (value) => Number(value ?? 0).toLocaleString();
 
 function relative(iso) {
@@ -501,7 +519,15 @@ function renderSearchResults() {
     } else if (hit.detail.kind === "flow") {
       void showMapFlow(workspace, hit.detail.sourceId, { origin: element });
     } else if (hit.detail.path) {
-      void showFile(workspace, hit.detail.path, { forceDrawer: true, origin: element });
+      void showFile(workspace, hit.detail.path, {
+        forceDrawer: true,
+        origin: element,
+        startLine: hit.detail.lineStart,
+        endLine: hit.detail.lineEnd,
+        ...(hit.detail.kind === "finding"
+          ? { evidenceSha: hit.detail.evidenceSha ?? null }
+          : {}),
+      });
     }
   }, container);
 }
@@ -1030,6 +1056,7 @@ async function paneGraph(workspace, pane) {
  */
 let drawerReturnFocus = null;
 let drawerWorkspace = null;
+const fileRequestByInspector = new WeakMap();
 
 function openDrawer(origin = document.activeElement, workspace = null) {
   let drawer = document.getElementById("drawer");
@@ -1088,6 +1115,7 @@ function openDrawer(origin = document.activeElement, workspace = null) {
   }
   if (wasClosed && origin instanceof HTMLElement) drawerReturnFocus = origin;
   if (workspace) drawerWorkspace = { id: workspace.id, generation: workspace.generation };
+  fileRequestByInspector.set(drawer, {});
   document.querySelector(".body").inert = true;
   document.getElementById("drawer-backdrop").hidden = false;
   drawer.hidden = false;
@@ -1098,7 +1126,10 @@ function openDrawer(origin = document.activeElement, workspace = null) {
 function closeDrawer() {
   const drawer = document.getElementById("drawer");
   const backdrop = document.getElementById("drawer-backdrop");
-  if (drawer) drawer.hidden = true;
+  if (drawer) {
+    fileRequestByInspector.set(drawer, {});
+    drawer.hidden = true;
+  }
   if (backdrop) backdrop.hidden = true;
   document.querySelector(".body").inert = false;
   if (drawerReturnFocus?.isConnected) drawerReturnFocus.focus({ preventScroll: true });
@@ -1106,12 +1137,143 @@ function closeDrawer() {
   drawerWorkspace = null;
 }
 
+function positiveLine(value) {
+  const line = Number(value);
+  return Number.isInteger(line) && line > 0 ? line : null;
+}
+
+function fileSourceRequest(path, options) {
+  const focusStartLine = positiveLine(options.startLine);
+  const focusEndLine = Math.max(
+    focusStartLine ?? 1,
+    positiveLine(options.endLine) ?? focusStartLine ?? 1,
+  );
+  const sourceStartLine =
+    positiveLine(options.sourceStartLine) ?? (focusStartLine ? Math.max(1, focusStartLine - 8) : 1);
+  const sourceEndLine =
+    positiveLine(options.sourceEndLine) ??
+    (focusStartLine ? Math.max(sourceStartLine, focusEndLine + 12) : sourceStartLine + 119);
+  const query = new URLSearchParams({
+    path,
+    startLine: String(sourceStartLine),
+    endLine: String(sourceEndLine),
+  });
+  if (Object.hasOwn(options, "evidenceSha")) {
+    query.set("evidenceSha", options.evidenceSha ?? "");
+  }
+  if (options.symbol) query.set("symbol", options.symbol);
+  return { query, focusStartLine, focusEndLine };
+}
+
+function renderFileSource(file, focusStartLine, focusEndLine, options = {}) {
+  const source = file.source;
+  if (!source) {
+    return `<section class="file-source">
+      <div class="file-source-head"><div><span class="drawer-eyebrow">Source</span><strong>Unavailable</strong></div></div>
+      <div class="drawer-callout warn"><strong>${esc(file.sourceError || "The current file could not be read safely.")}</strong></div>
+    </section>`;
+  }
+
+  const highlighted = focusStartLine !== null;
+  const lines = source.content.split("\n");
+  const code = lines
+    .map((line, index) => {
+      const lineNumber = source.startLine + index;
+      const selected =
+        highlighted && lineNumber >= focusStartLine && lineNumber <= focusEndLine;
+      return `<div class="source-line ${selected ? "selected" : ""}" data-line="${lineNumber}">
+        <span aria-hidden="true">${lineNumber}</span><code>${sourceHtml(line) || " "}</code>
+      </div>`;
+    })
+    .join("");
+  const hasPrevious = source.startLine > 1;
+  const hasNext = source.endLine < source.totalLines;
+  const previousStart = Math.max(1, source.startLine - 120);
+  const previousEnd = source.startLine - 1;
+  const nextStart = source.endLine + 1;
+  const nextEnd = Math.min(source.totalLines, nextStart + 119);
+
+  const sourceWarning =
+    source.freshness === "stale"
+      ? "This file changed after the selected evidence was recorded. The highlighted range may have moved."
+      : source.freshness === "unverified"
+        ? "The selected evidence has no attested source revision. Verify the highlighted range before relying on it."
+        : "";
+
+  return `<section class="file-source ${source.freshness === "current" ? "" : esc(source.freshness)}">
+    <div class="file-source-head">
+      <div>
+        <span class="drawer-eyebrow">${highlighted ? "Source evidence" : "Source"}</span>
+        <strong>Lines ${num(source.startLine)}–${num(source.endLine)} of ${num(source.totalLines)}</strong>
+      </div>
+      <span class="knowledge-pill ${source.freshness === "current" ? "status-ok" : "status-warn"}">${esc(source.freshness)}</span>
+    </div>
+    ${
+      sourceWarning ? `<div class="source-warning">${esc(sourceWarning)}</div>` : ""
+    }
+    <div class="source-code" role="region" aria-label="${esc(file.path)} source" tabindex="0">${code}</div>
+    ${source.characterTruncated ? '<div class="source-warning">A very long line was truncated for display.</div>' : ""}
+    ${
+      options.paginate === false
+        ? ""
+        : `<div class="file-source-nav">
+             <button data-action="source-page" data-start="${previousStart}" data-end="${previousEnd}" ${hasPrevious ? "" : "disabled"}>← Previous</button>
+             <button data-action="source-page" data-start="${nextStart}" data-end="${nextEnd}" ${hasNext ? "" : "disabled"}>Next →</button>
+           </div>`
+    }
+  </section>`;
+}
+
+function resetSourceOptions(options, overrides = {}) {
+  const reset = { ...options };
+  for (const key of [
+    "symbol",
+    "startLine",
+    "endLine",
+    "sourceStartLine",
+    "sourceEndLine",
+    "evidenceSha",
+  ]) {
+    delete reset[key];
+  }
+  return { ...reset, ...overrides };
+}
+
 async function showFile(workspace, path, options = {}) {
   const localInspector = options.forceDrawer ? null : document.getElementById("inspector");
   const inspector = localInspector ?? openDrawer(options.origin, workspace);
   const inDrawer = !localInspector;
+  const request = {};
+  fileRequestByInspector.set(inspector, request);
   try {
-    const file = await api(`/api/workspaces/${workspace.id}/file?path=${encodeURIComponent(path)}`);
+    const sourceRequest = fileSourceRequest(path, options);
+    const file = await api(
+      `/api/workspaces/${workspace.id}/file?${sourceRequest.query.toString()}`,
+    );
+    if (fileRequestByInspector.get(inspector) !== request) return;
+    let ambiguousSymbol = null;
+    let missingSymbol = null;
+    if (!sourceRequest.focusStartLine && options.symbol) {
+      if (file.symbolMatchTotal === 1 && file.symbolMatches.length === 1) {
+        const [symbol] = file.symbolMatches;
+        await showFile(
+          workspace,
+          path,
+          resetSourceOptions(options, {
+            startLine: symbol.startLine,
+            endLine: symbol.endLine,
+            // This range came from the deterministic symbol index, not from
+            // whichever finding or flow the user navigated here from.
+            evidenceSha: file.contentSha,
+          }),
+        );
+        return;
+      }
+      if (file.symbolMatchTotal > 1) ambiguousSymbol = options.symbol;
+      else missingSymbol = options.symbol;
+    }
+    const displayedSymbols = ambiguousSymbol ? file.symbolMatches : file.symbols;
+    const displayedSymbolTotal = ambiguousSymbol ? file.symbolMatchTotal : file.symbolsTotal;
     const list = (title, values) =>
       values.length
         ? `<div class="insp-section">
@@ -1127,31 +1289,45 @@ async function showFile(workspace, path, options = {}) {
         inDrawer
           ? `<div class="drawer-head drawer-head-sticky">
                <div>
-                 ${options.back ? '<button class="drawer-back" data-action="drawer-back">← Back</button>' : '<div class="drawer-eyebrow">Indexed file</div>'}
+                 ${options.back ? '<button class="drawer-back" data-action="drawer-back">← Back</button>' : `<div class="drawer-eyebrow">${file.indexed === false ? "Finding source" : "Indexed file"}</div>`}
                  <h2 class="drawer-file-title">${esc(file.path)}</h2>
                </div>
                <button class="drawer-close" data-action="close-drawer" aria-label="Close details">×</button>
              </div>`
           : `<button class="close" aria-label="Close">×</button><h4>${esc(file.path)}</h4>`
       }
-      <div class="sub">${esc(file.lang)} · ${num(file.loc)} loc · churn ${num(file.churn)}${file.isTest ? " · test" : ""}</div>
+      <div class="sub">${
+        file.indexed === false
+          ? `${esc(file.lang)} · ${num(file.loc)} lines · not in deterministic inventory`
+          : `${esc(file.lang)} · ${num(file.loc)} loc · churn ${num(file.churn)}${file.isTest ? " · test" : ""}`
+      }</div>
       ${
-        file.component
+        ambiguousSymbol
+          ? `<div class="drawer-callout warn"><strong>More than one declaration is named ${esc(ambiguousSymbol)}.</strong><span>Choose the exact line from Symbols below; SDLC will not guess.</span></div>`
+          : missingSymbol
+            ? `<div class="drawer-callout warn"><strong>No indexed declaration is named ${esc(missingSymbol)}.</strong><span>The file is open, but SDLC did not invent a target range.</span></div>`
+          : ""
+      }
+      ${
+        file.indexed === false
+          ? `<div class="insp-component sub">Referenced by an analyzer, but not present in the deterministic source inventory.</div>`
+          : file.component
           ? `<div class="insp-component">
                In <button class="linky" data-component="${esc(file.component.id)}">${esc(file.component.name)}</button>
              </div>`
           : `<div class="insp-component sub">Not in any drawn component yet.</div>`
       }
+      ${renderFileSource(file, sourceRequest.focusStartLine, sourceRequest.focusEndLine)}
       ${
         file.findings.length
           ? `<div class="insp-section">
                <h3 class="section">Findings</h3>
                ${file.findings
                  .map(
-                   (finding) => `<div class="insp-finding">
+                   (finding, index) => `<button class="insp-finding navigable" data-finding-index="${index}">
                      <span class="sevtag sev-${esc(finding.severity)}">${esc(finding.severity)}</span>
-                     <div>${esc(finding.title)}</div>
-                   </div>`,
+                     <span>${esc(finding.title)}${finding.lineStart ? ` · line ${num(finding.lineStart)}` : ""}</span>
+                   </button>`,
                  )
                  .join("")}
              </div>`
@@ -1161,13 +1337,15 @@ async function showFile(workspace, path, options = {}) {
       ${list("Imports", file.imports)}
       ${list("External packages", file.externals)}
       ${
-        file.symbols.length
+        displayedSymbols.length
           ? `<div class="insp-section">
-               <h3 class="section">Symbols (${file.symbols.length})</h3>
-               <div class="insp-list">${file.symbols
-                 .slice(0, 40)
-                 .map((symbol) => `<span class="mono dim">${esc(symbol.kind)} ${esc(symbol.name)}</span>`)
+               <h3 class="section">${ambiguousSymbol ? `Declarations named ${esc(ambiguousSymbol)}` : "Symbols"} (${num(displayedSymbolTotal)})</h3>
+               <div class="insp-list symbol-list">${displayedSymbols
+                 .map(
+                   (symbol, index) => `<button data-symbol-index="${index}"><span class="mono">${esc(symbol.name)}</span><span class="dim">${esc(symbol.kind)} · line ${num(symbol.startLine)}</span></button>`,
+                 )
                  .join("")}</div>
+               ${displayedSymbols.length < displayedSymbolTotal ? `<div class="sub">Showing the first ${num(displayedSymbols.length)} declarations; no target was selected from the truncated remainder.</div>` : ""}
              </div>`
           : ""
       }
@@ -1178,6 +1356,52 @@ async function showFile(workspace, path, options = {}) {
     } else if (!inDrawer) {
       inspector.querySelector(".close").addEventListener("click", () => {
         inspector.hidden = true;
+      });
+    }
+    for (const button of inspector.querySelectorAll('[data-action="source-page"]')) {
+      button.addEventListener("click", () => {
+        if (button.disabled) return;
+        void showFile(
+          workspace,
+          path,
+          resetSourceOptions(options, {
+            sourceStartLine: Number(button.dataset.start),
+            sourceEndLine: Number(button.dataset.end),
+            ...(Object.hasOwn(options, "evidenceSha")
+              ? { evidenceSha: options.evidenceSha }
+              : {}),
+          }),
+        );
+      });
+    }
+    for (const button of inspector.querySelectorAll("[data-symbol-index]")) {
+      button.addEventListener("click", () => {
+        const symbol = displayedSymbols[Number(button.dataset.symbolIndex)];
+        if (!symbol) return;
+        void showFile(
+          workspace,
+          path,
+          resetSourceOptions(options, {
+            startLine: symbol.startLine,
+            endLine: symbol.endLine,
+            evidenceSha: file.contentSha,
+          }),
+        );
+      });
+    }
+    for (const button of inspector.querySelectorAll("[data-finding-index]")) {
+      button.addEventListener("click", () => {
+        const finding = file.findings[Number(button.dataset.findingIndex)];
+        if (!finding?.lineStart) return;
+        void showFile(
+          workspace,
+          path,
+          resetSourceOptions(options, {
+            startLine: finding.lineStart,
+            endLine: finding.lineEnd || finding.lineStart,
+            evidenceSha: finding.contentSha,
+          }),
+        );
       });
     }
     for (const link of inspector.querySelectorAll("[data-component]")) {
@@ -1194,17 +1418,16 @@ async function showFile(workspace, path, options = {}) {
           workspace,
           button.dataset.path,
           inDrawer
-            ? {
-                ...options,
+            ? resetSourceOptions(options, {
                 forceDrawer: true,
                 back: () => showFile(workspace, path, options),
-              }
+              })
             : {},
         );
       });
     }
   } catch (error) {
-    toast(error.message);
+    if (fileRequestByInspector.get(inspector) === request) toast(error.message);
   }
 }
 
@@ -1309,6 +1532,11 @@ async function paneFindings(workspace, pane) {
             ${row.occurrences > 1 ? ` · seen ${num(row.occurrences)}×` : ""}
           </div>
           ${
+            row.path
+              ? `<button data-action="open-finding-source">Open source${row.lineStart ? ` at line ${num(row.lineStart)}` : ""} →</button>`
+              : ""
+          }
+          ${
             canTriage
               ? `<div class="triage">
                    <input type="text" placeholder="Reason (required)" data-reason="${index}" />
@@ -1341,6 +1569,18 @@ async function paneFindings(workspace, pane) {
           toast(error.message);
         }
       };
+      on(
+        "open-finding-source",
+        (button) =>
+          void showFile(workspace, row.path, {
+            forceDrawer: true,
+            origin: button,
+            startLine: row.lineStart,
+            endLine: row.lineEnd,
+            evidenceSha: row.contentSha,
+          }),
+        holder,
+      );
       on("accept", (button) => void suppressWith(button, "accepted"), holder);
       on("falsep", (button) => void suppressWith(button, "false_positive"), holder);
     });
@@ -1623,7 +1863,7 @@ async function showMapFlow(workspace, id, options = {}) {
       <h3 class="section">Complete path</h3>
       <ol class="mapflow-steps drawer-flow-steps">
         ${flow.steps
-          .map((step) => {
+          .map((step, stepIndex) => {
             const component = step.component ? componentByName.get(step.component) : null;
             return `
               <li class="${step.resolves ? "" : "gone"} ${step.drifted ? "moved" : ""}">
@@ -1637,7 +1877,7 @@ async function showMapFlow(workspace, id, options = {}) {
                 ${step.note ? `<div class="step-note">${esc(step.note)}</div>` : ""}
                 ${
                   step.path
-                    ? `<div class="drawer-step-source"><code>${esc(step.path)}</code>${step.resolves ? `<button data-action="open-flow-file" data-path="${esc(step.path)}">Open file</button>` : ""}</div>`
+                    ? `<div class="drawer-step-source"><code>${esc(step.path)}</code>${step.resolves ? `<button data-action="open-flow-file" data-step-index="${stepIndex}">Open source</button>` : ""}</div>`
                     : '<div class="drawer-step-source sub">Conceptual step — no file anchor</div>'
                 }
               </li>`;
@@ -1650,11 +1890,16 @@ async function showMapFlow(workspace, id, options = {}) {
   on("drawer-back", () => options.back?.(), drawer);
   on(
     "open-flow-file",
-    (element) =>
-      void showFile(workspace, element.dataset.path, {
+    (element) => {
+      const step = flow.steps[Number(element.dataset.stepIndex)];
+      if (!step?.path) return;
+      void showFile(workspace, step.path, {
         forceDrawer: true,
+        symbol: step.symbol,
+        evidenceSha: step.contentSha,
         back: () => showMapFlow(workspace, id, options),
-      }),
+      });
+    },
     drawer,
   );
   on(
@@ -1865,6 +2110,8 @@ let flowRoot = null;
 let executionRoot = null;
 let flowDisplayMode = "execution";
 let executionAssertionsEnabled = false;
+let executionNodeRequest = 0;
+let callFlowNodeRequest = 0;
 
 async function paneFlow(workspace, pane) {
   let execution;
@@ -2038,6 +2285,7 @@ async function paneExecutionFlow(workspace, pane, index) {
     const requestedEntry = executionRoot;
     const requestedAssertions = executionAssertionsEnabled;
     stage.innerHTML = `${inventoryNotice}<div class="loading">Tracing evidence…</div>`;
+    ++executionNodeRequest;
     inspector.hidden = true;
     try {
       const view = await api(
@@ -2127,12 +2375,18 @@ async function paneExecutionFlow(workspace, pane, index) {
         </div>
       `;
       stage.querySelector("[data-entry-source]")?.addEventListener("click", (event) => {
-        void showFile(workspace, entry.path, { forceDrawer: true, origin: event.currentTarget });
+        void showFile(workspace, entry.path, {
+          forceDrawer: true,
+          origin: event.currentTarget,
+          startLine: entry.evidence.startLine,
+          endLine: entry.evidence.endLine,
+          evidenceSha: entry.generation.inputSha,
+        });
       });
       for (const button of stage.querySelectorAll("[data-execution-node]")) {
         button.addEventListener("click", () => {
           const node = nodes.get(button.dataset.executionNode);
-          if (node) showExecutionNode(workspace, node, entry, inspector, button);
+          if (node) void showExecutionNode(workspace, node, entry, inspector, button);
         });
       }
       for (const button of stage.querySelectorAll("[data-assertion-evidence]")) {
@@ -2142,6 +2396,9 @@ async function paneExecutionFlow(workspace, pane, index) {
             void showFile(workspace, relation.evidence.path, {
               forceDrawer: true,
               origin: event.currentTarget,
+              startLine: relation.evidence.startLine,
+              endLine: relation.evidence.startLine,
+              evidenceSha: relation.evidence.contentSha,
             });
           }
         });
@@ -2156,7 +2413,8 @@ async function paneExecutionFlow(workspace, pane, index) {
   await loadExecution();
 }
 
-function showExecutionNode(workspace, node, entry, inspector, origin) {
+async function showExecutionNode(workspace, node, entry, inspector, origin) {
+  const request = ++executionNodeRequest;
   const target = node.target || {};
   const externalLabel =
     node.kind === "return" || node.kind === "throw"
@@ -2164,6 +2422,46 @@ function showExecutionNode(workspace, node, entry, inspector, origin) {
       : node.kind === "terminal-effect"
         ? "external effect"
         : "external target";
+  for (const button of origin.closest(".execution-stage")?.querySelectorAll(".execution-step.selected") ?? []) {
+    button.classList.remove("selected");
+  }
+  origin.classList.add("selected");
+  const dismiss = () => {
+    if (request === executionNodeRequest) ++executionNodeRequest;
+    inspector.hidden = true;
+    origin.classList.remove("selected");
+    origin.focus();
+  };
+  inspector.innerHTML = `
+    <button class="close" aria-label="Close">×</button>
+    <span class="execution-kicker">${esc(node.kind.replaceAll("-", " "))}</span>
+    <h4>${esc(node.label)}</h4>
+    <div class="loading">Loading source evidence…</div>
+  `;
+  inspector.hidden = false;
+  inspector.querySelector(".close").addEventListener("click", dismiss);
+
+  const sourceRequest = fileSourceRequest(node.evidence.path, {
+    startLine: node.evidence.startLine,
+    endLine: node.evidence.endLine,
+    evidenceSha: entry.generation.inputSha,
+  });
+  let file;
+  try {
+    file = await api(`/api/workspaces/${workspace.id}/file?${sourceRequest.query.toString()}`);
+  } catch (error) {
+    if (request !== executionNodeRequest) return;
+    inspector.innerHTML = `
+      <button class="close" aria-label="Close">×</button>
+      <span class="execution-kicker">${esc(node.kind.replaceAll("-", " "))}</span>
+      <h4>${esc(node.label)}</h4>
+      <div class="empty">${esc(error.message)}</div>
+    `;
+    inspector.querySelector(".close").addEventListener("click", dismiss);
+    return;
+  }
+  if (request !== executionNodeRequest) return;
+
   inspector.innerHTML = `
     <button class="close" aria-label="Close">×</button>
     <span class="execution-kicker">${esc(node.kind.replaceAll("-", " "))}</span>
@@ -2180,21 +2478,31 @@ function showExecutionNode(workspace, node, entry, inspector, origin) {
       ${target.external ? `<div><span>${externalLabel}</span><strong>${esc(target.external)}</strong></div>` : ""}
       ${target.symbol ? `<div><span>target symbol</span><strong>${esc(target.symbol)}</strong></div>` : ""}
     </div>
+    ${renderFileSource(file, sourceRequest.focusStartLine, sourceRequest.focusEndLine, { paginate: false })}
     <div class="execution-inspector-actions">
-      <button data-open-evidence>Open evidence file</button>
-      ${target.path ? `<button data-open-target>Open target file</button>` : ""}
+      <button data-open-evidence>Open full evidence file</button>
+      ${target.path ? `<button data-open-target>Open target definition</button>` : ""}
     </div>
   `;
   inspector.hidden = false;
-  inspector.querySelector(".close").addEventListener("click", () => {
-    inspector.hidden = true;
-    origin.focus();
-  });
+  inspector.querySelector(".close").addEventListener("click", dismiss);
   inspector.querySelector("[data-open-evidence]").addEventListener("click", (event) => {
-    void showFile(workspace, node.evidence.path, { forceDrawer: true, origin: event.currentTarget });
+    void showFile(workspace, node.evidence.path, {
+      forceDrawer: true,
+      origin: event.currentTarget,
+      startLine: node.evidence.startLine,
+      endLine: node.evidence.endLine,
+      evidenceSha: entry.generation.inputSha,
+    });
   });
   inspector.querySelector("[data-open-target]")?.addEventListener("click", (event) => {
-    void showFile(workspace, target.path, { forceDrawer: true, origin: event.currentTarget });
+    void showFile(workspace, target.path, {
+      forceDrawer: true,
+      origin: event.currentTarget,
+      symbol: target.symbol,
+      startLine: target.startLine,
+      endLine: target.endLine,
+    });
   });
 }
 
@@ -2286,6 +2594,7 @@ async function paneCallFlow(workspace, pane, hasExecution) {
     state.flow?.destroy();
     state.flow = null;
     stage.innerHTML = `<div class="loading">Tracing…</div>`;
+    ++callFlowNodeRequest;
     document.getElementById("flow-inspector").hidden = true;
 
     try {
@@ -2318,11 +2627,17 @@ async function paneCallFlow(workspace, pane, hasExecution) {
 async function showFlowNode(workspace, hit) {
   const inspector = document.getElementById("flow-inspector");
   if (!inspector) return;
+  const request = ++callFlowNodeRequest;
   try {
-    const file = await api(
-      `/api/workspaces/${workspace.id}/file?path=${encodeURIComponent(hit.path)}`,
-    );
     const node = hit.node ?? {};
+    const sourceRequest = fileSourceRequest(hit.path, {
+      startLine: node.line,
+      endLine: node.line,
+    });
+    const file = await api(
+      `/api/workspaces/${workspace.id}/file?${sourceRequest.query.toString()}`,
+    );
+    if (request !== callFlowNodeRequest) return;
     inspector.innerHTML = `
       <button class="close" aria-label="Close">×</button>
       <h4>${esc(hit.symbol)}</h4>
@@ -2347,14 +2662,25 @@ async function showFlowNode(workspace, hit) {
              </div>`
           : ""
       }
+      ${renderFileSource(file, sourceRequest.focusStartLine, sourceRequest.focusEndLine, { paginate: false })}
+      <div class="execution-inspector-actions"><button data-open-flow-source>Open full source</button></div>
       <div class="insp-section sub">Double-click a node to follow the flow from there.</div>
     `;
     inspector.hidden = false;
     inspector.querySelector(".close").addEventListener("click", () => {
+      if (request === callFlowNodeRequest) ++callFlowNodeRequest;
       inspector.hidden = true;
     });
+    inspector.querySelector("[data-open-flow-source]").addEventListener("click", (event) => {
+      void showFile(workspace, hit.path, {
+        forceDrawer: true,
+        origin: event.currentTarget,
+        startLine: node.line,
+        endLine: node.line,
+      });
+    });
   } catch (error) {
-    toast(error.message);
+    if (request === callFlowNodeRequest) toast(error.message);
   }
 }
 

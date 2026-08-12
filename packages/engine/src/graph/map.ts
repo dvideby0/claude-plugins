@@ -393,6 +393,8 @@ export interface MapFlow {
     path: string | null;
     symbol: string | null;
     note: string | null;
+    /** Indexed file revision this authored step was written against. */
+    contentSha: string | null;
     /** Which box this step happens in, so a flow can be drawn across them. */
     component: string | null;
     /** False when the step names code that is no longer there. */
@@ -629,6 +631,7 @@ export function systemMap(db: Db): SystemMap {
           path: step.path,
           symbol: step.symbol,
           note: step.note,
+          contentSha: step.content_sha,
           component: step.path ? (componentOfFile.get(step.path)?.name ?? null) : null,
           // A drawing that points at deleted code should say so rather than
           // quietly describing a system that no longer exists.

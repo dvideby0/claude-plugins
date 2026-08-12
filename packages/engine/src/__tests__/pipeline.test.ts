@@ -1,16 +1,19 @@
 import { readFile, symlink } from "node:fs/promises";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { runAnalyzers } from "../analyze/run.js";
+import { attributeFindingEvidence, runAnalyzers } from "../analyze/run.js";
 import { localToolCommand, nodeToolCommand } from "../analyze/tools.js";
 import { getDb } from "../db/db.js";
 import { recordFindings } from "../findings/record.js";
+import { extractSnippet, fingerprint } from "../findings/fingerprint.js";
 import { buildContext } from "../plan/context.js";
 import { runQuery } from "../plan/query.js";
 import { loadPlan, planUnits, savePlan } from "../plan/risk.js";
 import { buildReports } from "../report/export.js";
 import { scan } from "../scan/scan.js";
+import type { SourceTextFile } from "../scan/source.js";
 import { overviewView } from "../daemon/views.js";
+import { sourceContentSha } from "../lib/workspace-path.js";
 import { cleanup, makeProject } from "./helpers.js";
 
 const PROJECT = {
@@ -264,6 +267,67 @@ describe("pipeline", () => {
     expect(
       db.count("SELECT COUNT(*) AS n FROM findings WHERE rule_id LIKE 'secrets/%' AND status = 'fixed'"),
     ).toBeGreaterThan(0);
+  });
+
+  it("attributes graph findings to the indexed revision instead of an unindexed edit", async () => {
+    root = await makeProject({
+      "package.json": "{}",
+      "src/a.ts": 'import { b } from "./b.js";\nexport const a = b;\n',
+      "src/b.ts": 'import { a } from "./a.js";\nexport const b = a;\n',
+    });
+    await scan(root, { kind: "full" });
+    const db = await getDb(root);
+    const indexedSha = db.get<{ content_sha: string }>(
+      "SELECT content_sha FROM files WHERE path = ?",
+      ["src/a.ts"],
+    )!.content_sha;
+    const changedSource = "export const a = 1;\n";
+    const { writeFile } = await import("node:fs/promises");
+    await writeFile(join(root, "src/a.ts"), changedSource);
+
+    await runAnalyzers(root, { offline: true });
+
+    const findingSha = db.get<{ content_sha: string }>(
+      "SELECT content_sha FROM findings WHERE rule_id = 'graph/import-cycle'",
+    )?.content_sha;
+    expect(findingSha).toBe(indexedSha);
+    expect(findingSha).not.toBe(sourceContentSha(changedSource));
+  });
+
+  it("preserves snippet identity for external diagnostics without attesting their revision", () => {
+    const content = Array.from({ length: 10 }, (_, index) => `const value${index} = ${index};`).join(
+      "\n",
+    );
+    const source: SourceTextFile = {
+      path: "src/repeated.ts",
+      lang: "typescript",
+      contentSha: sourceContentSha(content),
+      isTest: false,
+      content,
+    };
+    const finding = {
+      ruleId: "eslint/no-unused-vars",
+      category: "maintainability" as const,
+      severity: "medium" as const,
+      confidence: "definite" as const,
+      source: "linter" as const,
+      title: "no-unused-vars: value is unused",
+      path: source.path,
+      lineStart: 1,
+      lineEnd: 1,
+      symbol: "no-unused-vars",
+    };
+    const attributed = attributeFindingEvidence(
+      { tool: "eslint", status: "ok", detail: "2 findings", findings: [finding, { ...finding, lineStart: 9, lineEnd: 9 }] },
+      new Map([[source.path, source]]),
+      () => source.contentSha,
+    );
+
+    expect(attributed.every((item) => item.evidenceSha === null)).toBe(true);
+    expect(fingerprint(attributed[0])).toBe(
+      fingerprint({ ...finding, snippet: extractSnippet(content, 1, 1) }),
+    );
+    expect(fingerprint(attributed[0])).not.toBe(fingerprint(attributed[1]));
   });
 
   it("keeps the latest analyzer status visible after a watcher scan", async () => {

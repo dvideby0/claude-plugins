@@ -29,6 +29,11 @@ describe("database migrations", () => {
       expect(JSON.parse(native.all("PRAGMA user_version", "[]"))).toEqual([
         { user_version: SCHEMA_VERSION },
       ]);
+      expect(
+        (JSON.parse(native.all("PRAGMA table_info(findings)", "[]")) as Array<{ name: string }>).some(
+          (column) => column.name === "content_sha",
+        ),
+      ).toBe(true);
     } finally {
       native.close();
     }

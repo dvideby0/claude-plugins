@@ -42,7 +42,11 @@ import { loadPlan, planUnits, savePlan } from "../plan/risk.js";
 import { buildReports } from "../report/export.js";
 import { runReview } from "../review/runner.js";
 import { scan } from "../scan/scan.js";
-import { readWorkspaceText } from "../lib/workspace-path.js";
+import {
+  readWorkspaceSourceSlice,
+  readWorkspaceText,
+  sourceContentSha,
+} from "../lib/workspace-path.js";
 
 export const ENGINE_VERSION = "0.1.0";
 
@@ -303,16 +307,20 @@ export function createMcpServer(options: McpServerOptions): McpServer {
         const enriched: FindingInput[] = [];
         for (const finding of findings) {
           let snippet: string | undefined;
-          if (finding.path && finding.lineStart) {
+          let evidenceSha: string | null = null;
+          if (finding.path) {
             try {
               const content = await readWorkspaceText(root, finding.path);
-              snippet = extractSnippet(content, finding.lineStart, finding.lineEnd);
+              evidenceSha = sourceContentSha(content);
+              if (finding.lineStart) {
+                snippet = extractSnippet(content, finding.lineStart, finding.lineEnd);
+              }
             } catch {
               // Outside the workspace or unreadable — fingerprint falls back
               // to the title, and no local file contents enter the store.
             }
           }
-          enriched.push({ ...finding, source: "llm", snippet });
+          enriched.push({ ...finding, source: "llm", snippet, evidenceSha });
         }
 
         const summary = recordFindings(db, runId, enriched);
@@ -470,28 +478,23 @@ export function createMcpServer(options: McpServerOptions): McpServer {
     async ({ projectRoot, path, startLine, endLine }) =>
       wrap(async () => {
         const root = resolveRoot(projectRoot);
-        const content = await readWorkspaceText(root, path);
-        const lines = content.split("\n");
         const from = startLine ?? 1;
-        if (from > lines.length) {
-          throw new Error(`startLine ${from} is past the end of ${path} (${lines.length} lines).`);
-        }
-        const requestedEnd = endLine ?? Math.min(lines.length, from + 399);
+        const requestedEnd = endLine ?? from + 399;
         if (requestedEnd < from) throw new Error("endLine must be greater than or equal to startLine.");
-        const to = Math.min(lines.length, requestedEnd, from + 399);
-        let text = lines
-          .slice(from - 1, to)
-          .map((line, index) => `${String(from + index).padStart(5)}  ${line}`)
+        const slice = await readWorkspaceSourceSlice(root, path, from, requestedEnd);
+        let text = slice.content
+          .split("\n")
+          .map((line, index) => `${String(slice.startLine + index).padStart(5)}  ${line}`)
           .join("\n");
         const characterLimit = 50_000;
-        const characterTruncated = text.length > characterLimit;
+        const characterTruncated = slice.characterTruncated || text.length > characterLimit;
         if (characterTruncated) text = text.slice(0, characterLimit);
         return {
           path,
-          startLine: from,
-          endLine: to,
-          totalLines: lines.length,
-          truncated: to < requestedEnd || to < lines.length || characterTruncated,
+          startLine: slice.startLine,
+          endLine: slice.endLine,
+          totalLines: slice.totalLines,
+          truncated: slice.truncated || characterTruncated,
           content: text,
         };
       }),

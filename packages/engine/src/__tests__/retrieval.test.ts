@@ -21,6 +21,10 @@ describe("knowledge retrieval", () => {
     await scan(root, { kind: "full" });
     const db = await getDb(root);
     const now = new Date().toISOString();
+    const sourceSha = db.get<{ content_sha: string }>(
+      "SELECT content_sha FROM files WHERE path = ?",
+      ["src/checkout/service.ts"],
+    )!.content_sha;
 
     const memory = remember(db, {
       kind: "decision",
@@ -30,8 +34,9 @@ describe("knowledge retrieval", () => {
     });
     db.run(
       `INSERT INTO findings(
-         id, rule_id, category, severity, confidence, source, path, title, description, status
-       ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, 'open')`,
+         id, rule_id, category, severity, confidence, source, path, line_start, line_end,
+         content_sha, title, description, status
+       ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open')`,
       [
         "finding-1",
         "unsafe-redirect",
@@ -40,6 +45,9 @@ describe("knowledge retrieval", () => {
         "high",
         "fixture",
         "src/checkout/service.ts",
+        2,
+        2,
+        sourceSha,
         "Unsafe checkout redirect",
         "Validate the redirect target.",
       ],
@@ -93,10 +101,17 @@ describe("knowledge retrieval", () => {
       kind: "symbol",
       title: "checkoutOrder",
       path: "src/checkout/service.ts",
+      lineStart: 1,
+      lineEnd: 1,
     });
     expect(db.searchKnowledge("checkout service", ["file"])[0]?.kind).toBe("file");
     expect(db.searchKnowledge("payment provider", ["memory"])[0]?.sourceId).toBe(memory.id);
-    expect(db.searchKnowledge("unsafe redirect", ["finding"])[0]?.sourceId).toBe("finding-1");
+    expect(db.searchKnowledge("unsafe redirect", ["finding"])[0]).toMatchObject({
+      sourceId: "finding-1",
+      lineStart: 2,
+      lineEnd: 2,
+      evidenceSha: sourceSha,
+    });
     expect(db.searchKnowledge("payments boundary", ["component"])[0]?.sourceId).toBe(
       "payments",
     );
@@ -127,6 +142,15 @@ describe("knowledge retrieval", () => {
     expect([...new Set(all.hits.map((hit) => hit.detail.kind))]).toEqual(
       expect.arrayContaining(["file", "symbol", "memory", "finding", "component"]),
     );
+    expect(all.hits.find((hit) => hit.detail.kind === "symbol")?.detail).toMatchObject({
+      lineStart: 1,
+      lineEnd: 1,
+    });
+    expect(all.hits.find((hit) => hit.detail.kind === "finding")?.detail).toMatchObject({
+      lineStart: 2,
+      lineEnd: 2,
+      evidenceSha: sourceSha,
+    });
     expect(all.unreadable).toEqual([]);
 
     const freshMemory = await crossQuery(

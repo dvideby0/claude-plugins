@@ -11,7 +11,6 @@
  * user's own CLI quota.
  */
 
-import { createHash } from "node:crypto";
 import { contentDir } from "../content.js";
 import type { Db } from "../db/db.js";
 import { extractSnippet } from "../findings/fingerprint.js";
@@ -24,7 +23,7 @@ import {
 } from "../findings/types.js";
 import { buildContext } from "../plan/context.js";
 import { loadPlan, type WorkUnit } from "../plan/risk.js";
-import { readWorkspaceText } from "../lib/workspace-path.js";
+import { readWorkspaceText, sourceContentSha } from "../lib/workspace-path.js";
 import { extractJson, runClaude } from "./agent.js";
 
 export interface ReviewOptions {
@@ -184,10 +183,6 @@ A correctedLine must be one of the numbered source lines supplied for that claim
 }
 
 /** Read the numbered slice of a file the finding points at, plus surrounding context. */
-function sourceSha(content: string): string {
-  return createHash("sha256").update(content).digest("hex").slice(0, 20);
-}
-
 export async function sourceFor(
   projectRoot: string,
   path: string,
@@ -207,7 +202,7 @@ export async function sourceFor(
   return {
     firstLine: from + 1,
     lastLine: to,
-    contentSha: sourceSha(content),
+    contentSha: sourceContentSha(content),
     text: lines
       .slice(from, to)
       .map((line, index) => `${String(from + index + 1).padStart(5)}  ${line}`)
@@ -453,7 +448,7 @@ export async function runReview(
         // Verification reasoned about candidate.source. If the file moved
         // while that model call was running, neither its verdict nor its line
         // correction applies to the current workspace.
-        if (sourceSha(content) !== candidate.source.contentSha) {
+        if (sourceContentSha(content) !== candidate.source.contentSha) {
           summary.rejected++;
           continue;
         }
@@ -479,6 +474,7 @@ export async function runReview(
         ...(proposal.lineEnd ? { lineEnd: proposal.lineEnd } : {}),
         ...(proposal.symbol ? { symbol: proposal.symbol } : {}),
         source: "llm",
+        evidenceSha: candidate.source.contentSha,
         ...(snippet ? { snippet } : {}),
       });
     }

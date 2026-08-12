@@ -240,10 +240,17 @@ the indexed file drawer. Flow now defaults to a question-centered
 entry-to-effect path workspace when deterministic entries exist, with branches,
 typed terminal outcomes and effects, evidence, provenance, freshness,
 uncertainty, and the older call graph as a secondary mode. Returns and uncaught
-throws no longer appear as generic handler exits. Precise range-highlighted
-source display,
-synchronized code/graph selection, saved paths, callers/callees, change
-comparison, knowledge editing, and index-health explanations remain open.
+throws no longer appear as generic handler exits. Selecting deterministic flow
+steps or call-graph nodes now shows a bounded, range-highlighted source preview;
+entries, resolved call targets, symbols, findings, and search results open the
+same source surface at their indexed range. Current source is signature-checked
+against the selected evidence generation, including historical findings and
+authored flow assertions, and stale evidence is labeled instead of silently
+highlighted as exact. Legacy evidence and live external-tool output without an
+attested source snapshot are labeled unverified. Graph-canvas selection
+synchronization, saved paths, richer
+callers/callees and reference navigation, change comparison, knowledge editing,
+and index-health explanations remain open.
 
 A live desktop walkthrough on 2026-08-06 confirmed that repository validation,
 deterministic rescanning, findings drill-down, stale-memory display, Claude and

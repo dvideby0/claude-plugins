@@ -43,10 +43,30 @@ export function recordFindings(
     suppressed: 0,
     ids: [],
   };
+  const contentShaByPath = new Map<string, string | null>();
+  const contentShaFor = (path: string | null): string | null => {
+    if (!path) return null;
+    if (!contentShaByPath.has(path)) {
+      contentShaByPath.set(
+        path,
+        db.get<{ content_sha: string }>(
+          "SELECT content_sha FROM files WHERE path = ? AND present = 1",
+          [path],
+        )?.content_sha ?? null,
+      );
+    }
+    return contentShaByPath.get(path) ?? null;
+  };
 
   for (const finding of findings) {
     const id = fingerprint(finding);
     const path = finding.path ?? null;
+    // Production callers that read source pass the revision from that same
+    // read. The indexed row is only a compatibility fallback for callers that
+    // have no source snapshot of their own.
+    const contentSha = Object.prototype.hasOwnProperty.call(finding, "evidenceSha")
+      ? finding.evidenceSha ?? null
+      : contentShaFor(path);
 
     if (isSuppressed(db, id, finding.ruleId, path)) {
       summary.suppressed++;
@@ -61,9 +81,9 @@ export function recordFindings(
     if (!existing) {
       db.run(
         `INSERT INTO findings(id, rule_id, category, severity, confidence, source, path,
-                              line_start, line_end, anchor_sha, title, description, suggestion,
+                              line_start, line_end, anchor_sha, content_sha, title, description, suggestion,
                               status, first_seen_run, last_seen_run, occurrences)
-         VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?, 1)`,
+         VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?, 1)`,
         [
           id,
           finding.ruleId,
@@ -75,6 +95,7 @@ export function recordFindings(
           finding.lineStart ?? null,
           finding.lineEnd ?? null,
           anchorSha(finding.snippet),
+          contentSha,
           finding.title.slice(0, 200),
           finding.description ?? "",
           finding.suggestion ?? null,
@@ -99,7 +120,7 @@ export function recordFindings(
 
     db.run(
       `UPDATE findings
-         SET line_start = ?, line_end = ?, anchor_sha = ?, severity = ?, confidence = ?,
+         SET line_start = ?, line_end = ?, anchor_sha = ?, content_sha = ?, severity = ?, confidence = ?,
              title = ?, description = ?, suggestion = COALESCE(?, suggestion),
              status = ?, last_seen_run = ?, fixed_in_run = NULL,
              occurrences = occurrences + 1
@@ -108,6 +129,7 @@ export function recordFindings(
         finding.lineStart ?? null,
         finding.lineEnd ?? null,
         anchorSha(finding.snippet),
+        contentSha,
         finding.severity,
         finding.confidence,
         finding.title.slice(0, 200),

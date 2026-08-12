@@ -21,13 +21,21 @@ import type { EngineStatus, WorkspaceStatus } from "@sdlc/protocol";
 import { closeDb, getDb, getExistingDb } from "../db/db.js";
 import { loadPlan } from "../plan/risk.js";
 import { scan } from "../scan/scan.js";
+import { sourcePathPolicy } from "../scan/source.js";
 import { indexedSourceSignature } from "../scan/signature.js";
 import { createMcpServer, ENGINE_VERSION } from "../mcp/server.js";
 import { checkOrigin, checkToken, checkUiBootstrap } from "./auth.js";
 import { connectHarness, detectHarnesses, disconnectHarness, type BridgeCommand } from "./harnesses.js";
 import { suppress } from "../findings/record.js";
 import { buildReports } from "../report/export.js";
-import { findingsView, fileView, graphView, memoriesView, overviewView } from "./views.js";
+import {
+  findingsView,
+  fileView,
+  graphView,
+  memoriesView,
+  overviewView,
+  unindexedFindingFileView,
+} from "./views.js";
 import {
   CROSS_KINDS,
   crossQuery,
@@ -41,7 +49,12 @@ import { terminateProcessTree } from "../lib/exec.js";
 import { WorkspaceWatcher } from "./watcher.js";
 import { hasTypedConfigChange, WatchRefreshQueue } from "./watch-refresh.js";
 import { WorkspaceRegistry } from "./workspaces.js";
-import { canonicalWorkspaceRoot, workspaceIdentityKey } from "../lib/workspace-path.js";
+import {
+  canonicalWorkspaceRoot,
+  readWorkspaceSourceSlice,
+  sourceFreshness,
+  workspaceIdentityKey,
+} from "../lib/workspace-path.js";
 import {
   cancelAllScipEvaluations,
   cancelScipEvaluation,
@@ -833,9 +846,93 @@ export function createHttpServer(options: HttpServerOptions): HttpServerHandle {
             sendJson(res, 400, { error: "Provide a path." });
             return true;
           }
-          const view = fileView(db, target);
-          if (!view) sendJson(res, 404, { error: "Unknown file." });
-          else sendJson(res, 200, view);
+          const rawStartLine = query.get("startLine");
+          const rawEndLine = query.get("endLine");
+          const requestedSymbol = query.get("symbol") ?? undefined;
+          const hasEvidenceSha = query.has("evidenceSha");
+          const rawEvidenceSha = query.get("evidenceSha");
+          const startLine = rawStartLine === null ? 1 : Number(rawStartLine);
+          const endLine = rawEndLine === null ? startLine + 119 : Number(rawEndLine);
+          if (!Number.isInteger(startLine) || startLine < 1) {
+            sendJson(res, 400, { error: "startLine must be a positive integer." });
+            return true;
+          }
+          if (!Number.isInteger(endLine) || endLine < startLine) {
+            sendJson(res, 400, {
+              error: "endLine must be an integer greater than or equal to startLine.",
+            });
+            return true;
+          }
+          if (hasEvidenceSha && rawEvidenceSha && !/^[a-f0-9]{16}$/.test(rawEvidenceSha)) {
+            sendJson(res, 400, { error: "evidenceSha must be a 16-character lowercase hex signature." });
+            return true;
+          }
+          if (requestedSymbol !== undefined && requestedSymbol.length > 512) {
+            sendJson(res, 400, { error: "symbol must be at most 512 characters." });
+            return true;
+          }
+          const indexedView = fileView(db, target, requestedSymbol);
+          const hasFinding = indexedView
+            ? true
+            : Boolean(
+                db.get<{ present: number }>(
+                  "SELECT 1 AS present FROM findings WHERE path = ? LIMIT 1",
+                  [target],
+                ),
+              );
+          if (!hasFinding) {
+            sendJson(res, 404, { error: "Unknown file." });
+            return true;
+          }
+          try {
+            const source = await readWorkspaceSourceSlice(
+              workspace.root,
+              target,
+              startLine,
+              endLine,
+            );
+            const { contentSha, ...boundedSource } = source;
+            const view =
+              indexedView ??
+              unindexedFindingFileView(db, target, {
+                lang: sourcePathPolicy(target).language,
+                loc: source.totalLines,
+                contentSha,
+              });
+            if (!view) {
+              sendJson(res, 404, { error: "Unknown file." });
+              return true;
+            }
+            sendJson(res, 200, {
+              ...view,
+              source: {
+                ...boundedSource,
+                freshness: sourceFreshness(
+                  contentSha,
+                  view.contentSha,
+                  hasEvidenceSha ? rawEvidenceSha || null : undefined,
+                ),
+              },
+              sourceError: null,
+            });
+          } catch (cause) {
+            const unavailableView =
+              indexedView ??
+              unindexedFindingFileView(db, target, {
+                lang: sourcePathPolicy(target).language,
+                loc: 0,
+                contentSha: "",
+              });
+            if (!unavailableView) {
+              sendJson(res, 404, { error: "Unknown file." });
+              return true;
+            }
+            sendJson(res, 200, {
+              ...unavailableView,
+              source: null,
+              sourceError: cause instanceof Error ? cause.message : String(cause),
+            });
+          }
           return true;
         }
       }

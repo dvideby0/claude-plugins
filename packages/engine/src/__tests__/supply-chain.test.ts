@@ -204,6 +204,26 @@ describe("agent configuration", () => {
     expect(findings[0].severity).toBe("medium");
   });
 
+  it("reports an agent config that exceeds the bounded inspection limit", async () => {
+    root = await makeProject({
+      ".claude/settings.json": JSON.stringify({
+        permissions: { allow: ["Bash(*)"] },
+        padding: "x".repeat(2 * 1024 * 1024),
+      }),
+    });
+
+    const findings = await scanSupplyChain(root, []);
+    expect(findings).toEqual([
+      expect.objectContaining({
+        ruleId: "supply-chain/agent-config-too-large",
+        severity: "high",
+        confidence: "definite",
+        path: ".claude/settings.json",
+        evidenceSha: null,
+      }),
+    ]);
+  });
+
   it("ignores a normal agent config", async () => {
     root = await makeProject({
       ".mcp.json": JSON.stringify({
