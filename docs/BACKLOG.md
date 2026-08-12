@@ -173,11 +173,27 @@ written directly under `~/.sdlc/stores/<workspace-id>/audit.db` (or
 `sql.js` image. Opening a repository with a prototype
 `sdlc-audit/audit.db` copies it into app-owned storage and retains the original
 as a recoverable backup; migration and restart behavior are covered by tests.
-The remaining STORE-001 work is stable identity across repository relocation,
+That foundation left stable identity across repository relocation,
 versioned/rollback-safe schema migrations and corruption recovery, and an FTS5
 schema exposed through the internal retrieval interface. Bundled SQLite's FTS5
-capability is verified, but capability alone does not satisfy the search
+capability was verified, but capability alone did not satisfy the search
 acceptance criterion.
+
+Progress (2026-08-12, migration-recovery slice): schema v17 establishes
+SQLite `user_version` as the compatibility gate and records an ordered
+`schema_migrations` ledger. The Rust storage owner runs `quick_check` before
+and after migration, rejects newer or conflicting schema versions before
+enabling WAL, creates an atomic online backup that includes committed WAL
+pages, normalizes it into one standalone database, and applies every schema
+step in one immediate transaction. A tested failure rolls back both DDL and
+version metadata while retaining the validated pre-migration image; retries
+keep only the newest image for that target version rather than accumulating
+full copies. The legacy v1-v16 shapes converge through a frozen v17 bootstrap;
+future versions require immutable ordered Rust migration cases. General
+corruption repair still needs an explicit, user-visible restore workflow
+rather than a silent automatic rollback that could discard newer knowledge.
+Stable identity across repository relocation and the internal FTS5 retrieval
+surface also remain open.
 
 ### INCR-001: Ownership and dependency-directed invalidation
 

@@ -27,6 +27,7 @@ mod parse;
 mod provider;
 mod walk;
 
+pub use database::database_schema_version;
 pub use provider::{
     inspect_scip, project_scip, snapshot_manifest, stage_source_snapshot, verify_snapshot_manifest,
     NativeScipDocument, NativeScipOccurrence, NativeScipPathAlias, NativeScipProjection,

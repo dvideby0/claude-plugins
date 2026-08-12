@@ -7,7 +7,6 @@ import { access, chmod, copyFile, mkdir, open as openFile, stat } from "node:fs/
 import { dirname, join } from "node:path";
 import { storeDir } from "@sdlc/protocol";
 import { NativeDatabase } from "@sdlc/scan-core";
-import { SCHEMA_SQL, SCHEMA_VERSION } from "./schema.js";
 import {
   canonicalWorkspaceRoot,
   workspaceIdentityKey,
@@ -42,6 +41,10 @@ async function migrateLegacyStore(projectRoot: string, dbPath: string): Promise<
   }
 }
 
+function migrationBackupDir(dbPath: string): string {
+  return join(dirname(dbPath), "backups");
+}
+
 export class Db {
   private constructor(
     private readonly raw: NativeDatabase,
@@ -67,21 +70,21 @@ export class Db {
     // NativeDatabase opens the file directly. A permission or corruption
     // failure propagates; it is never reinterpreted as permission to replace
     // an existing index with an empty store.
-    const raw = new NativeDatabase(dbPath, createIfMissing);
+    let raw: NativeDatabase;
+    try {
+      raw = new NativeDatabase(dbPath, createIfMissing);
+    } catch (error) {
+      throw new Error(
+        `Cannot open SQLite workspace store ${dbPath}. The store was left untouched; ` +
+          `recovery backups, when available, are under ${join(dirname(dbPath), "backups")}. ` +
+          `${error instanceof Error ? error.message : String(error)}`,
+        { cause: error },
+      );
+    }
     const db = new Db(raw, dbPath);
     try {
-      // Migrate before the schema runs. `CREATE TABLE IF NOT EXISTS` does
-      // nothing to an existing table, so added columns must converge first.
-      db.migrate();
-
-      db.raw.executeBatch(SCHEMA_SQL);
+      await raw.migrate(projectRoot, migrationBackupDir(dbPath));
       db.refreshReferenceIdentity();
-      db.run("INSERT OR REPLACE INTO meta(key, value) VALUES('schema_version', ?)", [
-        String(SCHEMA_VERSION),
-      ]);
-      db.run("INSERT OR REPLACE INTO meta(key, value) VALUES('project_root', ?)", [
-        projectRoot,
-      ]);
       return db;
     } catch (error) {
       try {
@@ -89,109 +92,12 @@ export class Db {
       } catch {
         // Preserve the initialization failure, which is the actionable error.
       }
-      throw error;
+      throw new Error(
+        `${error instanceof Error ? error.message : String(error)} ` +
+          `SQLite workspace store ${dbPath} was closed without being replaced.`,
+        { cause: error },
+      );
     }
-  }
-
-  /** Columns every table must have, added to existing stores if absent. */
-  private static readonly ADDED_COLUMNS: Array<{ table: string; column: string; type: string }> = [
-    { table: "refs", column: "src_symbol", type: "TEXT" },
-    { table: "refs", column: "src_column", type: "INTEGER NOT NULL DEFAULT 0" },
-    { table: "refs", column: "src_end_column", type: "INTEGER" },
-    { table: "refs", column: "src_symbol_id", type: "TEXT" },
-    { table: "refs", column: "dst_line", type: "INTEGER" },
-    { table: "refs", column: "dst_column", type: "INTEGER" },
-    { table: "refs", column: "dst_end_line", type: "INTEGER" },
-    { table: "refs", column: "dst_end_column", type: "INTEGER" },
-    { table: "refs", column: "dst_symbol_id", type: "TEXT" },
-    { table: "symbols", column: "default_export", type: "INTEGER NOT NULL DEFAULT 0" },
-    { table: "symbols", column: "start_column", type: "INTEGER NOT NULL DEFAULT 0" },
-    { table: "symbols", column: "end_column", type: "INTEGER NOT NULL DEFAULT 0" },
-    { table: "files", column: "ref_coverage", type: "TEXT NOT NULL DEFAULT 'none'" },
-    { table: "files", column: "ref_generation", type: "TEXT" },
-    { table: "files", column: "ref_source_signature", type: "TEXT" },
-    { table: "components", column: "member_digest", type: "TEXT" },
-    { table: "flow_steps", column: "content_sha", type: "TEXT" },
-  ];
-
-  /**
-   * Bring an existing store up to the current schema.
-   *
-   * Checked against the live table rather than a recorded version number: a
-   * store that was half-upgraded, or written by a build that recorded the
-   * version without applying the change, still converges. Adding a column is
-   * the only migration shape supported on purpose — anything destructive
-   * should be an explicit, reviewed change rather than something that happens
-   * silently when a daemon starts.
-   */
-  private migrate(): void {
-    for (const { table, column, type } of Db.ADDED_COLUMNS) {
-      if (!this.tableExists(table)) continue;
-      if (this.hasColumn(table, column)) continue;
-      this.run(`ALTER TABLE ${table} ADD COLUMN ${column} ${type}`);
-    }
-    this.migrateReferenceOccurrenceKey();
-  }
-
-  /**
-   * SQLite cannot ALTER a primary key. Rebuild legacy refs tables so two uses
-   * of the same identifier on one line remain separate occurrences.
-   */
-  private migrateReferenceOccurrenceKey(): void {
-    if (!this.tableExists("refs")) return;
-    const primaryKey = this.all<{ name: string; pk: number }>("PRAGMA table_info(refs)")
-      .filter((column) => column.pk > 0)
-      .sort((a, b) => a.pk - b.pk)
-      .map((column) => column.name);
-    if (primaryKey.includes("src_column")) return;
-
-    this.transaction(() => {
-      this.run("DROP TABLE IF EXISTS refs_v12");
-      this.run(`CREATE TABLE refs_v12 (
-        src_path TEXT NOT NULL,
-        src_line INTEGER NOT NULL,
-        src_column INTEGER NOT NULL DEFAULT 0,
-        src_end_column INTEGER,
-        name TEXT NOT NULL,
-        specifier TEXT NOT NULL,
-        dst_path TEXT,
-        src_symbol TEXT,
-        src_symbol_id TEXT,
-        dst_line INTEGER,
-        dst_column INTEGER,
-        dst_end_line INTEGER,
-        dst_end_column INTEGER,
-        dst_symbol_id TEXT,
-        PRIMARY KEY (src_path, src_line, src_column, name, specifier)
-      )`);
-      this.run(`INSERT OR REPLACE INTO refs_v12(
-          src_path, src_line, src_column, src_end_column, name, specifier, dst_path,
-          src_symbol, src_symbol_id, dst_line, dst_column, dst_end_line, dst_end_column,
-          dst_symbol_id
-        )
-        SELECT src_path, src_line, src_column, src_end_column, name, specifier, dst_path,
-               src_symbol, src_symbol_id, dst_line, dst_column, dst_end_line, dst_end_column,
-               dst_symbol_id
-          FROM refs`);
-      this.run("DROP TABLE refs");
-      this.run("ALTER TABLE refs_v12 RENAME TO refs");
-    });
-  }
-
-  private tableExists(table: string): boolean {
-    return (
-      this.get<{ name: string }>("SELECT name FROM sqlite_master WHERE type='table' AND name = ?", [
-        table,
-      ]) !== null
-    );
-  }
-
-  private hasColumn(table: string, column: string): boolean {
-    // PRAGMA takes no bound parameters, hence the interpolation; the table
-    // names here are compile-time constants, never user input.
-    return this.all<{ name: string }>(`PRAGMA table_info(${table})`).some(
-      (row) => row.name === column,
-    );
   }
 
   run(sql: string, params: Params = []): void {
