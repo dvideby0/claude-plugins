@@ -169,8 +169,8 @@ describe("evaluation scorer", () => {
         entrypoints: [expect.objectContaining({ id: "subject-lookup" })],
       },
     });
-    expect(loaded.entryToEffect?.relations).toHaveLength(12);
-    expect(loaded.entryToEffect?.paths).toHaveLength(3);
+    expect(loaded.entryToEffect?.relations).toHaveLength(13);
+    expect(loaded.entryToEffect?.paths).toHaveLength(4);
   });
 
   it("rejects provider thresholds that are not selected by the fixture", () => {
@@ -190,6 +190,11 @@ describe("evaluation scorer", () => {
       evaluationOracleSchema.parse({
         ...oracle,
         entryToEffect: {
+          thresholds: {
+            entrypoints: { minimumRecall: 1 },
+            relations: { minimumRecall: 1 },
+            paths: { minimumRecall: 1 },
+          },
           entrypoints: [
             {
               id: "entry",

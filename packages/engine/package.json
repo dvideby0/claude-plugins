@@ -18,6 +18,7 @@
     "start": "node dist/daemon/main.js",
     "stdio": "node dist/stdio.js",
     "eval": "node dist/eval/cli.js",
+    "eval:joern": "node dist/eval/joern-cli.js",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run"
   },

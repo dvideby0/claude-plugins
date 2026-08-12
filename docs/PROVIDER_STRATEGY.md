@@ -135,15 +135,21 @@ As of 2026-08-11, the first evaluation boundary exists:
 - config preflight is bounded and syntax-only; it does not expand TypeScript
   globs on the daemon thread, and solution-style roots remain intact so the
   provider can follow custom-named project references itself;
-- Joern capability detection exists, but no Joern adapter is enabled or bundled
-  yet. Its first use remains the bounded EVAL-001 control/data-flow spike;
+- Joern capability detection exists and an opt-in, digest-pinned Docker
+  evaluation now runs against the Python/LangGraph flow oracle. The official
+  CPG plus a narrow framework adapter recovers 12/13 reviewed relations and
+  3/4 exact relation-sequence paths with no false positives. The 2.17 GB
+  extracted AMD64-only slim image and required full-GraphSON translation fail
+  desktop packaging criteria, so no Joern production adapter is enabled or
+  bundled;
 - a pinned, development-only SCIP-Python 0.6.6 comparator runs against the
   Python/LangGraph oracle through the existing Rust SCIP decoder and common
   fact projection. It reaches 9/9 selected symbols and references, compared
   with 9/9 symbols and 8/9 references for the native syntax baseline, but emits
   no entry-to-effect relationships. Its older Pyright fork is not promoted into
-  the desktop provider catalog; the next provider step remains the bounded
-  Joern/CPG flow evaluation.
+  the desktop provider catalog. The next comparison is whether the proven
+  product-specific LangGraph semantics can use the existing native/SCIP facts
+  without inheriting Joern's packaging and full-graph export costs.
 
 This completes attestation of the repository source view, not full immutable
 provider-input provenance or PROV-001. Dependency/read-closure confinement,
