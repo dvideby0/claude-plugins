@@ -295,7 +295,7 @@ explicit user-visible restore workflow for a generally corrupted store remain.
 
 The audit ran the following checks successfully against the working tree:
 
-- `npm test`: 37 engine test files and 312 tests passed.
+- `npm test`: 37 engine test files and 313 tests passed.
 - `npm run build`: native core, engine, bridge, protocol, and desktop passed.
 - `cargo test` in `packages/scan-core`: 50 Rust tests passed.
 - The retired migration benchmark found 127 files, parsed 84, and reported 548

@@ -169,6 +169,12 @@ function sendJson(_res: unknown, _status: number, _body: unknown): void {}
 export async function route(path: string, res: unknown): Promise<void> {
   if (path === "/default") { await localDefault(); sendJson(res, 200, {}); }
   if (path === "/alias") { await localAlias(); sendJson(res, 200, {}); }
+  if (path === "/wrapped") {
+    localAlias!();
+    (localAlias as () => Promise<number>)();
+    (localAlias satisfies () => Promise<number>)();
+    sendJson(res, 200, {});
+  }
 }
 `,
     });
@@ -193,6 +199,15 @@ export async function route(path: string, res: unknown): Promise<void> {
       symbol: "original",
       external: "",
     });
+    const wrapped = db
+      .executionFlow(db.executionFlow().entries.find((entry) => entry.route === "/wrapped")?.id)
+      .selected?.nodes.filter((node) => node.kind === "call");
+    expect(wrapped).toHaveLength(3);
+    expect(wrapped?.map((node) => node.target)).toEqual([
+      { path: "src/service.ts", symbol: "original", external: "" },
+      { path: "src/service.ts", symbol: "original", external: "" },
+      { path: "src/service.ts", symbol: "original", external: "" },
+    ]);
   });
 
   it("does not resolve a returned-function invocation back to its factory", async () => {

@@ -325,15 +325,25 @@ fn direct_call_target(node: Node) -> Option<Node> {
     match node.kind() {
         "identifier" => Some(node),
         "member_expression" => node.child_by_field_name("property"),
-        "parenthesized_expression" => {
+        "parenthesized_expression"
+        | "non_null_expression"
+        | "as_expression"
+        | "satisfies_expression" => {
             let mut cursor = node.walk();
-            let mut children = node.named_children(&mut cursor);
-            let child = children.next()?;
-            if children.next().is_some() {
-                None
-            } else {
-                direct_call_target(child)
-            }
+            let child = node.named_children(&mut cursor).next()?;
+            direct_call_target(child)
+        }
+        "instantiation_expression" => {
+            let mut cursor = node.walk();
+            let function = node
+                .child_by_field_name("function")
+                .or_else(|| node.named_children(&mut cursor).next())?;
+            direct_call_target(function)
+        }
+        "type_assertion" => {
+            let mut cursor = node.walk();
+            let child = node.named_children(&mut cursor).last()?;
+            direct_call_target(child)
         }
         _ => None,
     }
@@ -525,6 +535,17 @@ fn collect_evaluations<'tree>(
             // are real operations, while conditional dispatch remains a gap.
             collect_evaluations(function, bytes, false, EvaluationContext::Callee, output);
         }
+        let callee_observation_end = output.len();
+        if branchy_callee
+            && !output[callee_observation_start..callee_observation_end]
+                .iter()
+                .any(|observation| matches!(observation, EvaluationObservation::Gap { .. }))
+        {
+            output.push(EvaluationObservation::Gap {
+                node: function.unwrap_or(node),
+                construct: "conditional callee",
+            });
+        }
         if let Some(arguments) = node.child_by_field_name("arguments") {
             let mut cursor = arguments.walk();
             for child in arguments.named_children(&mut cursor) {
@@ -532,15 +553,6 @@ fn collect_evaluations<'tree>(
             }
         }
         if branchy_callee {
-            if !output[callee_observation_start..]
-                .iter()
-                .any(|observation| matches!(observation, EvaluationObservation::Gap { .. }))
-            {
-                output.push(EvaluationObservation::Gap {
-                    node: function.unwrap_or(node),
-                    construct: "conditional callee",
-                });
-            }
             return;
         }
         if let Some(function) = function {
@@ -1616,9 +1628,13 @@ async function handleApi(path: string, method: string, res: unknown) {
                 getFactory(ok ? "a" : "b")();
                 sendJson(res, 202, {});
               }
+              if (path === "/optional-argument") {
+                client.write?.(ok ? work() : fallback());
+                sendJson(res, 203, {});
+              }
             }"#,
         );
-        assert_eq!(entries.len(), 3);
+        assert_eq!(entries.len(), 4);
         for entry in &entries {
             assert!(entry.nodes.iter().any(|node| node.kind == "gap"));
             assert!(entry
@@ -1627,6 +1643,26 @@ async function handleApi(path: string, method: string, res: unknown) {
                 .any(|node| node.kind == "terminal-effect"));
             assert!(!entry.diagnostics.is_empty());
         }
+        let optional_argument = entries
+            .iter()
+            .find(|entry| entry.route == "/optional-argument")
+            .expect("optional call with conditional argument");
+        assert_eq!(
+            optional_argument
+                .nodes
+                .iter()
+                .filter(|node| node.kind == "gap")
+                .count(),
+            2
+        );
+        assert!(optional_argument
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.contains("conditional callee")));
+        assert!(optional_argument
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.contains("expression-level branch")));
     }
 
     #[test]
