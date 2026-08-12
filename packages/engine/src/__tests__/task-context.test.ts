@@ -156,6 +156,16 @@ describe("budgeted task context", () => {
     expect(brief.budget.usedBytes).toBe(bytes);
     expect(brief.budget.truncated).toBe(true);
     expect(brief.evidence[0]?.source?.path).toBe("src/large.ts");
+
+    const digitBoundary = await buildTaskContext(db, root, {
+      task: "payload q",
+      targets: ["src/large.ts"],
+      intent: "implement",
+      budgetBytes: 6_483,
+    });
+    expect(digitBoundary.budget.usedBytes).toBe(
+      Buffer.byteLength(JSON.stringify(digitBoundary, null, 2), "utf8"),
+    );
   });
 
   it("marks selected evidence stale when the working source changes after indexing", async () => {
@@ -199,11 +209,47 @@ describe("budgeted task context", () => {
       "At least one explicit target is ambiguous and was not guessed; refine it to add graph neighbours.",
     );
     expect(brief.followUps[0]).toContain("Refine ambiguous targets");
+    const candidates = brief.targets[0]?.candidates ?? [];
+    expect(new Set(candidates).size).toBe(2);
+    const retried = await buildTaskContext(db, root, {
+      targets: [candidates[0]!],
+      budgetBytes: 12_000,
+    });
+    expect(retried.targets[0]).toMatchObject({ status: "resolved", kind: "symbol" });
+  });
+
+  it("uses the target-specific anchor when one memory applies to several files", async () => {
+    root = await makeProject({
+      "src/a.ts": "export function first() { return 1; }\n",
+      "src/b.ts": "export function second() { return 2; }\n",
+    });
+    await scan(root, { kind: "full" });
+    const db = await getDb(root);
+    const memory = remember(db, {
+      kind: "constraint",
+      title: "Shared compatibility rule",
+      body: "Both implementations must retain the same output shape.",
+      anchors: [
+        { path: "src/a.ts", symbol: "first" },
+        { path: "src/b.ts", symbol: "second" },
+      ],
+    });
+
+    const brief = await buildTaskContext(db, root, {
+      targets: ["src/b.ts"],
+      budgetBytes: 20_000,
+    });
+    expect(brief.evidence.find((item) => item.id === `memory:${memory.id}`)?.source).toMatchObject({
+      path: "src/b.ts",
+      symbol: "second",
+    });
   });
 
   it("evolves the existing brief tool without growing the MCP catalog", async () => {
     root = await makeProject({
       "src/app.ts": "export function startApplication() { return 'ready'; }\n",
+      "src/app.test.ts":
+        "import { startApplication } from './app.js';\nstartApplication();\n",
     });
     const server = createMcpServer({ defaultRoot: null });
     const client = new Client({ name: "task-context-test", version: "1.0.0" });
@@ -229,9 +275,15 @@ describe("budgeted task context", () => {
       const taskContent = taskFirst.content[0];
       const taskResponse = JSON.parse(
         taskContent?.type === "text" ? taskContent.text : "{}",
-      ) as { schemaVersion?: number; evidence?: unknown[] };
+      ) as {
+        schemaVersion?: number;
+        evidence?: Array<{ source?: { path?: string } }>;
+      };
       expect(taskResponse.schemaVersion).toBe(2);
       expect(taskResponse.evidence?.length).toBeGreaterThan(0);
+      expect(
+        taskResponse.evidence?.some((item) => item.source?.path === "src/app.test.ts"),
+      ).toBe(true);
 
       const legacyTarget = await client.callTool({
         name: "brief",

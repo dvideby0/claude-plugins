@@ -1939,7 +1939,7 @@ mod tests {
         assert!(task_context["uncertainties"][0]
             .as_str()
             .expect("reference uncertainty is text")
-            .contains("reference analysis is unavailable"));
+            .contains("no reference analysis"));
 
         connection
             .execute(

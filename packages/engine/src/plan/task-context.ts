@@ -74,7 +74,6 @@ export interface TaskContextBrief {
     scope: "complete-pretty-json-response";
     requestedBytes: number;
     usedBytes: number;
-    remainingBytes: number;
     truncated: boolean;
   };
   omissions: {
@@ -260,7 +259,6 @@ function buildResponse(
       scope: "complete-pretty-json-response",
       requestedBytes,
       usedBytes: 0,
-      remainingBytes: requestedBytes,
       truncated:
         plan.omittedCandidates > 0 || budgetCandidates > 0 || excerptOmissions > 0,
     },
@@ -273,13 +271,14 @@ function buildResponse(
     uncertainties: plan.uncertainties,
     followUps: followUps(plan, selected),
   };
-  // `usedBytes` and `remainingBytes` affect their own serialized width. A few
-  // fixed-point passes make the reported value equal to the actual MCP text.
-  for (let pass = 0; pass < 4; pass += 1) {
-    response.budget.usedBytes = responseBytes(response);
-    response.budget.remainingBytes = Math.max(0, requestedBytes - response.budget.usedBytes);
+  // `usedBytes` affects its own serialized width. Iterating to a fixed point
+  // avoids off-by-one reports when its decimal representation gains a digit.
+  for (let pass = 0; pass < 16; pass += 1) {
+    const actual = responseBytes(response);
+    if (actual === response.budget.usedBytes) return response;
+    response.budget.usedBytes = actual;
   }
-  return response;
+  throw new Error("Cannot stabilize task-context byte accounting.");
 }
 
 async function materialize(

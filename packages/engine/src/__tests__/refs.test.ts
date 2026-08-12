@@ -339,7 +339,7 @@ describe("reference coverage", () => {
         intent: "review",
       })
     ).text;
-    expect(brief).toContain("reference analysis is unavailable");
+    expect(brief).toContain("no reference analysis");
     expect(brief).toContain("means unknown, not unused");
     expect(brief).not.toContain("Nothing references it");
     expect(brief).not.toContain("No test covers it");
@@ -377,6 +377,13 @@ describe("reference coverage", () => {
     expect(referencesTo(db, "run").referenceCoverage).toBe("none");
     expect(impactOf(db, "src/api.ts").referenceCoverage).toBe("none");
     expect(neighbourhood(db, "src/api.ts").file?.referenceCoverage).toBe("none");
+    const taskContext = await buildTaskContext(db, root, {
+      targets: ["src/api.ts"],
+      intent: "review",
+    });
+    expect(taskContext.uncertainties).toContain(
+      "At least one indexed source file has no reference analysis; zero callers or tests means unknown, not unused.",
+    );
   });
 
   it("treats typed zeroes for methods as real results", async () => {

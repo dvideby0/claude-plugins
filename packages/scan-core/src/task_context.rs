@@ -306,6 +306,7 @@ fn authored_candidate(
     source_id: &str,
     score: i64,
     why: &str,
+    preferred_path: Option<&str>,
 ) -> Result<Option<Candidate>> {
     match kind {
         "memory" => connection
@@ -320,8 +321,9 @@ fn authored_candidate(
                  LEFT JOIN symbols s ON s.path = a.path AND s.name = a.symbol
                                      AND a.symbol != ''
                  WHERE m.id = ?1 AND m.status = 'active'
-                 ORDER BY a.path, a.symbol, s.start_line LIMIT 1",
-                [source_id],
+                 ORDER BY CASE WHEN a.path = ?2 THEN 0 ELSE 1 END,
+                          a.path, a.symbol, s.start_line LIMIT 1",
+                params![source_id, preferred_path.unwrap_or("")],
                 |row| {
                     let memory_kind: String = row.get(1)?;
                     Ok(Candidate {
@@ -440,8 +442,10 @@ fn authored_candidate(
                  LEFT JOIN files fi ON fi.path = fs.path AND fi.present = 1
                  LEFT JOIN symbols s ON s.path = fs.path AND s.name = fs.symbol
                                      AND fs.symbol IS NOT NULL
-                 WHERE fl.id = ?1 ORDER BY fs.ordinal, s.start_line LIMIT 1",
-                [source_id],
+                 WHERE fl.id = ?1
+                 ORDER BY CASE WHEN fs.path = ?2 THEN 0 ELSE 1 END,
+                          fs.ordinal, s.start_line LIMIT 1",
+                params![source_id, preferred_path.unwrap_or("")],
                 |row| {
                     let summary: String = row.get(1)?;
                     let trigger: Option<String> = row.get(2)?;
@@ -652,7 +656,7 @@ fn resolve_targets(
                 "query": raw,
                 "status": "ambiguous",
                 "kind": "symbol",
-                "candidates": symbols.into_iter().map(|(_, path, name)| format!("{path}#{name}")).collect::<Vec<_>>(),
+                "candidates": symbols.into_iter().map(|(id, _, _)| id).collect::<Vec<_>>(),
             }));
         } else {
             resolutions.push(json!({
@@ -669,6 +673,8 @@ fn add_lexical_candidates(
     connection: &Connection,
     candidates: &mut CandidateSet,
     task: &str,
+    seed_paths: &mut BTreeSet<String>,
+    seed_symbols: &mut BTreeSet<String>,
 ) -> Result<()> {
     if task.trim().is_empty() {
         return Ok(());
@@ -686,24 +692,44 @@ fn add_lexical_candidates(
         };
         let score = 900_i64.saturating_sub(i64::try_from(rank).unwrap_or(40) * 7);
         match kind {
-            "file" => add_file(
-                connection,
-                candidates,
-                source_id,
-                score,
-                "task lexical match",
-            )?,
-            "symbol" => add_symbol(
-                connection,
-                candidates,
-                source_id,
-                score,
-                "task lexical match",
-            )?,
+            "file" => {
+                add_file(
+                    connection,
+                    candidates,
+                    source_id,
+                    score,
+                    "task lexical match",
+                )?;
+                if rank < 6 {
+                    seed_paths.insert(source_id.to_string());
+                }
+            }
+            "symbol" => {
+                add_symbol(
+                    connection,
+                    candidates,
+                    source_id,
+                    score,
+                    "task lexical match",
+                )?;
+                if rank < 6 {
+                    seed_symbols.insert(source_id.to_string());
+                    if let Some(path) = hit.get("path").and_then(Value::as_str) {
+                        if !path.is_empty() {
+                            seed_paths.insert(path.to_string());
+                        }
+                    }
+                }
+            }
             _ => {
-                if let Some(candidate) =
-                    authored_candidate(connection, kind, source_id, score, "task lexical match")?
-                {
+                if let Some(candidate) = authored_candidate(
+                    connection,
+                    kind,
+                    source_id,
+                    score,
+                    "task lexical match",
+                    None,
+                )? {
                     candidates.insert(candidate);
                 }
             }
@@ -737,9 +763,14 @@ fn expand_path(connection: &Connection, candidates: &mut CandidateSet, path: &st
         path,
         "Cannot find memories anchored to task target",
     )? {
-        if let Some(candidate) =
-            authored_candidate(connection, "memory", &id, 1_020, "recorded against target")?
-        {
+        if let Some(candidate) = authored_candidate(
+            connection,
+            "memory",
+            &id,
+            1_020,
+            "recorded against target",
+            Some(path),
+        )? {
             candidates.insert(candidate);
         }
     }
@@ -757,6 +788,7 @@ fn expand_path(connection: &Connection, candidates: &mut CandidateSet, path: &st
             &id,
             1_010,
             "open finding on target",
+            Some(path),
         )? {
             candidates.insert(candidate);
         }
@@ -768,9 +800,14 @@ fn expand_path(connection: &Connection, candidates: &mut CandidateSet, path: &st
         path,
         "Cannot find authored flows for task target",
     )? {
-        if let Some(candidate) =
-            authored_candidate(connection, "flow", &id, 850, "authored flow crosses target")?
-        {
+        if let Some(candidate) = authored_candidate(
+            connection,
+            "flow",
+            &id,
+            930,
+            "authored flow crosses target",
+            Some(path),
+        )? {
             candidates.insert(candidate);
         }
     }
@@ -787,6 +824,7 @@ fn expand_path(connection: &Connection, candidates: &mut CandidateSet, path: &st
             &id,
             820,
             "asserted relation touches target",
+            Some(path),
         )? {
             candidates.insert(candidate);
         }
@@ -962,6 +1000,27 @@ fn parse_inputs(
     Ok((task, targets, intent))
 }
 
+fn incoming_reference_coverage(connection: &Connection) -> Result<&'static str> {
+    let (files, unavailable, import_only): (i64, i64, i64) = connection
+        .query_row(
+            "SELECT COUNT(*),
+                    COALESCE(SUM(CASE WHEN ref_coverage = 'none' THEN 1 ELSE 0 END), 0),
+                    COALESCE(SUM(CASE WHEN ref_coverage = 'import' THEN 1 ELSE 0 END), 0)
+             FROM files
+             WHERE present = 1 AND lang IN ('typescript', 'javascript', 'python')",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .map_err(|error| database_error("Cannot assess task-context reference coverage", error))?;
+    if files == 0 || unavailable > 0 {
+        Ok("none")
+    } else if import_only > 0 {
+        Ok("import")
+    } else {
+        Ok("typed")
+    }
+}
+
 pub(crate) fn task_context_json(
     connection: &Connection,
     task: &str,
@@ -981,7 +1040,13 @@ pub(crate) fn task_context_json(
         &mut seed_paths,
         &mut seed_symbols,
     )?;
-    add_lexical_candidates(connection, &mut candidates, &task)?;
+    add_lexical_candidates(
+        connection,
+        &mut candidates,
+        &task,
+        &mut seed_paths,
+        &mut seed_symbols,
+    )?;
     for path in &seed_paths {
         expand_path(connection, &mut candidates, path)?;
     }
@@ -990,18 +1055,16 @@ pub(crate) fn task_context_json(
     }
 
     let mut uncertainties = Vec::new();
-    for path in &seed_paths {
-        if let Some(file) = file_meta(connection, path)? {
-            match file.ref_coverage.as_str() {
-                "none" => uncertainties.push(format!(
-                    "{path}: reference analysis is unavailable; zero callers or tests means unknown, not unused."
-                )),
-                "import" => uncertainties.push(format!(
-                    "{path}: reference coverage is import-resolved; method calls and type positions can be incomplete."
-                )),
-                _ => {}
-            }
-        }
+    match incoming_reference_coverage(connection)? {
+        "none" => uncertainties.push(
+            "At least one indexed source file has no reference analysis; zero callers or tests means unknown, not unused."
+                .to_string(),
+        ),
+        "import" => uncertainties.push(
+            "Reference coverage is at most import-resolved across the workspace; method calls and type positions can be incomplete."
+                .to_string(),
+        ),
+        _ => {}
     }
     if resolutions
         .iter()
