@@ -464,14 +464,22 @@ pub fn git_changes(
 /// `.gitignore`; pass `None` to classify a bare path on shape alone.
 /// `directory` distinguishes `dist/` the build directory from `dist.ts` the
 /// source file, which is the one thing a path string cannot say by itself.
+/// `ignore_gitignore` mirrors a scan that had to relax that rule, so watcher
+/// decisions match the inventory the scan actually produced.
 #[napi]
 pub fn source_path_decision(
     path: String,
     root: Option<String>,
     directory: Option<bool>,
+    ignore_gitignore: Option<bool>,
 ) -> NativePathDecision {
     let normalized = path.replace('\\', "/");
     let policy = match root.as_deref() {
+        // A scan that had to relax the gitignore rule indexed files this
+        // matcher would reject. Asking with the strict policy would classify
+        // every later edit to them as generated output, so the watcher would
+        // stop refreshing and the index would go quietly stale.
+        Some(_) if ignore_gitignore.unwrap_or(false) => input_policy::InputPolicy::path_only(),
         Some(root) => input_policy::InputPolicy::for_root(Path::new(root)),
         None => input_policy::InputPolicy::path_only(),
     };

@@ -58,9 +58,22 @@ export function recordFindings(
     return contentShaByPath.get(path) ?? null;
   };
 
+  // A finding's id is a fingerprint over its path, so a renamed file would
+  // otherwise produce a brand-new finding at the destination — losing an
+  // accepted or false-positive decision, its suppressions and its history. The
+  // scan records confirmed moves; adopting them here keeps that state.
+  const movedFrom = new Map(
+    db
+      .all<{ from_path: string; to_path: string }>("SELECT from_path, to_path FROM file_moves")
+      .map((row) => [row.to_path, row.from_path]),
+  );
+
   for (const finding of findings) {
     const id = fingerprint(finding);
     const path = finding.path ?? null;
+    if (path && movedFrom.has(path)) {
+      adoptMovedFinding(db, finding, movedFrom.get(path) as string, id);
+    }
     // Production callers that read source pass the revision from that same
     // read. The indexed row is only a compatibility fallback for callers that
     // have no source snapshot of their own.
@@ -172,6 +185,34 @@ export function closeStale(db: Db, runId: number, rulePrefix: string): number {
     );
   }
   return stale;
+}
+
+/**
+ * Re-key a finding whose file moved, so its history is not orphaned.
+ *
+ * Only the fingerprint's path term changes on a rename, so the old id is
+ * recomputable from the same input. Suppressions reference the finding by id
+ * and have to follow it.
+ */
+function adoptMovedFinding(
+  db: Db,
+  finding: FindingInput,
+  fromPath: string,
+  currentId: string,
+): void {
+  const previousId = fingerprint({ ...finding, path: fromPath });
+  if (previousId === currentId) return;
+  const previous = db.get<{ id: string }>("SELECT id FROM findings WHERE id = ?", [previousId]);
+  if (!previous) return;
+  // The destination may already have its own row for the same problem; keeping
+  // both would report one finding twice.
+  db.run("DELETE FROM findings WHERE id = ?", [currentId]);
+  db.run("UPDATE findings SET id = ?, path = ? WHERE id = ?", [
+    currentId,
+    finding.path ?? null,
+    previousId,
+  ]);
+  db.run("UPDATE suppressions SET finding_id = ? WHERE finding_id = ?", [currentId, previousId]);
 }
 
 export function suppress(

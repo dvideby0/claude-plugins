@@ -94,9 +94,12 @@ export function findGaps(db: Db, limit = 25): GapsResult {
     `SELECT path, content_sha, syntax_sha, loc, churn FROM files
      WHERE present = 1 AND lang IN ('typescript','javascript','python') AND is_test = 0`,
   );
-  const shaOf = new Map(files.map((file) => [file.path, file.content_sha]));
-  const meaningOf = (file: { path: string; content_sha: string; syntax_sha: string | null }) =>
-    file.syntax_sha ?? file.content_sha;
+  // One map, because there were five call sites and three of them reached for
+  // the content hash while the exploration row now stores syntax — leaving
+  // those gap kinds permanently unexplored for every parsed file.
+  const meaningOf = new Map(
+    files.map((file) => [file.path, file.syntax_sha ?? file.content_sha]),
+  );
 
   // --- dispatch that the parser cannot follow -----------------------------
   for (const file of files) {
@@ -134,7 +137,7 @@ export function findGaps(db: Db, limit = 25): GapsResult {
         hint: "Read the registrations and record each one as a relation: which name maps to which function, and in what order they run.",
         // A file named for wiring outranks one that merely mentions a marker.
         score: (namedLikeWiring ? 140 : 100) + Math.min(file.churn, 20),
-        explored: isExplored(file.path, meaningOf(file)),
+        explored: isExplored(file.path, meaningOf.get(file.path) ?? null),
       });
     }
   }
@@ -159,8 +162,11 @@ export function findGaps(db: Db, limit = 25): GapsResult {
          JOIN files source ON source.path = rel.src_path AND source.present = 1
          WHERE rel.dst_symbol = s.name AND rel.dst_path = s.path
            AND rel.content_sha IS NOT NULL
-           AND COALESCE(rel.syntax_sha, rel.content_sha)
-             = COALESCE(source.syntax_sha, source.content_sha)
+           AND CASE
+                 WHEN rel.syntax_sha IS NOT NULL AND source.syntax_sha IS NOT NULL
+                   THEN rel.syntax_sha = source.syntax_sha
+                 ELSE rel.content_sha = source.content_sha
+               END
        )
      LIMIT 400`,
   );
@@ -177,7 +183,7 @@ export function findGaps(db: Db, limit = 25): GapsResult {
       reason: `${names.length} exported symbols here are called from nowhere the parser can see.`,
       hint: "Find what invokes them — a registry, a config file, a framework convention — and record the relation.",
       score: 60 + names.length * 3,
-      explored: isExplored(path, shaOf.get(path) ?? null),
+      explored: isExplored(path, meaningOf.get(path) ?? null),
     });
   }
 
@@ -195,7 +201,7 @@ export function findGaps(db: Db, limit = 25): GapsResult {
       reason: `${row.n} import(s) resolved to neither a file nor a package.`,
       hint: "Usually an alias or a path mapping the resolver does not know. Confirm where they point.",
       score: 40 + row.n,
-      explored: isExplored(row.src_path, shaOf.get(row.src_path) ?? null),
+      explored: isExplored(row.src_path, meaningOf.get(row.src_path) ?? null),
     });
   }
 
@@ -216,7 +222,7 @@ export function findGaps(db: Db, limit = 25): GapsResult {
       reason: `${hub.fan_in} files depend on this and nothing has been recorded about why.`,
       hint: "Work out the contract it provides and record it as a decision or constraint.",
       score: 30 + hub.fan_in,
-      explored: isExplored(hub.path, shaOf.get(hub.path) ?? null),
+      explored: isExplored(hub.path, meaningOf.get(hub.path) ?? null),
     });
   }
 
@@ -227,7 +233,11 @@ export function findGaps(db: Db, limit = 25): GapsResult {
      LEFT JOIN files f ON f.path = a.path
      WHERE m.status = 'active'
        AND (a.content_sha IS NULL OR f.path IS NULL OR f.present = 0
-            OR COALESCE(a.syntax_sha, a.content_sha) != COALESCE(f.syntax_sha, f.content_sha))
+            OR CASE
+                 WHEN a.syntax_sha IS NOT NULL AND f.syntax_sha IS NOT NULL
+                   THEN a.syntax_sha != f.syntax_sha
+                 ELSE a.content_sha != f.content_sha
+               END)
      LIMIT 20`,
   );
   for (const row of stale) {
@@ -250,7 +260,9 @@ export function findGaps(db: Db, limit = 25): GapsResult {
   const totals: Record<string, number> = {};
   for (const gap of gaps) totals[gap.kind] = (totals[gap.kind] ?? 0) + 1;
 
-  const exploredCount = files.filter((file) => isExplored(file.path, meaningOf(file))).length;
+  const exploredCount = files.filter((file) =>
+    isExplored(file.path, meaningOf.get(file.path) ?? null),
+  ).length;
   return {
     gaps: ranked,
     totals,

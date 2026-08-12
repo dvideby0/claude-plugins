@@ -140,7 +140,12 @@ pub fn walk(root: &Path, policy: &InputPolicy) -> WalkOutcome {
     );
     let relaxed = policy.without_gitignore(diagnostic.clone());
     let mut retried = walk_with(root, &relaxed);
-    retried.diagnostic = Some(diagnostic);
+    // Keep any earlier complaint about the file itself: "some rules could not
+    // be read" and "the rules matched everything" are separate problems.
+    retried.diagnostic = Some(match &policy.gitignore_diagnostic {
+        Some(existing) => format!("{existing} {diagnostic}"),
+        None => diagnostic,
+    });
     retried
 }
 
@@ -208,14 +213,18 @@ fn walk_with(root: &Path, policy: &InputPolicy) -> WalkOutcome {
                 decision if !decision.included() => Err(decision),
                 decision => match entry.metadata() {
                     Err(error) => Err(policy.unreadable(&path, error.to_string())),
-                    Ok(metadata) => match std::fs::read(entry.path()) {
-                        Err(error) => Err(policy.unreadable(&path, error.to_string())),
-                        Ok(bytes) => {
-                            match policy.decide_content(&path, metadata.len(), &bytes) {
+                    // Size is decided from metadata, before the read: one very
+                    // large file must not allocate its whole length in every
+                    // parallel worker that reaches it.
+                    Ok(metadata) => match policy.decide_size(&path, metadata.len()) {
+                        Some(rejected) => Err(rejected),
+                        None => match std::fs::read(entry.path()) {
+                            Err(error) => Err(policy.unreadable(&path, error.to_string())),
+                            Ok(bytes) => match policy.decide_content(&path, &bytes) {
                                 Some(rejected) => Err(rejected),
                                 None => Ok((decision, metadata, bytes)),
-                            }
-                        }
+                            },
+                        },
                     },
                 },
             };

@@ -491,7 +491,21 @@ export function route(path: string, res: unknown, mode: string): boolean {
     ).toBeNull();
 
     const { writeFile } = await import("node:fs/promises");
+
+    // An assertion describes what the code means, so a comment does not
+    // invalidate it — and the overlay must agree with every other reader.
     await writeFile(`${root}/src/search.ts`, `${PROJECT["src/search.ts"]}\n// changed`);
+    await scan(root, { kind: "execution-assertion-comment" });
+    expect(
+      db.executionFlow(entry.id, 24, true).selected?.assertedOverlay.relations,
+    ).toHaveLength(1);
+
+    // A structural change does, because the claim was made about code that no
+    // longer reads the same way.
+    await writeFile(
+      `${root}/src/search.ts`,
+      `${PROJECT["src/search.ts"]}\nexport const added = true;\n`,
+    );
     await scan(root, { kind: "execution-assertion-stale" });
     expect(db.executionFlow(entry.id, 24, true).selected?.assertedOverlay.relations).toEqual([]);
   });

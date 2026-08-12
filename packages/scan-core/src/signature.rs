@@ -35,32 +35,51 @@ fn finish(hasher: Sha256) -> String {
         .collect()
 }
 
-/// Hash the leaf tokens of a subtree in source order.
+/// Hash the shape of a subtree: node kinds, nesting, and leaf text.
 ///
 /// Comments and line continuations are grammar *extras* in both
 /// tree-sitter-typescript and tree-sitter-python, so `is_extra` removes them
-/// wholesale; whitespace never produces a node at all. Interior nodes
-/// contribute nothing because a token stream already determines the parse for
-/// a deterministic grammar — the error markers cover the recovery cases where
-/// it does not.
+/// wholesale; whitespace never produces a node at all.
+///
+/// Interior nodes and their boundaries are hashed, not just leaves. A leaf
+/// stream alone loses real structure: moving a Python statement out of an
+/// indented block leaves the token sequence identical while changing what the
+/// code does, and `return\nvalue` parses differently from `return value` in
+/// TypeScript for the same tokens. Both would have hashed the same and left
+/// every artifact anchored to the file reading as current.
 ///
 /// `skip` prunes one subtree by id, which is how an interface signature
 /// excludes its own body without needing a field list per node kind.
 fn hash_tokens(root: Node, bytes: &[u8], skip: Option<usize>, hasher: &mut Sha256) {
+    enum Step<'tree> {
+        Enter(Node<'tree>),
+        /// Closing a node, so nesting depth is part of the hash rather than
+        /// flattened away.
+        Exit,
+    }
+
     // An explicit stack rather than recursion: a deeply nested generated file
     // should not be able to overflow the scan thread.
-    let mut stack = vec![root];
-    while let Some(node) = stack.pop() {
-        if skip == Some(node.id()) || node.is_extra() {
+    let mut stack = vec![Step::Enter(root)];
+    while let Some(step) = stack.pop() {
+        let node = match step {
+            Step::Exit => {
+                hasher.update(b")");
+                continue;
+            }
+            Step::Enter(node) => node,
+        };
+
+        if skip == Some(node.id()) || (node.is_extra() && !semantic_extra(node, bytes)) {
             continue;
         }
         if node.is_error() || node.is_missing() {
             hasher.update(ERROR_MARKER);
         }
 
+        hasher.update(node.kind().as_bytes());
         let children = node.child_count();
         if children == 0 {
-            hasher.update(node.kind().as_bytes());
             hasher.update(b"\0");
             // An anonymous leaf's kind *is* its text (`{`, `=>`, `,`), so only
             // named leaves need the source slice.
@@ -73,12 +92,37 @@ fn hash_tokens(root: Node, bytes: &[u8], skip: Option<usize>, hasher: &mut Sha25
             continue;
         }
 
+        hasher.update(b"(");
+        stack.push(Step::Exit);
         for index in (0..children).rev() {
             if let Some(child) = node.child(index) {
-                stack.push(child);
+                stack.push(Step::Enter(child));
             }
         }
     }
+}
+
+/// Comments the toolchain reads as instructions rather than prose.
+///
+/// Most comments are for people and changing them changes nothing. These are
+/// not: they switch type checking off, pull in type declarations, or tell a
+/// bundler what it may drop. Treating them as prose would let a real behaviour
+/// change slip past every artifact anchored to the file.
+fn semantic_extra(node: Node, bytes: &[u8]) -> bool {
+    let Ok(text) = node.utf8_text(bytes) else {
+        return false;
+    };
+    let trimmed = text.trim_start();
+    trimmed.starts_with("///")
+        || text.contains("@ts-")
+        || text.contains("@jsx")
+        || text.contains("@flow")
+        || text.contains("@__PURE__")
+        || text.contains("webpack")
+        || text.contains("vite-ignore")
+        || text.contains("eslint")
+        || text.contains("type: ignore")
+        || text.contains("noqa")
 }
 
 /// The file's meaning, invariant to comments and formatting.
@@ -93,6 +137,29 @@ pub fn file_syntax_sha(root: Node, bytes: &[u8]) -> String {
     finish(hasher)
 }
 
+/// Declarations whose body *is* their contract.
+///
+/// An interface's members, an enum's variants and a class's shape are what a
+/// caller depends on, so excluding the body for these would let a property,
+/// variant or public method change while the symbol's interface signature
+/// stayed identical — and every component depending on it would read clean.
+///
+/// For a class this deliberately over-invalidates: editing a private method
+/// body moves the class's interface signature too. Its methods also carry
+/// their own signatures, so the precision is available where it matters, and
+/// reporting a changed contract as unchanged is the failure worth avoiding.
+fn body_is_contract(kind: &str) -> bool {
+    matches!(
+        kind,
+        "interface_declaration"
+            | "enum_declaration"
+            | "class_declaration"
+            | "class_definition"
+            | "abstract_class_declaration"
+            | "object_type"
+    )
+}
+
 /// The subtree holding a declaration's implementation, if it has one.
 ///
 /// `const handler = () => {…}` keeps its body under the assigned expression
@@ -101,6 +168,9 @@ pub fn file_syntax_sha(root: Node, bytes: &[u8]) -> String {
 /// the values are the contract, and hiding them in the body signature would
 /// let a union change without any caller being told.
 fn body_node<'tree>(node: Node<'tree>) -> Option<Node<'tree>> {
+    if body_is_contract(node.kind()) {
+        return None;
+    }
     if let Some(body) = node.child_by_field_name("body") {
         return Some(body);
     }
@@ -112,6 +182,22 @@ fn body_node<'tree>(node: Node<'tree>) -> Option<Node<'tree>> {
         return None;
     }
     value.child_by_field_name("body").or(Some(value))
+}
+
+/// Fold visibility into a declaration's contract.
+///
+/// `export function f` and `function f` produce identical declaration nodes —
+/// the `export` keyword belongs to the statement wrapping them. Without this,
+/// withdrawing an export left the interface signature unchanged even though
+/// the import contract had disappeared entirely.
+pub fn interface_with_visibility(interface: &str, exported: bool, default_export: bool) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(interface.as_bytes());
+    hasher.update(b"\0");
+    hasher.update(if exported { b"export" as &[u8] } else { b"local" });
+    hasher.update(b"\0");
+    hasher.update(if default_export { b"default" as &[u8] } else { b"named" });
+    finish(hasher)
 }
 
 /// What a caller depends on, and what only the implementation depends on.
@@ -179,8 +265,12 @@ pub fn relation_set_sha(imports: &[crate::parse::Import], refs: &[crate::parse::
 /// comment above a function gives it a different id and no cross-scan
 /// comparison is possible. The ordinal disambiguates same-named declarations
 /// in one file and only moves when that duplicate set itself changes.
-pub fn symbol_key(path: &str, kind: &str, name: &str, ordinal: u32) -> String {
-    format!("{path}#{kind}:{name}#{ordinal}")
+pub fn symbol_key(path: &str, kind: &str, name: &str, scope: &str, ordinal: u32) -> String {
+    if scope.is_empty() {
+        format!("{path}#{kind}:{name}#{ordinal}")
+    } else {
+        format!("{path}#{scope}.{kind}:{name}#{ordinal}")
+    }
 }
 
 #[cfg(test)]
@@ -235,6 +325,73 @@ mod tests {
 
         assert_ne!(before, renamed);
         assert_ne!(reordered, original_order);
+    }
+
+    #[test]
+    fn structure_is_part_of_the_syntax_signature() {
+        // Same tokens, different parse. Hashing only leaves would report both
+        // of these as unchanged while the code does something else entirely.
+        let inside = python_syntax("def run(flag):\n    if flag:\n        step()\n        done()\n");
+        let outside = python_syntax("def run(flag):\n    if flag:\n        step()\n    done()\n");
+        assert_ne!(inside, outside);
+
+        // TypeScript's automatic semicolon insertion makes this a real
+        // behaviour change for an identical token sequence.
+        let returned = syntax("export function run() {\n  return value;\n}\n");
+        let separated = syntax("export function run() {\n  return\n  value;\n}\n");
+        assert_ne!(returned, separated);
+    }
+
+    #[test]
+    fn directive_comments_are_hashed_but_prose_is_not() {
+        let plain = syntax("export const value: string = 1 as never;\n");
+        let prose = syntax("// somebody explaining themselves\nexport const value: string = 1 as never;\n");
+        assert_eq!(plain, prose);
+
+        // These switch type checking off, pull in declarations, or tell a
+        // bundler what it may drop. They are instructions, not prose.
+        for directive in [
+            "// @ts-nocheck\n",
+            "/// <reference types=\"node\" />\n",
+            "/* webpackIgnore: true */\n",
+        ] {
+            assert_ne!(
+                plain,
+                syntax(&format!("{directive}export const value: string = 1 as never;\n")),
+                "{directive} changes how the file is compiled",
+            );
+        }
+    }
+
+    #[test]
+    fn an_aggregate_declarations_members_are_its_contract() {
+        // Excluding the body here would let a property, variant or public
+        // method change while the symbol still reported an identical contract.
+        let (before, body) = interface_of("export interface Order {\n  id: string;\n}\n", "Order");
+        assert!(body.is_none());
+        let (added, _) =
+            interface_of("export interface Order {\n  id: string;\n  total: number;\n}\n", "Order");
+        assert_ne!(before, added);
+
+        let (enum_before, _) = interface_of("export enum Mode {\n  Fast,\n}\n", "Mode");
+        let (enum_after, _) = interface_of("export enum Mode {\n  Fast,\n  Slow,\n}\n", "Mode");
+        assert_ne!(enum_before, enum_after);
+
+        let (class_before, _) =
+            interface_of("export class Cart {\n  add(item: string) {}\n}\n", "Cart");
+        let (class_after, _) =
+            interface_of("export class Cart {\n  add(item: string, qty: number) {}\n}\n", "Cart");
+        assert_ne!(class_before, class_after);
+    }
+
+    #[test]
+    fn withdrawing_an_export_moves_the_interface_signature() {
+        // The `export` keyword belongs to the statement wrapping the
+        // declaration, so the declaration nodes are identical. The import
+        // contract is not.
+        let (exported, _) = interface_of("export function run() {\n  return 1;\n}\n", "run");
+        let (local, _) = interface_of("function run() {\n  return 1;\n}\n", "run");
+        assert_ne!(exported, local);
     }
 
     #[test]
@@ -340,6 +497,29 @@ mod tests {
 
         assert_eq!(keys.len(), 2);
         assert_ne!(keys[0], keys[1]);
+    }
+
+    #[test]
+    fn a_method_key_survives_a_new_method_in_an_earlier_class() {
+        // With a global ordinal, inserting `run` into class A renumbers class
+        // B's `run` — and a recorded dependency then silently starts tracking
+        // a different method while reporting itself unchanged.
+        let mut engines = Engines::new();
+        let key_of = |engines: &mut Engines, source: &str| {
+            parse(engines, "src/app.ts", "typescript", source)
+                .symbols
+                .into_iter()
+                .find(|symbol| symbol.name == "run" && symbol.scope == "B")
+                .expect("B.run is extracted")
+                .symbol_key
+        };
+
+        let before = key_of(&mut engines, "class A {\n}\nclass B {\n  run() {}\n}\n");
+        let after = key_of(
+            &mut engines,
+            "class A {\n  run() {}\n}\nclass B {\n  run() {}\n}\n",
+        );
+        assert_eq!(before, after);
     }
 
     #[test]

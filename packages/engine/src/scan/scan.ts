@@ -16,6 +16,7 @@ import { collectFiles, type ParsedSource } from "./source.js";
 import { canonicalWorkspaceRoot, workspaceIdentityKey } from "../lib/workspace-path.js";
 import { sourceSignature } from "./signature.js";
 import { applyMove, correlateMoves } from "./moves.js";
+import { setInputPolicyRelaxed } from "../daemon/watcher.js";
 
 /**
  * Bumped whenever the parsers start producing something they did not before.
@@ -477,6 +478,9 @@ async function doScan(projectRoot: string, options: ScanOptions = {}): Promise<S
   db.run("INSERT OR REPLACE INTO meta(key, value) VALUES('source_signature', ?)", [
     sourceSignature(files),
   ]);
+  // Watch decisions must match the inventory this scan actually produced, not
+  // the strict policy it had to abandon.
+  setInputPolicyRelaxed(projectRoot, diagnostic !== null);
 
   db.run(
     "UPDATE runs SET finished_at = ?, files_total = ?, files_changed = ? WHERE id = ?",

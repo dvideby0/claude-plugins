@@ -307,7 +307,12 @@ export interface NativeCore {
    * The same function the scan walk uses, so a watcher decision and an
    * inventory decision cannot disagree.
    */
-  sourcePathDecision(path: string, root?: string, directory?: boolean): SourcePathDecision;
+  sourcePathDecision(
+    path: string,
+    root?: string,
+    directory?: boolean,
+    ignoreGitignore?: boolean,
+  ): SourcePathDecision;
   /** Present in native cores that can consume official SCIP protobuf output. */
   inspectScip?(path: string): Promise<NativeScipSummary>;
   /** Decode bounded semantic facts without exposing raw protobufs to Node. */
@@ -379,8 +384,9 @@ export function sourcePathDecision(
   path: string,
   root?: string,
   directory?: boolean,
+  ignoreGitignore?: boolean,
 ): SourcePathDecision {
-  return requireNative().sourcePathDecision(path, root, directory);
+  return requireNative().sourcePathDecision(path, root, directory, ignoreGitignore);
 }
 
 export async function readSourceFiles(projectRoot: string): Promise<SourceTextFile[]> {

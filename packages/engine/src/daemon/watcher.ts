@@ -27,6 +27,19 @@ export interface WatcherOptions {
   log: (message: string) => void;
 }
 
+/**
+ * Roots whose last scan had to relax the gitignore rule to avoid an empty
+ * index. Those scans indexed files the strict policy rejects, so watching them
+ * strictly would classify every later edit as generated output and silently
+ * stop refreshing.
+ */
+const relaxedRoots = new Set<string>();
+
+export function setInputPolicyRelaxed(root: string, relaxed: boolean): void {
+  if (relaxed) relaxedRoots.add(root);
+  else relaxedRoots.delete(root);
+}
+
 function interesting(
   root: string,
   relative: string,
@@ -42,7 +55,7 @@ function interesting(
   // it would keep. A recursive watcher may report a directory rename only as
   // `src/old`, which has no extension and no longer exists to stat, so the
   // entry kind is deliberately left unstated.
-  const decision = sourcePathDecision(relative, root);
+  const decision = sourcePathDecision(relative, root, undefined, relaxedRoots.has(root));
 
   // `.gitignore` is never indexed but decides what is. Editing it changes the
   // source set, so the refresh has to run even though the file itself is not

@@ -46,6 +46,9 @@ pub struct Symbol {
     /// The implementation. `None` where the declaration has no body, so a
     /// signature that does not apply is absent rather than invented.
     pub body_sha: Option<String>,
+    /// Enclosing declaration name for a member, empty at module level. Two
+    /// classes with a same-named method must not share an identity.
+    pub scope: String,
     pub start_line: u32,
     pub start_column: u32,
     pub end_line: u32,
@@ -110,6 +113,33 @@ fn python_from_namespace_module(module: &str, imported: &str) -> String {
     } else {
         format!("{module}.{imported}")
     }
+}
+
+/// The name of the class or interface a member belongs to, if any.
+///
+/// Used only for identity, so an unnamed enclosing declaration contributes
+/// nothing rather than a guess.
+fn enclosing_declaration_name(node: Node, bytes: &[u8]) -> String {
+    let mut current = node;
+    while let Some(parent) = current.parent() {
+        current = parent;
+        if matches!(
+            current.kind(),
+            "class_declaration"
+                | "abstract_class_declaration"
+                | "class_definition"
+                | "interface_declaration"
+                | "enum_declaration"
+        ) {
+            if let Some(name) = current.child_by_field_name("name") {
+                if let Ok(text) = name.utf8_text(bytes) {
+                    return text.to_string();
+                }
+            }
+            return String::new();
+        }
+    }
+    String::new()
 }
 
 fn lexical_scope(mut node: Node) -> Node {
@@ -1526,8 +1556,13 @@ pub fn parse(engines: &mut Engines, path: &str, lang: &str, source: &str) -> Par
                     default_export,
                     signature: first_line(text),
                     symbol_key: String::new(),
-                    interface_sha: interface,
+                    interface_sha: crate::signature::interface_with_visibility(
+                        &interface,
+                        exported,
+                        default_export,
+                    ),
                     body_sha: body,
+                    scope: String::new(),
                 });
             } else if exported {
                 // Exported constants are a codebase's vocabulary — the closed
@@ -1545,8 +1580,13 @@ pub fn parse(engines: &mut Engines, path: &str, lang: &str, source: &str) -> Par
                     default_export,
                     signature: flattened(text),
                     symbol_key: String::new(),
-                    interface_sha: interface,
+                    interface_sha: crate::signature::interface_with_visibility(
+                        &interface,
+                        true,
+                        default_export,
+                    ),
                     body_sha: body,
+                    scope: String::new(),
                 });
             }
             continue;
@@ -1576,21 +1616,39 @@ pub fn parse(engines: &mut Engines, path: &str, lang: &str, source: &str) -> Par
             default_export,
             signature: first_line(text),
             symbol_key: String::new(),
-            interface_sha: interface,
+            interface_sha: crate::signature::interface_with_visibility(
+                &interface,
+                exported,
+                default_export,
+            ),
             body_sha: body,
+            scope: enclosing_declaration_name(node, bytes),
         });
     }
 
     // Same-named declarations in one file are distinguished by their order,
     // which only moves when that duplicate set itself changes — unlike a line
     // number, which moves whenever anything above it does.
-    let mut ordinals: std::collections::HashMap<(String, String), u32> =
+    let mut ordinals: std::collections::HashMap<(String, String, String), u32> =
         std::collections::HashMap::new();
     for symbol in &mut symbols {
+        // Scoped by the enclosing declaration: without it, inserting a method
+        // into an earlier class renumbers a same-named method in a later one,
+        // and a recorded dependency silently starts tracking the wrong symbol.
         let slot = ordinals
-            .entry((symbol.kind.clone(), symbol.name.clone()))
+            .entry((
+                symbol.kind.clone(),
+                symbol.name.clone(),
+                symbol.scope.clone(),
+            ))
             .or_insert(0);
-        symbol.symbol_key = crate::signature::symbol_key(path, &symbol.kind, &symbol.name, *slot);
+        symbol.symbol_key = crate::signature::symbol_key(
+            path,
+            &symbol.kind,
+            &symbol.name,
+            &symbol.scope,
+            *slot,
+        );
         *slot += 1;
     }
 

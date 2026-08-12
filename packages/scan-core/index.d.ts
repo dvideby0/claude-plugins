@@ -302,8 +302,10 @@ export declare function gitChanges(root: string, isolatedConfig?: boolean | unde
  * `.gitignore`; pass `None` to classify a bare path on shape alone.
  * `directory` distinguishes `dist/` the build directory from `dist.ts` the
  * source file, which is the one thing a path string cannot say by itself.
+ * `ignore_gitignore` mirrors a scan that had to relax that rule, so watcher
+ * decisions match the inventory the scan actually produced.
  */
-export declare function sourcePathDecision(path: string, root?: string | undefined | null, directory?: boolean | undefined | null): NativePathDecision
+export declare function sourcePathDecision(path: string, root?: string | undefined | null, directory?: boolean | undefined | null, ignoreGitignore?: boolean | undefined | null): NativePathDecision
 export interface NativeMatch {
   path: string
   line: number

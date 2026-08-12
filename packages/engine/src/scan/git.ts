@@ -82,20 +82,27 @@ async function collectRenames(
   signal?: AbortSignal,
 ): Promise<Map<string, string>> {
   const renames = new Map<string, string>();
+  // `-z` because the readable form quotes any path containing a space, and a
+  // quoted path never matches the scanned inventory — the rename would be
+  // detected and then silently discarded. NUL-delimited output emits each
+  // rename as two consecutive records, new path then old.
   const status = await exec(
     "git",
-    ["-c", "core.quotePath=false", "status", "--porcelain=v1", "--find-renames"],
+    ["status", "--porcelain=v1", "-z", "--find-renames"],
     { cwd: projectRoot, timeout: 15_000, signal },
   );
   if (status.exitCode !== 0 || status.timedOut) return renames;
 
-  for (const line of status.stdout.split("\n")) {
-    // `R  old -> new`, with the status code in the first two columns.
-    if (!/^R/.test(line.trim()) && !/^.R/.test(line)) continue;
-    const separator = line.indexOf(" -> ");
-    if (separator < 0) continue;
-    const from = line.slice(3, separator).trim();
-    const to = line.slice(separator + 4).trim();
+  const records = status.stdout.split("\0");
+  for (let index = 0; index < records.length; index++) {
+    const record = records[index];
+    if (!record) continue;
+    // `XY <path>`, where either status column may be R or C.
+    const code = record.slice(0, 2);
+    if (!code.includes("R") && !code.includes("C")) continue;
+    const to = record.slice(3);
+    const from = records[index + 1];
+    index++;
     if (from && to) renames.set(to, from);
   }
   return renames;

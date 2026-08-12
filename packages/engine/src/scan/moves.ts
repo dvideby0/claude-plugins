@@ -16,6 +16,7 @@
 import type { Db } from "../db/db.js";
 import type { SourceFile } from "./source.js";
 import { renameRelationPaths } from "../graph/relations.js";
+import { memberDigestFor } from "../graph/map.js";
 
 export interface FileMove {
   from: string;
@@ -47,15 +48,27 @@ export function correlateMoves(inputs: MoveInputs): FileMove[] {
   if (removed.length === 0 || added.length === 0) return [];
 
   const removedSet = new Set(removed);
-  const candidates: FileMove[] = [];
 
+  // Git's own similarity detection is authoritative, so its pairs are taken
+  // first and their endpoints reserved. Mixing them into one candidate pool
+  // let an unrelated file that happened to match the old content make a
+  // confirmed rename look ambiguous, discarding both.
+  const confirmed: FileMove[] = [];
+  const claimedFrom = new Set<string>();
+  const claimedTo = new Set<string>();
   for (const file of added) {
     const fromGit = gitRenames.get(file.path);
-    if (fromGit && removedSet.has(fromGit)) {
-      candidates.push({ from: fromGit, to: file.path, evidence: "git-rename" });
-      continue;
-    }
+    if (!fromGit || !removedSet.has(fromGit) || claimedFrom.has(fromGit)) continue;
+    confirmed.push({ from: fromGit, to: file.path, evidence: "git-rename" });
+    claimedFrom.add(fromGit);
+    claimedTo.add(file.path);
+  }
+
+  const candidates: FileMove[] = [];
+  for (const file of added) {
+    if (claimedTo.has(file.path)) continue;
     for (const from of removed) {
+      if (claimedFrom.has(from)) continue;
       if (previousSha.get(from) !== file.contentSha) continue;
       if (previousLang.get(from) !== file.lang) continue;
       candidates.push({ from, to: file.path, evidence: "identical-content" });
@@ -72,9 +85,12 @@ export function correlateMoves(inputs: MoveInputs): FileMove[] {
     toCounts.set(move.to, (toCounts.get(move.to) ?? 0) + 1);
   }
 
-  return candidates.filter(
-    (move) => fromCounts.get(move.from) === 1 && toCounts.get(move.to) === 1,
-  );
+  return [
+    ...confirmed,
+    ...candidates.filter(
+      (move) => fromCounts.get(move.from) === 1 && toCounts.get(move.to) === 1,
+    ),
+  ];
 }
 
 /**
@@ -87,9 +103,10 @@ export function correlateMoves(inputs: MoveInputs): FileMove[] {
  * describe the same file at the same path, so either is correct; what matters
  * is that the move does not abort the scan.
  *
- * Findings are deliberately not moved: they survive by fingerprint and are
- * re-detected against the new path on this same scan, so carrying them would
- * double-count.
+ * Findings move with the file rather than being closed as fixed by the removal
+ * pass — a scan runs no analyzers, so "fixed" would be untrue. Their ids are
+ * fingerprints over the path, so the next analyzer run re-keys them through
+ * `record.ts`, which reads the move recorded here.
  */
 export function applyMove(db: Db, runId: number, move: FileMove): void {
   db.run("UPDATE files SET moved_to = ? WHERE path = ?", [move.to, move.from]);
@@ -105,9 +122,30 @@ export function applyMove(db: Db, runId: number, move: FileMove): void {
   db.run("UPDATE flow_steps SET path = ? WHERE path = ?", [move.to, move.from]);
 
   db.run("UPDATE OR REPLACE memory_anchors SET path = ? WHERE path = ?", [move.to, move.from]);
+
+  // `components.member_digest` hashes member paths, so moving only the
+  // snapshot left the box permanently drifted while `mapDrift` compared the
+  // moved snapshot with current files and found nothing to name — drift with
+  // an empty changed-file list, which nobody can act on. Recomputing the
+  // aggregate from the moved snapshot keeps the two consistent.
+  const affected = db.all<{ component_id: string }>(
+    "SELECT DISTINCT component_id FROM component_snapshot WHERE path = ?",
+    [move.from],
+  );
   db.run("UPDATE OR REPLACE component_snapshot SET path = ? WHERE path = ?", [move.to, move.from]);
+  for (const component of affected) {
+    db.run("UPDATE components SET member_digest = ? WHERE id = ?", [
+      memberDigestFor(db, component.component_id),
+      component.component_id,
+    ]);
+  }
   db.run("UPDATE OR REPLACE node_tags SET path = ? WHERE path = ?", [move.to, move.from]);
   db.run("UPDATE OR REPLACE explorations SET path = ? WHERE path = ?", [move.to, move.from]);
+
+  // The file was renamed, not repaired. Leaving these behind lets the removal
+  // pass close them as fixed, which is a claim no scan is entitled to make.
+  db.run("UPDATE findings SET path = ? WHERE path = ?", [move.to, move.from]);
+  db.run("UPDATE suppressions SET path_prefix = ? WHERE path_prefix = ?", [move.to, move.from]);
 
   // Only an exact-path membership follows. A prefix like `src/auth/` becoming
   // `src/identity/` is a directory move somebody should re-author deliberately,
@@ -145,9 +183,15 @@ export function orphanedOverlays(
     ],
     [
       "relation",
+      // Either endpoint can go missing. Checking only the source reported an
+      // assertion as fully anchored while its destination no longer existed.
       `SELECT r.src_path AS path, COALESCE(r.label, r.kind) AS label
          FROM relations r
-        WHERE ${absent("r.src_path")}`,
+        WHERE ${absent("r.src_path")}
+        UNION
+       SELECT r.dst_path AS path, COALESCE(r.label, r.kind) AS label
+         FROM relations r
+        WHERE r.dst_path IS NOT NULL AND ${absent("r.dst_path")}`,
     ],
     [
       "flow-step",

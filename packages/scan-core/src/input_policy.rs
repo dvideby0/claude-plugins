@@ -282,9 +282,10 @@ impl InputPolicy {
     /// because the crate would drop entries before this module sees them —
     /// and an exclusion nobody can explain is exactly the defect being fixed.
     pub fn for_root(root: &Path) -> Self {
+        let (gitignore, problem) = build_root_gitignore(root);
         InputPolicy {
-            gitignore: build_root_gitignore(root),
-            gitignore_diagnostic: None,
+            gitignore,
+            gitignore_diagnostic: problem,
         }
     }
 
@@ -397,8 +398,11 @@ impl InputPolicy {
         }
     }
 
-    /// The decisions that need the file itself. `None` means keep the path.
-    pub fn decide_content(&self, path: &str, len: u64, bytes: &[u8]) -> Option<Decision> {
+    /// The size rule, which must be answered *before* the file is read.
+    ///
+    /// Reading first and checking after would let one very large file allocate
+    /// its whole length in every parallel worker that reaches it.
+    pub fn decide_size(&self, path: &str, len: u64) -> Option<Decision> {
         if len > MAX_FILE_BYTES {
             return Some(Decision::excluded(
                 Reason::TooLarge,
@@ -409,6 +413,18 @@ impl InputPolicy {
                 ),
                 path,
             ));
+        }
+        None
+    }
+
+    /// The rules that need the bytes. `None` means keep the file.
+    ///
+    /// The length is re-checked here because metadata is a separate syscall:
+    /// a file can grow between the two, and the cap has to hold on what was
+    /// actually read.
+    pub fn decide_content(&self, path: &str, bytes: &[u8]) -> Option<Decision> {
+        if let Some(rejected) = self.decide_size(path, bytes.len() as u64) {
+            return Some(rejected);
         }
         if bytes.contains(&0) {
             return Some(Decision::excluded(
@@ -436,16 +452,29 @@ fn describe_glob(glob: &ignore::gitignore::Glob) -> String {
 
 /// Only the root `.gitignore`. Nested per-package files are a later additive
 /// step: missing one leaves files *included*, which is the safe direction.
-fn build_root_gitignore(root: &Path) -> Option<Gitignore> {
+///
+/// Returns the matcher and any problem building it. A rule that could not be
+/// applied is a gap, not a pass: silently dropping it would index generated
+/// output with nothing anywhere saying the policy was incomplete.
+fn build_root_gitignore(root: &Path) -> (Option<Gitignore>, Option<String>) {
     let file = root.join(".gitignore");
     if !file.is_file() {
-        return None;
+        return (None, None);
     }
     let mut builder = GitignoreBuilder::new(root);
-    // A malformed line is reported as an error but the remaining rules still
-    // build, so partial policy is better than none.
-    let _ = builder.add(&file);
-    builder.build().ok()
+    let mut problem = builder
+        .add(&file)
+        .map(|error| format!("Some .gitignore rules could not be read: {error}."));
+    match builder.build() {
+        Ok(matcher) => (Some(matcher), problem),
+        Err(error) => {
+            problem = Some(format!(
+                "This repository's .gitignore could not be compiled ({error}), so generated \
+                 output may be indexed as source. Fix the file and re-index."
+            ));
+            (None, problem)
+        }
+    }
 }
 
 #[cfg(test)]
@@ -594,18 +623,32 @@ mod tests {
         let root = fixture_root("content");
         let policy = bare(&root);
 
+        // Size is answerable from metadata alone, which is what keeps an
+        // oversized file from ever being read into memory.
         let large = policy
-            .decide_content("src/big.ts", MAX_FILE_BYTES + 1, b"x")
-            .expect("oversized file is excluded");
+            .decide_size("src/big.ts", MAX_FILE_BYTES + 1)
+            .expect("oversized file is excluded before it is read");
         assert_eq!(large.reason, Reason::TooLarge);
         assert!(large.detail.contains("exceeds"));
+        assert!(policy.decide_size("src/small.ts", 1024).is_none());
 
         let binary = policy
-            .decide_content("src/logo.ts", 12, b"abc\0def")
+            .decide_content("src/logo.ts", b"abc\0def")
             .expect("binary file is excluded");
         assert_eq!(binary.reason, Reason::BinaryContent);
 
-        assert!(policy.decide_content("src/ok.ts", 12, b"export {};").is_none());
+        assert!(policy.decide_content("src/ok.ts", b"export {};").is_none());
+
+        // A file that grew between the metadata call and the read is still
+        // capped on what was actually read.
+        let grown = vec![b'x'; (MAX_FILE_BYTES + 1) as usize];
+        assert_eq!(
+            policy
+                .decide_content("src/grew.ts", &grown)
+                .expect("a file that grew past the cap is excluded")
+                .reason,
+            Reason::TooLarge
+        );
 
         fs::remove_dir_all(root).expect("remove fixture");
     }

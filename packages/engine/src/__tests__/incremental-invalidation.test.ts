@@ -7,6 +7,7 @@ import { describeComponent, describeFlow, finalizeMap, mapDrift } from "../graph
 import { markExplored, relate, relationsFor } from "../graph/relations.js";
 import { recall, remember } from "../memory/store.js";
 import { orphanedOverlays } from "../scan/moves.js";
+import { buildTaskContext } from "../plan/task-context.js";
 import { exec } from "../lib/exec.js";
 import { cleanup, makeProject, writeFiles } from "./helpers.js";
 
@@ -82,6 +83,36 @@ describe("invalidation follows meaning, not bytes", () => {
     // The reason says what happened, not merely that nothing did.
     expect(memory?.anchors[0]?.freshness.reason).toContain("only in comments or formatting");
   });
+
+  it("agrees across every reader that a comment-only edit changed nothing", async () => {
+    // The direct readers and the budgeted task-context planner answer the same
+    // question through different code. One saying current while the other says
+    // stale is worse than either verdict alone, because nobody can tell which
+    // to believe.
+    root = await makeProject(PROJECT);
+    await scan(root, { kind: "full" });
+    let db = await authorKnowledgeAbout(root, "src/lib/hash.ts");
+
+    await writeFile(
+      join(root, "src/lib/hash.ts"),
+      "// somebody read this and left a note\nexport function hash(value: string): string {\n  return value;\n}\n",
+    );
+    await scan(root, { kind: "incremental" });
+    db = await getDb(root);
+
+    const context = await buildTaskContext(db, root, {
+      task: "hashing is identity for now",
+      budgetBytes: 40_000,
+      isolatedGitConfig: true,
+    });
+    const authored = context.evidence.filter((item) =>
+      ["memory", "relation", "flow"].includes(item.kind),
+    );
+    expect(authored.length).toBeGreaterThan(0);
+    for (const item of authored) {
+      expect(item.provenance.freshness).toBe("current");
+    }
+  }, 30_000);
 
   it("drifts everything anchored to a file when its body changes", async () => {
     root = await makeProject(PROJECT);

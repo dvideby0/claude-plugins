@@ -19,7 +19,12 @@
 import { createHash, randomUUID } from "node:crypto";
 import type { Db } from "../db/db.js";
 import { likeEscape } from "../lib/sql.js";
-import { pathFreshness, signaturesToRecord } from "../lib/freshness.js";
+import {
+  pathFreshness,
+  sameMeaning,
+  signaturesToRecord,
+  type RecordedSignatures,
+} from "../lib/freshness.js";
 
 export const COMPONENT_KINDS = [
   "system",
@@ -45,9 +50,13 @@ const slug = (name: string): string =>
  * pass over a repository is expensive, and after that only the boxes whose
  * ground shifted need looking at again.
  */
+export function memberDigestFor(db: Db, componentId: string): string {
+  return memberDigest(db, componentId);
+}
+
 function memberDigest(db: Db, componentId: string): string {
   const { files } = membersOf(db, componentId);
-  const parts = files.sort().map((path) => `${path}:${memberSignature(db, path)}`);
+  const parts = files.sort().map((path) => `${path}:${memberDigestTerm(db, path)}`);
   return createHash("sha256").update(parts.join("|")).digest("hex").slice(0, 20);
 }
 
@@ -60,12 +69,18 @@ function memberDigest(db: Db, componentId: string): string {
  * predating syntax signatures, fall back to content — an unverifiable
  * comparison must not silently read as unchanged.
  */
-function memberSignature(db: Db, path: string): string {
+function memberSignature(db: Db, path: string): RecordedSignatures {
   const row = db.get<{ content_sha: string; syntax_sha: string | null }>(
     "SELECT content_sha, syntax_sha FROM files WHERE path = ?",
     [path],
   );
-  return row?.syntax_sha ?? row?.content_sha ?? "";
+  return { contentSha: row?.content_sha ?? null, syntaxSha: row?.syntax_sha ?? null };
+}
+
+/** The digest's per-file term. Syntax where available, content otherwise. */
+function memberDigestTerm(db: Db, path: string): string {
+  const recorded = memberSignature(db, path);
+  return recorded.syntaxSha ?? recorded.contentSha ?? "";
 }
 
 /** `pattern` is a path or a prefix ending in `/`, matched against files. */
@@ -113,7 +128,8 @@ const MAX_COMPONENT_DEPENDENCIES = 500;
 function recordComponentDependencies(db: Db, componentId: string): void {
   db.run(
     `DELETE FROM artifact_dependencies
-      WHERE artifact_kind = 'component' AND artifact_id = ? AND signature_kind = 'symbol-interface'`,
+      WHERE artifact_kind = 'component' AND artifact_id = ?
+        AND signature_kind IN ('symbol-interface', 'coverage')`,
     [componentId],
   );
   const { files } = membersOf(db, componentId);
@@ -131,8 +147,26 @@ function recordComponentDependencies(db: Db, componentId: string): void {
         AND s.symbol_key IS NOT NULL AND s.interface_sha IS NOT NULL
       GROUP BY s.symbol_key
       LIMIT ?`,
-    [componentId, ...files, ...files, MAX_COMPONENT_DEPENDENCIES],
+    [componentId, ...files, ...files, MAX_COMPONENT_DEPENDENCIES + 1],
   );
+
+  // A silently truncated dependency set would let an omitted contract change
+  // while the box still reported clean. Record the overflow as a dependency of
+  // its own, so it is impossible to read the box as fully checked.
+  const recorded = db.count(
+    `SELECT COUNT(*) AS n FROM artifact_dependencies
+      WHERE artifact_kind = 'component' AND artifact_id = ?
+        AND signature_kind = 'symbol-interface'`,
+    [componentId],
+  );
+  if (recorded > MAX_COMPONENT_DEPENDENCIES) {
+    db.run(
+      `INSERT OR REPLACE INTO artifact_dependencies(
+         artifact_kind, artifact_id, signature_kind, depends_on, signature)
+       VALUES('component', ?, 'coverage', 'external-contracts', ?)`,
+      [componentId, `truncated at ${MAX_COMPONENT_DEPENDENCIES}`],
+    );
+  }
 }
 
 /** Contracts a box was drawn against that have since moved. */
@@ -140,7 +174,7 @@ function changedDependencies(
   db: Db,
   componentId: string,
 ): Array<{ symbol: string; path: string }> {
-  return db
+  const changed = db
     .all<{ depends_on: string; path: string | null }>(
       `SELECT d.depends_on,
               (SELECT s.path FROM symbols s WHERE s.symbol_key = d.depends_on LIMIT 1) AS path
@@ -154,6 +188,20 @@ function changedDependencies(
       [componentId],
     )
     .map((row) => ({ symbol: symbolNameFromKey(row.depends_on), path: row.path ?? "" }));
+
+  const truncated = db.get<{ signature: string }>(
+    `SELECT signature FROM artifact_dependencies
+      WHERE artifact_kind = 'component' AND artifact_id = ? AND signature_kind = 'coverage'`,
+    [componentId],
+  );
+  if (truncated) {
+    // Coverage is partial, so this box can never report itself checked.
+    changed.push({
+      symbol: `more dependencies than were recorded (${truncated.signature})`,
+      path: "",
+    });
+  }
+  return changed;
 }
 
 /** `path#kind:name#ordinal` — the name sits between the colon and the ordinal. */
@@ -547,16 +595,20 @@ export function mapDrift(db: Db): MapDrift {
             "SELECT path, content_sha, syntax_sha FROM component_snapshot WHERE component_id = ?",
             [component.id],
           )
-          .map((row) => [row.path, row.syntax_sha ?? row.content_sha]),
+          .map((row) => [
+            row.path,
+            { contentSha: row.content_sha, syntaxSha: row.syntax_sha },
+          ]),
       );
       const now = new Map(
         membersOf(db, component.id).files.map((path) => [path, memberSignature(db, path)]),
       );
 
       const changedFiles: string[] = [];
-      for (const [path, sha] of now) {
-        if (!drawnAt.has(path)) changedFiles.push(`${path} (added)`);
-        else if (drawnAt.get(path) !== sha) changedFiles.push(path);
+      for (const [path, current] of now) {
+        const recorded = drawnAt.get(path);
+        if (!recorded) changedFiles.push(`${path} (added)`);
+        else if (!sameMeaning(recorded, current)) changedFiles.push(path);
       }
       for (const path of drawnAt.keys()) {
         if (!now.has(path)) changedFiles.push(`${path} (removed)`);
@@ -863,7 +915,7 @@ export function componentDetail(db: Db, id: string): ComponentDetail | null {
         "SELECT path, content_sha, syntax_sha FROM component_snapshot WHERE component_id = ?",
         [id],
       )
-      .map((row) => [row.path, row.syntax_sha ?? row.content_sha]),
+      .map((row) => [row.path, { contentSha: row.content_sha, syntaxSha: row.syntax_sha }]),
   );
 
   const detail = files.map((path) => {
@@ -880,7 +932,10 @@ export function componentDetail(db: Db, id: string): ComponentDetail | null {
       tags: db
         .all<{ tag: string }>("SELECT tag FROM node_tags WHERE path = ?", [path])
         .map((row) => row.tag),
-      changed: drawn.has(path) && drawn.get(path) !== memberSignature(db, path),
+      changed: (() => {
+        const recorded = drawn.get(path);
+        return recorded !== undefined && !sameMeaning(recorded, memberSignature(db, path));
+      })(),
     };
   });
 

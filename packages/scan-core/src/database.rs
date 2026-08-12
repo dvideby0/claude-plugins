@@ -1031,7 +1031,15 @@ fn execution_asserted_overlay(
          FROM relations r
          JOIN files f ON f.path = r.src_path
                      AND f.present = 1
-                     AND f.content_sha = r.content_sha
+                     -- An assertion describes what code means, so reformatting
+                     -- its source must not drop it from the overlay while every
+                     -- other reader still calls it current. Content remains the
+                     -- comparison where either side has no syntax signature.
+                     AND CASE
+                           WHEN r.syntax_sha IS NOT NULL AND f.syntax_sha IS NOT NULL
+                             THEN f.syntax_sha = r.syntax_sha
+                           ELSE f.content_sha = r.content_sha
+                         END
          WHERE EXISTS (
            SELECT 1 FROM relevant endpoint
            WHERE (r.src_path = endpoint.path

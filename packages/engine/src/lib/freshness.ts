@@ -118,6 +118,21 @@ export function meaningFreshness(
   };
 }
 
+/**
+ * Whether two recordings of the same file mean the same thing.
+ *
+ * Never compares one side's syntax hash against the other's content hash: a
+ * store upgraded but not yet rescanned has anchors with no syntax signature
+ * and files that already have one, and coalescing the two would report every
+ * untouched anchor as changed.
+ */
+export function sameMeaning(left: RecordedSignatures, right: RecordedSignatures): boolean {
+  if (left.syntaxSha != null && right.syntaxSha != null) {
+    return left.syntaxSha === right.syntaxSha;
+  }
+  return left.contentSha !== null && left.contentSha === right.contentSha;
+}
+
 /** The one-call form for the common case. */
 export function pathFreshness(
   db: Db,
