@@ -73,7 +73,7 @@ export async function startRun(db: Db, kind: string, gitSha: string | null): Pro
 
 // One scan per store at a time. The watcher, the HTTP index job and the MCP
 // `audit_scan` tool are three independent doors into this function; two scans
-// interleaving on one sql.js handle means nested transactions and torn state.
+// interleaving on one SQLite handle means nested transactions and torn state.
 const scans = new Map<string, Promise<unknown>>();
 
 export async function scan(projectRoot: string, options: ScanOptions = {}): Promise<ScanResult> {

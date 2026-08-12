@@ -5,8 +5,11 @@ allowed-tools: Task, Read, Grep, Glob, AskUserQuestion, mcp__sdlc__audit_status,
 
 # Full audit
 
-Read-only with respect to the user's code. Everything is written under
-`sdlc-audit/`. Undo is `rm -rf sdlc-audit/`.
+Read-only with respect to the user's code. Audit state is written to the app-owned
+store under `~/.sdlc/stores/<workspace-id>/` (or `SDLC_HOME`), not to the working
+tree. Removing a workspace from the app unregisters it but intentionally retains
+the store for recovery. A repository-local `sdlc-audit/audit.db`, if present, is
+only a legacy backup; deleting it does not reset the live index.
 
 ## 1. Check state
 

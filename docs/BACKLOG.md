@@ -166,6 +166,19 @@ Acceptance criteria:
 - FTS5 is enabled and queried through an internal search interface.
 - Existing prototype stores have either a tested migration or a clearly documented disposable reset path.
 
+Progress (2026-08-12, native-storage foundation): the engine now owns a
+bundled `rusqlite` connection inside the existing Rust N-API module. Stores are
+written directly under `~/.sdlc/stores/<workspace-id>/audit.db` (or
+`SDLC_HOME`), use WAL transactions, and no longer export an in-memory
+`sql.js` image. Opening a repository with a prototype
+`sdlc-audit/audit.db` copies it into app-owned storage and retains the original
+as a recoverable backup; migration and restart behavior are covered by tests.
+The remaining STORE-001 work is stable identity across repository relocation,
+versioned/rollback-safe schema migrations and corruption recovery, and an FTS5
+schema exposed through the internal retrieval interface. Bundled SQLite's FTS5
+capability is verified, but capability alone does not satisfy the search
+acceptance criterion.
+
 ### INCR-001: Ownership and dependency-directed invalidation
 
 Implement a signature hierarchy and a dependency table for derived artifacts.

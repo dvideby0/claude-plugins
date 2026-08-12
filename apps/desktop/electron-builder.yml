@@ -19,7 +19,7 @@ directories:
 npmRebuild: false
 
 # The engine runs as a child Node process (ELECTRON_RUN_AS_NODE), which has
-# no asar support — its files, content and SQLite runtime must exist on disk
+# no asar support — its files, content and native modules must exist on disk
 # as real files, not archive entries. The whole app stays unpacked.
 asar: false
 
@@ -39,7 +39,7 @@ files:
   - preload.cjs
   - package.json
   # The engine and protocol travel as real packages; their runtime
-  # dependencies (MCP SDK, sql.js, zod, typescript) are
+  # dependencies (MCP SDK, zod, typescript) are
   # collected from the workspace's hoisted node_modules by the dependency
   # walker. Build intermediates and sources stay out.
   - "!node_modules/@sdlc/scan-core/target/**"

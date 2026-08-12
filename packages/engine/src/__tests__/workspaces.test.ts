@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { mkdir, readFile, symlink, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { WorkspaceRegistry } from "../daemon/workspaces.js";
 import { closeDb, getDb } from "../db/db.js";
@@ -73,6 +73,26 @@ describe("workspace identity", () => {
     expect(result.unreadable.sort()).toEqual(["corrupt", "missing"]);
   });
 
+  it("does not expose an uncached store while its workspace is unavailable", async () => {
+    root = await makeProject({
+      "offline/package.json": JSON.stringify({ name: "offline" }),
+      "offline/src/value.ts": "export const retainedNeedle = 1;\n",
+    });
+    const offline = join(root, "offline");
+    await scan(offline, { kind: "full" });
+    await closeDb(offline);
+    await rm(offline, { recursive: true, force: true });
+
+    const result = await crossQuery(
+      [{ id: "offline", name: "offline", root: offline }],
+      "symbol",
+      "retainedNeedle",
+    );
+
+    expect(result.hits).toEqual([]);
+    expect(result.unreadable).toEqual(["offline"]);
+  });
+
   it("persists and evicts a removed workspace database handle", async () => {
     root = await makeProject({
       "project/package.json": JSON.stringify({ name: "evicted" }),
@@ -101,7 +121,7 @@ describe("workspace identity", () => {
 
     // Acquisition starts first. An unconditional `await undefined` in getDb
     // used to let the close evict `first` before the cache lookup resumed,
-    // creating a second live sql.js image over the same audit.db.
+    // creating a second live SQLite connection over the same audit.db.
     const acquiring = getDb(project);
     const closing = closeDb(project);
     const acquired = await acquiring;

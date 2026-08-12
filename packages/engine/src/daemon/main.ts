@@ -96,7 +96,7 @@ async function main(): Promise<void> {
 
   // daemon.json is discovery, not mutual exclusion. Hold an atomic lock for
   // the whole process lifetime so two simultaneous starts cannot both open
-  // and mutate the same sql.js stores.
+  // and mutate the same SQLite stores.
   ownership = await acquireDaemonLock();
 
   // A daemon from an older release may not own a lock. Check again after

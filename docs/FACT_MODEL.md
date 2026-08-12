@@ -126,7 +126,7 @@ durable run's workspace owner; caller-supplied DTO fields cannot relabel or
 promote a run. SCIP TypeScript 0.4 omits its document position encoding, so those
 anchors remain `unknown` rather than assuming UTF-16.
 
-This is a measured in-memory import boundary, not production persistence.
-STORE-001's app-owned native SQLite work should persist provider-run ownership
-without first copying a large index into the disposable whole-export `sql.js`
-store.
+This is still a measured import boundary, not persisted production provider
+facts. STORE-001 now supplies app-owned native SQLite with direct transactional
+writes; the next fact-model persistence step should store provider-run
+ownership there without flattening provenance or freshness into legacy tables.

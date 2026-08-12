@@ -6,16 +6,11 @@
  * revoke — everything the engine has seen.
  */
 
-import { createHash } from "node:crypto";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname, basename } from "node:path";
 import { workspacesFile } from "@sdlc/protocol";
 import type { Workspace } from "@sdlc/protocol";
-import { canonicalWorkspaceRoot, workspaceIdentityKey } from "../lib/workspace-path.js";
-
-function idFor(root: string): string {
-  return createHash("sha256").update(workspaceIdentityKey(root)).digest("hex").slice(0, 12);
-}
+import { canonicalWorkspaceRoot, workspaceIdForCanonicalRoot } from "../lib/workspace-path.js";
 
 export class WorkspaceRegistry {
   private items = new Map<string, Workspace>();
@@ -52,7 +47,7 @@ export class WorkspaceRegistry {
         throw new Error(`Workspace registry ${this.path} contains an invalid entry.`);
       }
       const root = await canonicalWorkspaceRoot(item.root);
-      const id = idFor(root);
+      const id = workspaceIdForCanonicalRoot(root);
       const normalized: Workspace = {
         id,
         root,
@@ -115,7 +110,7 @@ export class WorkspaceRegistry {
   async add(root: string): Promise<Workspace> {
     await this.load();
     const absolute = await canonicalWorkspaceRoot(root);
-    const id = idFor(absolute);
+    const id = workspaceIdForCanonicalRoot(absolute);
 
     const existing = this.items.get(id);
     if (existing) return existing;
@@ -142,7 +137,9 @@ export class WorkspaceRegistry {
 
   async markIndexed(root: string): Promise<void> {
     await this.load();
-    const workspace = this.items.get(idFor(await canonicalWorkspaceRoot(root)));
+    const workspace = this.items.get(
+      workspaceIdForCanonicalRoot(await canonicalWorkspaceRoot(root)),
+    );
     if (!workspace) return;
     workspace.lastIndexedAt = new Date().toISOString();
     workspace.generation++;
@@ -152,7 +149,9 @@ export class WorkspaceRegistry {
   /** Signal a completed background enrichment without claiming a new scan. */
   async markUpdated(root: string): Promise<void> {
     await this.load();
-    const workspace = this.items.get(idFor(await canonicalWorkspaceRoot(root)));
+    const workspace = this.items.get(
+      workspaceIdForCanonicalRoot(await canonicalWorkspaceRoot(root)),
+    );
     if (!workspace) return;
     workspace.generation++;
     await this.save();

@@ -1,7 +1,7 @@
 /**
  * The MCP surface of the engine.
  *
- * All state lives in each workspace's audit.db, so every tool is independently
+ * All state lives in each workspace's app-owned audit.db, so every tool is independently
  * callable and a restarted engine resumes exactly where it left off. That is
  * what lets one tool set serve a single project over stdio or many projects
  * at once over HTTP.
