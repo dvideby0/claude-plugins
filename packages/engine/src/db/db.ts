@@ -195,14 +195,46 @@ export interface TaskContextCandidate {
   };
 }
 
+export interface TaskChangeInput {
+  state: "available" | "not-repository" | "unavailable" | "not-requested";
+  source: string;
+  changes: Array<{
+    path: string;
+    previousPath?: string | null;
+    status: string;
+    indexStatus?: string;
+    worktreeStatus?: string;
+    worktreePathPresent?: boolean;
+  }>;
+  detectedPaths: number;
+  truncated: boolean;
+  diagnostic?: string | null;
+}
+
+export interface TaskChangeContext {
+  state: TaskChangeInput["state"];
+  source: string | null;
+  detectedPaths: number;
+  changes?: Array<{
+    path: string;
+    previousPath?: string | null;
+    status: string;
+    indexState: "current" | "historical" | "absent";
+  }>;
+  omittedPaths?: number;
+  truncated?: boolean;
+  diagnostic?: string | null;
+}
+
 export interface TaskContextPlan {
-  schemaVersion: 1;
+  schemaVersion: 2;
   task: string;
   intent: TaskIntent;
   targets: TaskTargetResolution[];
+  changeContext: TaskChangeContext;
   strategy: {
-    retrieval: "fts5-plus-one-hop";
-    ranking: "deterministic-intent-multisignal-path-diverse";
+    retrieval: "fts5-graph-git";
+    ranking: "deterministic-change-aware";
     maxCandidates: number;
   };
   candidates: TaskContextCandidate[];
@@ -342,9 +374,16 @@ export class Db {
     targets: readonly string[] = [],
     intent: TaskIntent = "understand",
     limit = 64,
+    changes?: TaskChangeInput,
   ): TaskContextPlan {
     return JSON.parse(
-      this.raw.taskContext(task, JSON.stringify(targets), intent, limit),
+      this.raw.taskContext(
+        task,
+        JSON.stringify(targets),
+        intent,
+        limit,
+        changes ? JSON.stringify(changes) : undefined,
+      ),
     ) as TaskContextPlan;
   }
 

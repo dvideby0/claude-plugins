@@ -1,4 +1,4 @@
-import { cp, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -174,6 +174,52 @@ describe("retrieval evaluation", () => {
     );
   });
 
+  it("isolates fixture Git from inherited repositories and global excludes", async () => {
+    const poison = await mkdtemp(join(tmpdir(), "sdlc-retrieval-git-env-"));
+    temporaryRoots.push(poison);
+    const excludes = join(poison, "global-excludes");
+    const globalConfig = join(poison, "global-gitconfig");
+    const xdgConfig = join(poison, "xdg");
+    await mkdir(join(xdgConfig, "git"), { recursive: true });
+    await writeFile(join(xdgConfig, "git", "ignore"), "*.ts\n");
+    await writeFile(excludes, "*.ts\n");
+    await writeFile(
+      globalConfig,
+      `[core]\n\texcludesFile = "${excludes.replaceAll("\\", "/")}"\n`,
+    );
+    const keys = [
+      "GIT_CONFIG_COUNT",
+      "GIT_CONFIG_GLOBAL",
+      "GIT_CONFIG_KEY_0",
+      "GIT_CONFIG_VALUE_0",
+      "GIT_DIR",
+      "GIT_WORK_TREE",
+      "XDG_CONFIG_HOME",
+    ] as const;
+    const previous = new Map(keys.map((key) => [key, process.env[key]]));
+    try {
+      process.env.GIT_DIR = join(poison, ".git");
+      process.env.GIT_WORK_TREE = poison;
+      process.env.GIT_CONFIG_GLOBAL = globalConfig;
+      process.env.GIT_CONFIG_COUNT = "1";
+      process.env.GIT_CONFIG_KEY_0 = "core.hooksPath";
+      process.env.GIT_CONFIG_VALUE_0 = join(poison, "host-hooks");
+      process.env.XDG_CONFIG_HOME = xdgConfig;
+
+      const report = await runRetrievalEvaluation(fixture);
+
+      expect(report.passed).toBe(true);
+      expect(
+        report.scenarios.find((scenario) => scenario.id === "review-working-tree-change"),
+      ).toMatchObject({ changeDetected: true });
+    } finally {
+      for (const [key, value] of previous) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+    }
+  });
+
   it("runs the checked-in corpus while keeping the first slice experimental", async () => {
     const report = await runRetrievalEvaluation(fixture);
 
@@ -195,7 +241,7 @@ describe("retrieval evaluation", () => {
     expect(review.sdlc).toMatchObject({
       recallAtK: 0.5,
       evidenceCoverage: 1,
-      packedTokens: 1450,
+      packedTokens: 1452,
       rankedPaths: ["src/checkout.ts", "src/inventory.ts", "src/checkout.test.ts"],
       missingEvidence: [],
     });
@@ -204,7 +250,7 @@ describe("retrieval evaluation", () => {
     expect(debug.sdlc).toMatchObject({
       recallAtK: 0.75,
       evidenceCoverage: 1,
-      packedTokens: 1434,
+      packedTokens: 1436,
       rankedPaths: ["src/checkout.test.ts", "src/checkout.ts", "src/ledger.ts"],
       missingEvidence: [],
     });
@@ -212,5 +258,21 @@ describe("retrieval evaluation", () => {
       kind: "memory",
       title: "Checkout idempotency requirement",
     });
+    const change = report.scenarios.find(
+      (scenario) => scenario.id === "review-working-tree-change",
+    )!;
+    expect(change).toMatchObject({
+      changeDetected: true,
+      workingTreeChange: { path: "src/api.ts" },
+      sdlc: {
+        recallAtK: 1,
+        evidenceCoverage: 1,
+        irrelevantContextRate: 0,
+        packedTokens: 1374,
+        rankedPaths: ["src/api.ts", "src/checkout.ts"],
+        missingEvidence: [],
+      },
+    });
+    expect(change.sdlc.recallAtK).toBeGreaterThan(change.aider.recallAtK);
   });
 });

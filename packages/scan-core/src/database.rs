@@ -1783,6 +1783,7 @@ impl NativeDatabase {
         targets_json: String,
         intent: Option<String>,
         limit: Option<u32>,
+        changes_json: Option<String>,
     ) -> Result<String> {
         let connection = self.connection()?;
         let connection = connection.as_ref().ok_or_else(|| {
@@ -1794,6 +1795,7 @@ impl NativeDatabase {
             &targets_json,
             intent.as_deref(),
             limit.unwrap_or(64),
+            changes_json.as_deref(),
         )
     }
 
@@ -1926,6 +1928,7 @@ mod tests {
                 "[\"src/core/db.ts\"]",
                 Some("implement"),
                 20,
+                None,
             )
             .expect("task context succeeds"),
         )

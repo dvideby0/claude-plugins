@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { Buffer } from "node:buffer";
-import { access, cp, mkdtemp, readFile, readdir, rm } from "node:fs/promises";
+import { access, cp, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -8,6 +8,8 @@ import { Tiktoken } from "js-tiktoken/lite";
 import o200kBase from "js-tiktoken/ranks/o200k_base";
 import { z } from "zod";
 import { closeDb, getDb, TASK_INTENTS } from "../db/db.js";
+import { exec } from "../lib/exec.js";
+import { isolatedFixtureGitEnvironment } from "../lib/git-environment.js";
 import { MEMORY_KINDS, remember } from "../memory/store.js";
 import { buildTaskContext, type TaskContextBrief } from "../plan/task-context.js";
 import { scan } from "../scan/scan.js";
@@ -57,6 +59,13 @@ const retrievalScenarioSchema = z
     task: z.string().min(1),
     targets: z.array(z.string().min(1)).max(8),
     intent: z.enum(TASK_INTENTS),
+    workingTreeChange: z
+      .object({
+        path: z.string().min(1),
+        append: z.string().min(1),
+      })
+      .strict()
+      .optional(),
     budgetBytes: z.number().int().min(6_000).max(100_000),
     rankK: z.number().int().min(1).max(100),
     relevantPaths: z.array(z.string().min(1)).min(1),
@@ -87,6 +96,16 @@ const retrievalScenarioSchema = z
           path: ["requiredEvidence", index, "path"],
         });
       }
+    }
+    if (
+      scenario.workingTreeChange &&
+      !scenario.relevantPaths.includes(scenario.workingTreeChange.path)
+    ) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "The changed path must be listed as relevant retrieval evidence.",
+        path: ["workingTreeChange", "path"],
+      });
     }
     const evidenceKeys = scenario.requiredEvidence.map((evidence) =>
       JSON.stringify([evidence.path, evidence.symbol, evidence.kind, evidence.title]),
@@ -226,6 +245,8 @@ export interface RetrievalScenarioReport {
   budgetBytes: number;
   passed: boolean;
   failures: string[];
+  workingTreeChange: RetrievalScenario["workingTreeChange"];
+  changeDetected: boolean | null;
   sdlc: RetrievalMetrics;
   aider: RetrievalMetrics;
   comparison: {
@@ -301,6 +322,43 @@ export async function retrievalSourceSha256(root: string): Promise<string> {
 
 export async function loadRetrievalOracle(path: string): Promise<RetrievalOracle> {
   return retrievalOracleSchema.parse(JSON.parse(await readFile(path, "utf8")));
+}
+
+async function runFixtureGit(project: string, args: string[]): Promise<void> {
+  const result = await exec("git", args, {
+    cwd: project,
+    timeout: 30_000,
+    maxBuffer: 2 * 1024 * 1024,
+    env: isolatedFixtureGitEnvironment(project),
+  });
+  if (
+    result.spawnFailed ||
+    result.timedOut ||
+    result.truncated ||
+    result.exitCode !== 0
+  ) {
+    throw new Error(
+      `Retrieval fixture git ${args.join(" ")} failed: ${result.stderr || result.stdout || "unknown error"}`,
+    );
+  }
+}
+
+async function initializeFixtureGit(project: string): Promise<void> {
+  await runFixtureGit(project, ["init", "--quiet", "--template="]);
+  await runFixtureGit(project, ["config", "core.autocrlf", "false"]);
+  await runFixtureGit(project, ["config", "core.filemode", "false"]);
+  await runFixtureGit(project, ["add", "."]);
+  await runFixtureGit(project, [
+    "-c",
+    "user.name=SDLC Evaluation",
+    "-c",
+    "user.email=sdlc-eval@example.invalid",
+    "commit",
+    "--quiet",
+    "--no-gpg-sign",
+    "-m",
+    "retrieval baseline",
+  ]);
 }
 
 function ratio(numerator: number, denominator: number): number {
@@ -519,44 +577,74 @@ export async function runRetrievalEvaluation(
     process.env.SDLC_HOME = state;
     environmentChanged = true;
     await cp(sourceRoot, project, { recursive: true });
+    await initializeFixtureGit(project);
     await scan(project, { full: true, kind: "evaluation-retrieval" });
     const db = await getDb(project);
     for (const memory of oracle.setup.memories) remember(db, { ...memory, source: "eval-oracle" });
 
     const scenarios: RetrievalScenarioReport[] = [];
     for (const scenario of oracle.scenarios) {
-      const brief = await buildTaskContext(db, project, {
-        task: scenario.task,
-        targets: scenario.targets,
-        intent: scenario.intent,
-        budgetBytes: scenario.budgetBytes,
-      });
-      const sdlcContext = JSON.stringify(brief, null, 2);
-      const sdlc = scoreRetrievalContext(sdlcContext, sdlcEvidence(brief), scenario);
-      const aider = scoreRetrievalContext(baselineContext, baselineEvidence, scenario);
-      const failures = comparisonFailures(scenario, sdlc, aider);
-      scenarios.push({
-        id: scenario.id,
-        task: scenario.task,
-        rankK: scenario.rankK,
-        budgetBytes: scenario.budgetBytes,
-        passed: failures.length === 0,
-        failures,
-        sdlc,
-        aider,
-        comparison: {
-          recallAtKDelta: delta(sdlc.recallAtK, aider.recallAtK),
-          evidenceCoverageDelta: delta(sdlc.evidenceCoverage, aider.evidenceCoverage),
-          irrelevantContextRateDelta:
-            sdlc.irrelevantContextRate === null || aider.irrelevantContextRate === null
-              ? null
-              : delta(sdlc.irrelevantContextRate, aider.irrelevantContextRate),
-          packedTokenRatio:
-            aider.packedTokens === 0
-              ? null
-              : Number((sdlc.packedTokens / aider.packedTokens).toFixed(6)),
-        },
-      });
+      const change = scenario.workingTreeChange;
+      const changedPath = change
+        ? containedFixturePath(project, change.path, "Working-tree change path")
+        : null;
+      const original = changedPath ? await readFile(changedPath, "utf8") : null;
+      try {
+        if (change && changedPath && original !== null) {
+          await writeFile(changedPath, `${original}${change.append}`, "utf8");
+          await scan(project, { kind: "evaluation-retrieval-change" });
+        }
+        const brief = await buildTaskContext(db, project, {
+          task: scenario.task,
+          targets: scenario.targets,
+          intent: scenario.intent,
+          budgetBytes: scenario.budgetBytes,
+          isolatedGitConfig: true,
+        });
+        const changeDetected = change
+          ? typeof brief.changeContext !== "string" &&
+            brief.changeContext.state === "available" &&
+            (brief.changeContext.changes ?? []).some((item) => item.path === change.path)
+          : null;
+        const sdlcContext = JSON.stringify(brief, null, 2);
+        const sdlc = scoreRetrievalContext(sdlcContext, sdlcEvidence(brief), scenario);
+        const aider = scoreRetrievalContext(baselineContext, baselineEvidence, scenario);
+        const failures = [
+          ...(change && !changeDetected
+            ? [`SDLC did not attest the working-tree change at ${change.path}.`]
+            : []),
+          ...comparisonFailures(scenario, sdlc, aider),
+        ];
+        scenarios.push({
+          id: scenario.id,
+          task: scenario.task,
+          rankK: scenario.rankK,
+          budgetBytes: scenario.budgetBytes,
+          passed: failures.length === 0,
+          failures,
+          workingTreeChange: change,
+          changeDetected,
+          sdlc,
+          aider,
+          comparison: {
+            recallAtKDelta: delta(sdlc.recallAtK, aider.recallAtK),
+            evidenceCoverageDelta: delta(sdlc.evidenceCoverage, aider.evidenceCoverage),
+            irrelevantContextRateDelta:
+              sdlc.irrelevantContextRate === null || aider.irrelevantContextRate === null
+                ? null
+                : delta(sdlc.irrelevantContextRate, aider.irrelevantContextRate),
+            packedTokenRatio:
+              aider.packedTokens === 0
+                ? null
+                : Number((sdlc.packedTokens / aider.packedTokens).toFixed(6)),
+          },
+        });
+      } finally {
+        if (changedPath && original !== null) {
+          await writeFile(changedPath, original, "utf8");
+          await scan(project, { kind: "evaluation-retrieval-change-restore" });
+        }
+      }
     }
     const failures = scenarios.flatMap((scenario) =>
       scenario.failures.map((failure) => `${scenario.id}: ${failure}`),

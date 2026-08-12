@@ -60,8 +60,8 @@
   "promotion": {
     "eligible": false,
     "blockers": [
-      "No change-relevance retrieval scenario is measured yet.",
-      "The first corpus covers one small TypeScript domain only."
+      "The first corpus covers one small TypeScript domain only.",
+      "Downstream task and answer quality are not measured yet."
     ]
   },
   "scenarios": [
@@ -138,6 +138,42 @@
         "maximumSdlcPackedTokens": 1500,
         "minimumRecallDeltaVsAider": 0.5,
         "minimumEvidenceCoverageDeltaVsAider": 0.333333,
+        "maximumIrrelevantContextRateDeltaVsAider": -0.8,
+        "maximumPackedTokenRatioVsAider": 1.5
+      }
+    },
+    {
+      "id": "review-working-tree-change",
+      "task": "review the current working tree change",
+      "targets": [],
+      "intent": "review",
+      "workingTreeChange": {
+        "path": "src/api.ts",
+        "append": "\n// Working-tree change: preserve the checkout response contract.\n"
+      },
+      "budgetBytes": 6000,
+      "rankK": 3,
+      "relevantPaths": [
+        "src/api.ts",
+        "src/checkout.ts"
+      ],
+      "requiredEvidence": [
+        {
+          "path": "src/api.ts",
+          "symbol": "postCheckout"
+        },
+        {
+          "path": "src/checkout.ts",
+          "symbol": "submitCheckout"
+        }
+      ],
+      "thresholds": {
+        "minimumSdlcRecallAtK": 1,
+        "minimumSdlcEvidenceCoverage": 1,
+        "maximumSdlcIrrelevantContextRate": 0,
+        "maximumSdlcPackedTokens": 1500,
+        "minimumRecallDeltaVsAider": 0.5,
+        "minimumEvidenceCoverageDeltaVsAider": 0,
         "maximumIrrelevantContextRateDeltaVsAider": -0.8,
         "maximumPackedTokenRatioVsAider": 1.5
       }

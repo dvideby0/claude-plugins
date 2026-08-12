@@ -115,6 +115,22 @@ export declare function stageSourceSnapshot(root: string, destination: string, e
 export declare function snapshotManifest(root: string): Promise<NativeSnapshotManifest>
 /** Recompute and validate a durable provider input manifest off the event loop. */
 export declare function verifySnapshotManifest(manifest: NativeSnapshotManifest): Promise<boolean>
+export interface NativeGitChange {
+  path: string
+  previousPath?: string
+  status: string
+  indexStatus: string
+  worktreeStatus: string
+  worktreePathPresent?: boolean
+}
+export interface NativeGitChangeSet {
+  state: string
+  source: string
+  changes: Array<NativeGitChange>
+  detectedPaths: number
+  truncated: boolean
+  diagnostic?: string
+}
 export interface NativeSymbol {
   kind: string
   name: string
@@ -219,6 +235,11 @@ export interface NativePathPolicy {
 }
 /** Walk and parse a repository. Both phases use every core, off the event loop. */
 export declare function scanRepo(root: string): Promise<NativeScan>
+/**
+ * Read staged, unstaged, renamed, and untracked paths through Git porcelain.
+ * Failure is returned as explicit degraded state so retrieval still works.
+ */
+export declare function gitChanges(root: string, isolatedConfig?: boolean | undefined | null): Promise<NativeGitChangeSet>
 /** Classify a watcher path through the Rust-owned repository policy. */
 export declare function sourcePathPolicy(path: string): NativePathPolicy
 export interface NativeMatch {
@@ -268,7 +289,7 @@ export declare class NativeDatabase {
    * remain in the thin daemon adapter so repository containment has one
    * implementation, while retrieval policy and ordering live with SQLite.
    */
-  taskContext(task: string, targetsJson: string, intent?: string | undefined | null, limit?: number | undefined | null): string
+  taskContext(task: string, targetsJson: string, intent?: string | undefined | null, limit?: number | undefined | null, changesJson?: string | undefined | null): string
   /**
    * Query the bounded, evidence-backed execution graph assembled by native
    * framework adapters. Path enumeration remains inside the native storage

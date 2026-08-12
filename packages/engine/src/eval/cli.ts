@@ -238,6 +238,7 @@ async function main(): Promise<void> {
               "retrieval recall at K and required-evidence coverage",
               "packed retrieval bytes and o200k_base tokens",
               "retrieval irrelevant-context rate against a pinned Aider repo-map baseline",
+              "working-tree change relevance for declared retrieval scenarios",
             ]
           : []),
       ],
@@ -248,7 +249,7 @@ async function main(): Promise<void> {
         ...(retrieval.status === "skipped"
           ? ["retrieval recall, evidence coverage, token packing, and irrelevant-context rate"]
           : [
-              "retrieval change relevance and task-outcome quality",
+              "retrieval task-outcome quality",
               "retrieval quality beyond the checked-in TypeScript checkout corpus",
             ]),
         "external SCIP child peak RSS",
