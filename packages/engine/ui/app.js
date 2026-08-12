@@ -2134,7 +2134,9 @@ async function paneCallFlow(workspace, pane, hasExecution) {
 
   const entryNodes = entryView.nodes.filter((node) => entryView.entries.includes(node.id));
   if (entryNodes.length === 0) {
-    pane.innerHTML = `<div class="empty big">
+    caption.textContent = "No call-graph entry points";
+    rail.innerHTML = '<div class="rail-head">Entry points</div>';
+    stage.innerHTML = `<div class="empty big">
       <p>No entry points found.</p>
       <p class="sub">Entry points come from the call graph — callable symbols nothing else calls.
       Re-index to build it.</p>

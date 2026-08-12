@@ -80,6 +80,7 @@ export interface FlowScores {
   entrypointMetadataMismatches: FlowEntrypointMetadataMismatch[];
   metadataMismatches: FlowMetadataMismatch[];
   missingRelationEvidence: ExpectedFlowRelation[];
+  surplusRelationEvidence: ExpectedFlowRelation[];
   pathMetadataMismatches: FlowPathMetadataMismatch[];
   explicitlyUnmeasured: string[];
 }
@@ -231,7 +232,8 @@ export function flowAcceptanceFailures(
   const relationEvidenceMismatches = scores.metadataMismatches.filter(
     (mismatch) => !relationEvidenceMatches(mismatch),
   );
-  const missingEvidenceAnchors = scores.missingRelationEvidence.length;
+  const unmatchedEvidenceAnchors =
+    scores.missingRelationEvidence.length + scores.surplusRelationEvidence.length;
   return [
     ...metricThresholdFailures("entrypoints", scores.entrypoints, thresholds.entrypoints),
     ...metricThresholdFailures("relations", scores.relations, thresholds.relations),
@@ -239,8 +241,8 @@ export function flowAcceptanceFailures(
     ...(scores.entrypointMetadataMismatches.length > 0
       ? [`${scores.entrypointMetadataMismatches.length} entrypoint evidence anchor(s) do not match the oracle.`]
       : []),
-    ...(relationEvidenceMismatches.length + missingEvidenceAnchors > 0
-      ? [`${relationEvidenceMismatches.length + missingEvidenceAnchors} relation evidence anchor(s) do not match the oracle.`]
+    ...(relationEvidenceMismatches.length + unmatchedEvidenceAnchors > 0
+      ? [`${relationEvidenceMismatches.length + unmatchedEvidenceAnchors} relation evidence anchor(s) do not match the oracle.`]
       : []),
     ...diagnostics.map((diagnostic) => `Adapter diagnostic: ${diagnostic}`),
   ];
@@ -358,6 +360,7 @@ export function scoreFlowGraph(
   }
   const metadataMismatches: FlowMetadataMismatch[] = [];
   const missingRelationEvidence: ExpectedFlowRelation[] = [];
+  const surplusRelationEvidence: ExpectedFlowRelation[] = [];
   for (const [key, expectedRelations] of expectedByRelation) {
     const actualRelations = actualByRelation.get(key);
     // A wholly absent semantic relation is already measured by relation recall.
@@ -382,7 +385,10 @@ export function scoreFlowGraph(
           expected.evidence.startLine === actual.evidence.startLine,
       );
       if (match < 0 && remaining.length > 0) match = 0;
-      if (match < 0) continue;
+      if (match < 0) {
+        surplusRelationEvidence.push(actual);
+        continue;
+      }
       const expected = remaining.splice(match, 1)[0]!;
       metadataMismatches.push({
         relation: {
@@ -422,6 +428,7 @@ export function scoreFlowGraph(
     entrypointMetadataMismatches,
     metadataMismatches,
     missingRelationEvidence,
+    surplusRelationEvidence,
     pathMetadataMismatches,
     explicitlyUnmeasured: [
       "branch-condition equivalence",

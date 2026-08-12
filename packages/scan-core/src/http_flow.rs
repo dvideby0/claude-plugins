@@ -9,7 +9,7 @@
 use tree_sitter::Node;
 
 const PRODUCER_ID: &str = "sdlc-http-route-adapter";
-const PRODUCER_VERSION: &str = "3";
+const PRODUCER_VERSION: &str = "4";
 const MAX_ENTRIES_PER_FILE: usize = 128;
 const MAX_GUARD_ALTERNATIVES: usize = 256;
 const MAX_NODES_PER_ENTRY: usize = 256;
@@ -377,6 +377,36 @@ fn collect_calls<'tree>(
     }
 }
 
+fn contains_expression_branch(node: Node, bytes: &[u8]) -> bool {
+    if matches!(
+        node.kind(),
+        "arrow_function"
+            | "function_expression"
+            | "function_declaration"
+            | "generator_function"
+            | "generator_function_declaration"
+            | "method_definition"
+    ) {
+        return false;
+    }
+    if node.kind() == "ternary_expression" {
+        return true;
+    }
+    if node.kind() == "binary_expression"
+        && node
+            .child_by_field_name("operator")
+            .is_some_and(|operator| matches!(text(operator, bytes), "&&" | "||" | "??"))
+    {
+        return true;
+    }
+
+    let mut cursor = node.walk();
+    let found = node
+        .named_children(&mut cursor)
+        .any(|child| contains_expression_branch(child, bytes));
+    found
+}
+
 fn ignored_call(call: &CallObservation) -> bool {
     if call.awaited {
         return false;
@@ -393,7 +423,10 @@ fn ignored_call(call: &CallObservation) -> bool {
 fn argument(call: Node, index: usize) -> Option<Node> {
     let arguments = call.child_by_field_name("arguments")?;
     let mut cursor = arguments.walk();
-    let selected = arguments.named_children(&mut cursor).nth(index);
+    let selected = arguments
+        .named_children(&mut cursor)
+        .filter(|child| child.kind() != "comment")
+        .nth(index);
     selected
 }
 
@@ -724,9 +757,13 @@ impl Builder<'_> {
                 Vec::new()
             }
             "throw_statement" => {
+                let after_calls = self.walk_calls(node, incoming);
+                if after_calls.is_empty() {
+                    return after_calls;
+                }
                 self.emit_abrupt(
                     node,
-                    incoming,
+                    after_calls,
                     AbruptKind::Throw,
                     compact(text(node, self.bytes), 120),
                     "exception".to_string(),
@@ -734,6 +771,9 @@ impl Builder<'_> {
                         .to_string(),
                 );
                 Vec::new()
+            }
+            _ if contains_expression_branch(node, self.bytes) => {
+                self.emit_gap(node, incoming, "expression-level branch")
             }
             _ => self.walk_calls(node, incoming),
         }
@@ -1088,8 +1128,12 @@ fn visit(
                     }
                     entries.push(entry);
                 }
-                // Nested path guards are separate routes only when they are
-                // not already owned by this recognized guarded block.
+                // The consequence belongs to the recognized route, but an
+                // else-if/else arm can register another route and must remain
+                // discoverable independently.
+                if let Some(alternative) = node.child_by_field_name("alternative") {
+                    visit(path, alternative, bytes, entries, truncated);
+                }
                 return;
             }
         }
@@ -1223,6 +1267,71 @@ async function handleApi(path: string, method: string, res: unknown) {
                 .iter()
                 .any(|node| node.kind == "terminal-effect")
         }));
+    }
+
+    #[test]
+    fn indexes_else_if_routes_without_reindexing_the_owned_consequence() {
+        let entries = extract_typescript(
+            r#"function route(path: string, res: unknown) {
+              if (path === "/a") { sendJson(res, 200, {}); }
+              else if (path === "/b") { sendJson(res, 201, {}); }
+              else if (path === "/c") { sendJson(res, 202, {}); }
+            }"#,
+        );
+        assert_eq!(
+            entries
+                .iter()
+                .map(|entry| entry.label.as_str())
+                .collect::<Vec<_>>(),
+            ["ANY /a", "ANY /b", "ANY /c"]
+        );
+        assert!(entries.iter().all(|entry| entry
+            .nodes
+            .iter()
+            .filter(|node| node.kind == "terminal-effect")
+            .count()
+            == 1));
+    }
+
+    #[test]
+    fn exposes_expression_level_branches_as_incomplete_gaps() {
+        let entries = extract_typescript(
+            r#"function route(path: string, res: unknown, ok: boolean) {
+              if (path === "/ternary") {
+                ok ? sendJson(res, 200, {}) : sendJson(res, 400, {});
+              }
+              if (path === "/logical") {
+                ok && sendJson(res, 201, {});
+              }
+            }"#,
+        );
+        assert_eq!(entries.len(), 2);
+        assert!(entries.iter().all(|entry| {
+            entry.nodes.iter().any(|node| node.kind == "gap")
+                && !entry
+                    .nodes
+                    .iter()
+                    .any(|node| node.kind == "terminal-effect")
+                && entry
+                    .diagnostics
+                    .iter()
+                    .any(|diagnostic| diagnostic.contains("expression-level branch"))
+        }));
+    }
+
+    #[test]
+    fn ignores_comments_when_reading_send_json_arguments() {
+        let entries = extract_typescript(
+            r#"function route(path: string, res: unknown) {
+              if (path === "/comments") {
+                sendJson(/* receiver */ res, /* status */ 400, {});
+              }
+            }"#,
+        );
+        assert!(entries[0]
+            .nodes
+            .iter()
+            .any(|node| node.external == "http:response:400"));
     }
 
     #[test]
@@ -1360,6 +1469,34 @@ async function handleApi(path: string, method: string, res: unknown) {
             .nodes
             .iter()
             .any(|node| node.terminal && node.external == "return"));
+    }
+
+    #[test]
+    fn evaluates_throw_expression_calls_before_transferring_to_catch() {
+        let entries = extract_typescript(
+            r#"function route(path: string, res: unknown) {
+              if (path === "/throw-call") {
+                try { throw makeError(); }
+                catch (error) { sendJson(res, 500, { error }); }
+              }
+            }"#,
+        );
+        let entry = &entries[0];
+        let call = entry
+            .nodes
+            .iter()
+            .find(|node| node.label == "Call makeError")
+            .expect("throw expression call");
+        let throw = entry
+            .nodes
+            .iter()
+            .find(|node| node.kind == "throw")
+            .expect("throw node");
+        assert!(call.ordinal < throw.ordinal);
+        assert!(entry
+            .edges
+            .iter()
+            .any(|edge| edge.from == call.id && edge.to == throw.id));
     }
 
     #[test]

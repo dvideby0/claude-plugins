@@ -340,6 +340,38 @@ describe("evaluation scorer", () => {
     expect(flowAcceptanceFailures(scores, flowOracle.thresholds, [])).toContain(
       "1 relation evidence anchor(s) do not match the oracle.",
     );
+
+    const surplusCandidate: CandidateFlowGraph = {
+      ...candidate,
+      relations: [
+        candidate.relations[0]!,
+        {
+          ...candidate.relations[0]!,
+          id: "effect-second",
+          evidence: { path: "src/a.ts", startLine: 8 },
+        },
+        {
+          ...candidate.relations[0]!,
+          id: "effect-surplus",
+          evidence: { path: "src/a.ts", startLine: 12 },
+        },
+      ],
+      paths: candidate.paths.map((path, index) =>
+        index === 1
+          ? { ...path, relations: ["effect-second"], terminalRelation: "effect-second" }
+          : path,
+      ),
+    };
+    const surplusScores = scoreFlowGraph(surplusCandidate, flowOracle);
+    expect(surplusScores.relations).toMatchObject({ precision: 1, recall: 1 });
+    expect(surplusScores.paths).toMatchObject({ precision: 1, recall: 1 });
+    expect(surplusScores.missingRelationEvidence).toEqual([]);
+    expect(surplusScores.surplusRelationEvidence.map((relation) => relation.id)).toEqual([
+      "effect-surplus",
+    ]);
+    expect(flowAcceptanceFailures(surplusScores, flowOracle.thresholds, [])).toContain(
+      "1 relation evidence anchor(s) do not match the oracle.",
+    );
   });
 
   it("only credits references produced by the measured compiler generation", () => {

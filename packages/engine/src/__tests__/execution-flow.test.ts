@@ -75,7 +75,7 @@ withNative("deterministic execution flow", () => {
       gaps: 0,
       producer: {
         id: "sdlc-http-route-adapter",
-        version: "3",
+        version: "4",
         kind: "framework",
       },
       certainty: "inferred",
