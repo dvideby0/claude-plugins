@@ -1835,6 +1835,14 @@ button:disabled {
   border-color: var(--warn);
 }
 
+.execution-step.resolution-unresolved {
+  border-color: var(--warn);
+}
+
+.execution-step.resolution-unresolved .execution-step-kind {
+  color: var(--warn);
+}
+
 .execution-step-kind {
   color: var(--faint);
   font-size: 9px;

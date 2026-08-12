@@ -192,8 +192,14 @@ bodies, and recognizes concrete HTTP response effects only through the bounded
 response-helper contract. Native SQLite enumerates paths with node/path limits
 and cycle detection. Unsupported loop/switch control and bounded-input
 truncation are preserved as visible diagnostics and keep affected paths
-incomplete. The adapter currently proves the product shape for one measured
-route family; it does not fill the general gaps listed above.
+incomplete. Call and await nodes now expose whether their target actually
+resolved; unresolved dispatch is counted and source-anchored as a gap, and any
+path through it stays incomplete even when a later HTTP response is recognized.
+A checked-in dogfood regression scans this repository itself and locks the
+branches, response effects, evidence, provenance, and resolution limits for
+`GET /api/search`, `ANY /api/watch`, and `POST /api/workspaces`. The adapter
+still has provider-neutral precision/recall scoring for only one HTTP fixture
+and does not fill the general gaps listed above.
 
 The gap workflow in [`packages/engine/src/graph/gaps.ts`](../packages/engine/src/graph/gaps.ts) and asserted relations in [`packages/engine/src/graph/relations.ts`](../packages/engine/src/graph/relations.ts) are valuable escape hatches. Current, evidence-backed assertions can now be enabled as a separately labeled overlay in deterministic execution-flow queries without changing path facts. The older call-graph and trace queries do not yet expose the same overlay, so teaching the system a missed relationship still does not improve every answer consistently.
 

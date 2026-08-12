@@ -165,3 +165,11 @@ and evidence, and identifies the deterministic nodes it touches. Overlay rows
 never alter path completeness, certainty, terminal effects, or deterministic
 graph structure; stale assertions remain available through the relations query
 for review but are not presented as current execution context.
+
+Execution-flow response schema v3 makes call-target resolution explicit on
+every node. A `call` or `await` without a resolved destination is returned as
+`resolution: unresolved`, contributes to the entry's gap count, emits a source-
+anchored diagnostic, and makes each path that traverses it incomplete. Resolved
+calls, external effects, and nodes for which resolution does not apply remain
+distinct states. The query does not guess a same-file or member-call target from
+its spelling merely to make a path look complete.
