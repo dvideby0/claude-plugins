@@ -406,6 +406,22 @@ export function unindexedFindingFileView(
   };
 }
 
+/**
+ * What the repository inventory left out, and why.
+ *
+ * Map coverage is only a trustworthy number when the denominator is
+ * explainable. Packaged output once entered the map as an unexplained file
+ * precisely because nothing recorded this.
+ */
+export interface InputBoundaryView {
+  /** Every decision to exclude a path, including reasons not listed per path. */
+  excludedTotal: number;
+  byReason: Array<{ reason: string; paths: number; recorded: number }>;
+  samples: Array<{ path: string; directory: boolean; reason: string; detail: string }>;
+  /** True when more decisions were made than are listed in `samples`. */
+  truncated: boolean;
+}
+
 export interface OverviewView {
   languages: Record<string, number>;
   /** Files nothing imports — entry points, dead code, or unreachable. */
@@ -414,6 +430,61 @@ export interface OverviewView {
   hotspots: Array<{ path: string; importers: number; loc: number; findings: number }>;
   lastRun: { kind: string; startedAt: string; gitSha: string | null } | null;
   tools: Array<{ tool: string; status: string; findings: number; detail: string | null }>;
+  inputBoundary: InputBoundaryView;
+}
+
+const OVERVIEW_EXCLUSION_SAMPLES = 40;
+
+export function inputBoundaryView(db: Db): InputBoundaryView {
+  const byReason = db.all<{ reason: string; paths: number; recorded: number }>(
+    `SELECT reason, paths, recorded FROM exclusion_summary
+      WHERE reason NOT IN ('source', 'noise')
+      ORDER BY paths DESC, reason`,
+  );
+  const samples = db.all<{ path: string; directory: number; reason: string; detail: string }>(
+    `SELECT path, directory, reason, detail FROM excluded_paths
+      ORDER BY directory DESC, path
+      LIMIT ?`,
+    [OVERVIEW_EXCLUSION_SAMPLES],
+  );
+  const recordedTotal = byReason.reduce((total, row) => total + row.recorded, 0);
+  return {
+    excludedTotal: byReason.reduce((total, row) => total + row.paths, 0),
+    byReason,
+    samples: samples.map((row) => ({
+      path: row.path,
+      directory: row.directory === 1,
+      reason: row.reason,
+      detail: row.detail,
+    })),
+    truncated: samples.length < recordedTotal,
+  };
+}
+
+/**
+ * Why one path is not in the index.
+ *
+ * A pruned directory answers for everything beneath it, so the longest
+ * matching prefix is the decision that actually applied.
+ */
+export function exclusionForPath(
+  db: Db,
+  path: string,
+): { path: string; directory: boolean; reason: string; detail: string } | null {
+  const row = db.get<{ path: string; directory: number; reason: string; detail: string }>(
+    `SELECT path, directory, reason, detail FROM excluded_paths
+      WHERE path = ?1 OR (directory = 1 AND ?1 LIKE path || '/%')
+      ORDER BY LENGTH(path) DESC
+      LIMIT 1`,
+    [path],
+  );
+  if (!row) return null;
+  return {
+    path: row.path,
+    directory: row.directory === 1,
+    reason: row.reason,
+    detail: row.detail,
+  };
 }
 
 export function overviewView(db: Db): OverviewView {
@@ -467,5 +538,6 @@ export function overviewView(db: Db): OverviewView {
             "SELECT tool, status, findings, detail FROM tool_runs WHERE run_id = ? ORDER BY tool",
             [lastAnalysis.id],
           ),
+    inputBoundary: inputBoundaryView(db),
   };
 }

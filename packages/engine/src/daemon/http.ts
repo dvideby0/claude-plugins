@@ -18,10 +18,10 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { dirname, extname, join, normalize } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { EngineStatus, WorkspaceStatus } from "@sdlc/protocol";
-import { closeDb, getDb, getExistingDb } from "../db/db.js";
+import { closeDb, getDb, getExistingDb, type Db } from "../db/db.js";
 import { loadPlan } from "../plan/risk.js";
 import { scan } from "../scan/scan.js";
-import { sourcePathPolicy } from "../scan/source.js";
+import { sourcePathDecision } from "../scan/source.js";
 import { indexedSourceSignature } from "../scan/signature.js";
 import { createMcpServer, ENGINE_VERSION } from "../mcp/server.js";
 import { checkOrigin, checkToken, checkUiBootstrap } from "./auth.js";
@@ -29,6 +29,7 @@ import { connectHarness, detectHarnesses, disconnectHarness, type BridgeCommand 
 import { suppress } from "../findings/record.js";
 import { buildReports } from "../report/export.js";
 import {
+  exclusionForPath,
   findingsView,
   fileView,
   graphView,
@@ -184,6 +185,45 @@ function uiDir(): string {
     dir = dirname(dir);
   }
   throw new Error("Engine ui/ not found.");
+}
+
+const EXCLUSION_EXPLANATIONS: Record<string, string> = {
+  app_owned_artifact: "it is storage this application owns",
+  packaged_application: "it is inside a packaged application bundle",
+  generated_output: "this repository's own .gitignore calls it generated output",
+  ignored_directory: "it is inside a dependency, build or tool-cache directory",
+  hidden_path: "it is inside a hidden configuration directory",
+  unsupported_extension: "no grammar or classification covers its file type",
+  too_large: "it is larger than the indexing size limit",
+  binary_content: "it is binary rather than text",
+  unreadable: "it could not be read",
+};
+
+/**
+ * "Unknown file." is true but useless. A path is missing for a reason the
+ * application already recorded, so say which rule dropped it and what to
+ * change — an unexplained absence is what made packaged output look like a
+ * mystery file on the map in the first place.
+ */
+function unknownFileError(db: Db, root: string, path: string): { error: string } {
+  const recorded = exclusionForPath(db, path);
+  const decision = recorded ? null : sourcePathDecision(path, root, false);
+  const reason = recorded?.reason ?? decision?.reason;
+  const detail = recorded?.detail ?? decision?.detail ?? "";
+
+  if (!reason || reason === "source" || reason === "noise") {
+    return { error: `${path} is not in this workspace's index. Re-index to pick up new files.` };
+  }
+
+  const because = EXCLUSION_EXPLANATIONS[reason] ?? "the repository input policy excluded it";
+  const rule = detail ? ` (${detail})` : "";
+  const scope =
+    recorded?.directory && recorded.path !== path ? ` Its whole directory ${recorded.path} was skipped.` : "";
+  return {
+    error:
+      `${path} is not indexed because ${because}${rule}.${scope} ` +
+      `Change that rule, or index a workspace where this path is source.`,
+  };
 }
 
 function sendJson(res: ServerResponse, status: number, payload: unknown): void {
@@ -881,7 +921,7 @@ export function createHttpServer(options: HttpServerOptions): HttpServerHandle {
                 ),
               );
           if (!hasFinding) {
-            sendJson(res, 404, { error: "Unknown file." });
+            sendJson(res, 404, unknownFileError(db, workspace.root, target));
             return true;
           }
           try {
@@ -895,12 +935,12 @@ export function createHttpServer(options: HttpServerOptions): HttpServerHandle {
             const view =
               indexedView ??
               unindexedFindingFileView(db, target, {
-                lang: sourcePathPolicy(target).language,
+                lang: sourcePathDecision(target, workspace.root, false).language,
                 loc: source.totalLines,
                 contentSha,
               });
             if (!view) {
-              sendJson(res, 404, { error: "Unknown file." });
+              sendJson(res, 404, unknownFileError(db, workspace.root, target));
               return true;
             }
             sendJson(res, 200, {
@@ -919,12 +959,12 @@ export function createHttpServer(options: HttpServerOptions): HttpServerHandle {
             const unavailableView =
               indexedView ??
               unindexedFindingFileView(db, target, {
-                lang: sourcePathPolicy(target).language,
+                lang: sourcePathDecision(target, workspace.root, false).language,
                 loc: 0,
                 contentSha: "",
               });
             if (!unavailableView) {
-              sendJson(res, 404, { error: "Unknown file." });
+              sendJson(res, 404, unknownFileError(db, workspace.root, target));
               return true;
             }
             sendJson(res, 200, {

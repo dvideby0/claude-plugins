@@ -1,8 +1,16 @@
 import { EventEmitter } from "node:events";
 import type { FSWatcher } from "node:fs";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { hasTypedConfigChange, WatchRefreshQueue } from "../daemon/watch-refresh.js";
 import { isInterestingChange, WorkspaceWatcher } from "../daemon/watcher.js";
+import { cleanup, makeProject } from "./helpers.js";
+
+/**
+ * The watcher asks the repository input policy about paths relative to a root.
+ * These cases exercise path-shape rules only, so a root with no `.gitignore`
+ * keeps them independent of any fixture on disk.
+ */
+const watchRoot = "/watch-policy-fixture";
 
 describe("watch refresh queue", () => {
   it("retains changes while a foreground index job is running", async () => {
@@ -105,30 +113,63 @@ describe("watch refresh queue", () => {
   });
 
   it("watches indexed dotfiles and configuration without watching hidden local state", () => {
-    expect(isInterestingChange(".mcp.json")).toBe(true);
-    expect(isInterestingChange(".eslintrc.json")).toBe(true);
-    expect(isInterestingChange(".claude/settings.local.json")).toBe(false);
-    expect(isInterestingChange(".cursor/mcp.json")).toBe(false);
-    expect(isInterestingChange(".codex/config.toml")).toBe(false);
-    expect(isInterestingChange(".opencode/config.json")).toBe(false);
-    expect(isInterestingChange(".github/workflows/review.yml")).toBe(true);
-    expect(isInterestingChange(".git/config")).toBe(false);
-    expect(isInterestingChange(".DS_Store")).toBe(false);
-    expect(isInterestingChange("src/.#app.ts")).toBe(false);
+    expect(isInterestingChange(watchRoot, ".mcp.json")).toBe(true);
+    expect(isInterestingChange(watchRoot, ".eslintrc.json")).toBe(true);
+    expect(isInterestingChange(watchRoot, ".claude/settings.local.json")).toBe(false);
+    expect(isInterestingChange(watchRoot, ".cursor/mcp.json")).toBe(false);
+    expect(isInterestingChange(watchRoot, ".codex/config.toml")).toBe(false);
+    expect(isInterestingChange(watchRoot, ".opencode/config.json")).toBe(false);
+    expect(isInterestingChange(watchRoot, ".github/workflows/review.yml")).toBe(true);
+    expect(isInterestingChange(watchRoot, ".git/config")).toBe(false);
+    expect(isInterestingChange(watchRoot, ".DS_Store")).toBe(false);
+    expect(isInterestingChange(watchRoot, "src/.#app.ts")).toBe(false);
   });
 
   it("rescans for directory rename events that have no file extension", () => {
-    expect(isInterestingChange("src/old", "rename")).toBe(true);
-    expect(isInterestingChange("src/new", "rename")).toBe(true);
-    expect(isInterestingChange("src/old", "change")).toBe(false);
-    expect(isInterestingChange("node_modules/pkg", "rename")).toBe(false);
+    expect(isInterestingChange(watchRoot, "src/old", "rename")).toBe(true);
+    expect(isInterestingChange(watchRoot, "src/new", "rename")).toBe(true);
+    expect(isInterestingChange(watchRoot, "src/old", "change")).toBe(false);
+    expect(isInterestingChange(watchRoot, "node_modules/pkg", "rename")).toBe(false);
   });
 
   it("ignores every generated and vendor directory excluded by scanning", () => {
     for (const directory of [".nuxt", ".svelte-kit", ".tox", "vendor", ".idea", ".vscode"]) {
-      expect(isInterestingChange(`${directory}/generated.ts`)).toBe(false);
-      expect(isInterestingChange(`${directory}/nested`, "rename")).toBe(false);
+      expect(isInterestingChange(watchRoot, `${directory}/generated.ts`)).toBe(false);
+      expect(isInterestingChange(watchRoot, `${directory}/nested`, "rename")).toBe(false);
     }
+  });
+
+  it("does not rescan for lockfiles, which are inventory but never evidence", () => {
+    // These churn on every install. Refreshing on them would re-walk the whole
+    // repository to learn nothing.
+    expect(isInterestingChange(watchRoot, "package-lock.json")).toBe(false);
+    expect(isInterestingChange(watchRoot, "pnpm-lock.yaml")).toBe(false);
+    expect(isInterestingChange(watchRoot, "web/app.min.js")).toBe(false);
+  });
+});
+
+describe("watcher and scan share one input policy", () => {
+  let root: string;
+  afterEach(async () => {
+    if (root) await cleanup(root);
+  });
+
+  it("skips packaged output but still rescans when the policy itself changes", async () => {
+    root = await makeProject({
+      ".gitignore": "release/\n",
+      "src/app.ts": "export const app = 1;\n",
+      "release/mac-arm64/App.app/Contents/Resources/app/preload.cjs": "// packaged\n",
+    });
+
+    expect(isInterestingChange(root, "src/app.ts")).toBe(true);
+    expect(
+      isInterestingChange(root, "release/mac-arm64/App.app/Contents/Resources/app/preload.cjs"),
+    ).toBe(false);
+
+    // `.gitignore` is never indexed, but editing it changes which files are.
+    // A watcher that ignored it would leave the inventory stale until the next
+    // manual scan.
+    expect(isInterestingChange(root, ".gitignore")).toBe(true);
   });
 });
 

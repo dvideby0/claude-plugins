@@ -115,10 +115,43 @@ export interface SourceTextFile {
   content: string;
 }
 
-export interface SourcePathPolicy {
+/**
+ * Why a path is or is not part of the trusted inventory.
+ *
+ * A closed value set shared with the Rust input policy and stored in the
+ * workspace database, so the strings are part of the contract, not display text.
+ */
+export const EXCLUSION_REASONS = ["app_owned_artifact", "packaged_application", "generated_output", "ignored_directory", "hidden_path", "unsupported_extension", "too_large", "binary_content", "unreadable", "noise", "source"] as const;
+
+export type ExclusionReason = (typeof EXCLUSION_REASONS)[number];
+
+export interface SourcePathDecision {
   language: SourceLanguage;
-  ignored: boolean;
-  noise: boolean;
+  included: boolean;
+  /** Indexed files that are still never parsed: lockfiles and bundled output. */
+  parseable: boolean;
+  reason: ExclusionReason;
+  /** Which rule decided it, phrased for a person. */
+  detail: string;
+  /**
+   * Not indexed, but editing it changes the source set, so a watch refresh
+   * must still run. Today: `.gitignore`.
+   */
+  policyInput: boolean;
+}
+
+export interface SourceExclusion {
+  path: string;
+  directory: boolean;
+  reason: ExclusionReason;
+  detail: string;
+}
+
+/** `paths` is the true count; `recorded` is how many are listed individually. */
+export interface ExclusionCount {
+  reason: ExclusionReason;
+  paths: number;
+  recorded: number;
 }
 
 interface NativeFile {
@@ -243,11 +276,23 @@ export interface NativeSnapshotManifest {
 }
 
 export interface NativeCore {
-  scanRepo(root: string): Promise<{ files: NativeFile[]; walkMs: number; parseMs: number }>;
+  scanRepo(root: string): Promise<{
+    files: NativeFile[];
+    exclusions: SourceExclusion[];
+    exclusionSummary: ExclusionCount[];
+    diagnostic?: string;
+    walkMs: number;
+    parseMs: number;
+  }>;
   /** Read source text through the same bounded inventory policy used by scans. */
   readRepoFiles(root: string): Promise<SourceTextFile[]>;
-  /** Classify watcher paths through the Rust-owned repository policy. */
-  sourcePathPolicy(path: string): SourcePathPolicy;
+  /**
+   * Ask the repository input policy about one path, and why.
+   *
+   * The same function the scan walk uses, so a watcher decision and an
+   * inventory decision cannot disagree.
+   */
+  sourcePathDecision(path: string, root?: string, directory?: boolean): SourcePathDecision;
   /** Present in native cores that can consume official SCIP protobuf output. */
   inspectScip?(path: string): Promise<NativeScipSummary>;
   /** Decode bounded semantic facts without exposing raw protobufs to Node. */
@@ -283,7 +328,7 @@ export function loadNative(): NativeCore | null {
     if (
       typeof candidate.scanRepo !== "function" ||
       typeof candidate.readRepoFiles !== "function" ||
-      typeof candidate.sourcePathPolicy !== "function"
+      typeof candidate.sourcePathDecision !== "function"
     ) {
       throw new Error("the installed binary does not expose the current source-inventory API");
     }
@@ -306,8 +351,21 @@ export function requireNative(): NativeCore {
   );
 }
 
-export function sourcePathPolicy(path: string): SourcePathPolicy {
-  return requireNative().sourcePathPolicy(path);
+/**
+ * Classify one path through the Rust-owned input policy.
+ *
+ * Pass `root` so the repository's own committed `.gitignore` participates;
+ * without it only the path shape decides. `directory` separates `dist/` the
+ * build directory from `dist.ts` the source file — the one thing a path string
+ * cannot say by itself. Omit it when the caller genuinely cannot tell, which is
+ * the watcher's case for a rename.
+ */
+export function sourcePathDecision(
+  path: string,
+  root?: string,
+  directory?: boolean,
+): SourcePathDecision {
+  return requireNative().sourcePathDecision(path, root, directory);
 }
 
 export async function readSourceFiles(projectRoot: string): Promise<SourceTextFile[]> {
@@ -316,6 +374,11 @@ export async function readSourceFiles(projectRoot: string): Promise<SourceTextFi
 
 export interface CollectResult {
   files: SourceFile[];
+  /** Recorded decisions to keep paths out, so absence is never unexplained. */
+  exclusions: SourceExclusion[];
+  exclusionSummary: ExclusionCount[];
+  /** Set when the walk relaxed a rule rather than report an empty repository. */
+  diagnostic: string | null;
   engine: "native";
   walkMs: number;
   parseMs: number;
@@ -327,6 +390,9 @@ export async function collectFiles(projectRoot: string): Promise<CollectResult> 
     engine: "native",
     walkMs: result.walkMs,
     parseMs: result.parseMs,
+    exclusions: result.exclusions,
+    exclusionSummary: result.exclusionSummary,
+    diagnostic: result.diagnostic ?? null,
     files: result.files.map((file) => ({
       path: file.path,
       lang: file.lang as SourceLanguage,

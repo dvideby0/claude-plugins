@@ -49,6 +49,10 @@ export interface ScanResult {
   executionEntries: number;
   languages: Record<string, number>;
   gitAvailable: boolean;
+  /** Paths the input policy kept out, so coverage is never silently partial. */
+  filesExcluded: number;
+  /** Set when the walk relaxed a rule rather than report an empty repository. */
+  inputDiagnostic: string | null;
   /** The bundled Rust source engine. */
   engine: "native";
   /** True when the index was rebuilt because it predated the current extractor. */
@@ -98,7 +102,8 @@ async function doScan(projectRoot: string, options: ScanOptions = {}): Promise<S
   const storedVersion = Number(
     db.get<{ value: string }>("SELECT value FROM meta WHERE key = 'extraction_version'")?.value ?? 0,
   );
-  const { files, engine } = await collectFiles(projectRoot);
+  const { files, engine, exclusions, exclusionSummary, diagnostic } =
+    await collectFiles(projectRoot);
   const storedEngine =
     db.get<{ value: string }>("SELECT value FROM meta WHERE key = 'extraction_engine'")?.value ??
     "unknown";
@@ -328,6 +333,32 @@ async function doScan(projectRoot: string, options: ScanOptions = {}): Promise<S
       );
     }
 
+    // Why each absent path is absent. Replaced wholesale, which is sound
+    // because every refresh — including a watch refresh — is a full re-walk,
+    // so there is no incremental exclusion bookkeeping to get wrong.
+    db.run("DELETE FROM excluded_paths");
+    db.run("DELETE FROM exclusion_summary");
+    for (const exclusion of exclusions) {
+      db.run(
+        `INSERT OR REPLACE INTO excluded_paths(path, directory, reason, detail, run_id)
+         VALUES(?, ?, ?, ?, ?)`,
+        [
+          exclusion.path,
+          exclusion.directory ? 1 : 0,
+          exclusion.reason,
+          exclusion.detail,
+          runId,
+        ],
+      );
+    }
+    for (const count of exclusionSummary) {
+      db.run(
+        `INSERT OR REPLACE INTO exclusion_summary(reason, paths, recorded, run_id)
+         VALUES(?, ?, ?, ?)`,
+        [count.reason, count.paths, count.recorded, runId],
+      );
+    }
+
     // Re-resolve every edge: a newly added file can resolve an import that was
     // external on the previous run.
     const resolver = createResolver(seen, aliases);
@@ -404,6 +435,10 @@ async function doScan(projectRoot: string, options: ScanOptions = {}): Promise<S
     executionEntries: db.count("SELECT COUNT(*) AS n FROM execution_entries"),
     languages,
     gitAvailable: git.available,
+    filesExcluded: exclusionSummary
+      .filter((count) => count.reason !== "source" && count.reason !== "noise")
+      .reduce((total, count) => total + count.paths, 0),
+    inputDiagnostic: diagnostic,
     engine,
     upgraded: stale,
   };

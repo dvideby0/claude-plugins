@@ -25,6 +25,7 @@ use std::path::Path;
 mod database;
 mod git_changes;
 mod http_flow;
+mod input_policy;
 mod parse;
 mod provider;
 mod task_context;
@@ -157,9 +158,37 @@ pub struct NativeFile {
     pub execution_entries: Vec<NativeExecutionEntry>,
 }
 
+/// One recorded decision to keep a path out of the inventory.
+///
+/// A pruned directory is one entry, not one per file underneath it — the
+/// interior is never enumerated.
+#[napi(object)]
+pub struct NativeExclusion {
+    pub path: String,
+    pub directory: bool,
+    /// Stable machine key from the input policy's closed reason set.
+    pub reason: String,
+    /// Which rule matched, for a person reading it.
+    pub detail: String,
+}
+
+/// Per-reason totals. `paths` counts every decision; `recorded` counts the
+/// ones listed individually, so a bounded sample is never read as the whole.
+#[napi(object)]
+pub struct NativeExclusionCount {
+    pub reason: String,
+    pub paths: u32,
+    pub recorded: u32,
+}
+
 #[napi(object)]
 pub struct NativeScan {
     pub files: Vec<NativeFile>,
+    pub exclusions: Vec<NativeExclusion>,
+    pub exclusion_summary: Vec<NativeExclusionCount>,
+    /// Set when the walk had to relax a rule rather than report an empty
+    /// repository, so the workspace can say what did not happen.
+    pub diagnostic: Option<String>,
     pub walk_ms: u32,
     pub parse_ms: u32,
 }
@@ -174,10 +203,19 @@ pub struct NativeSourceFile {
 }
 
 #[napi(object)]
-pub struct NativePathPolicy {
+pub struct NativePathDecision {
     pub language: String,
-    pub ignored: bool,
-    pub noise: bool,
+    /// True when this path is part of the trusted inventory.
+    pub included: bool,
+    /// True when it is also parsed for evidence. Lockfiles are indexed but not.
+    pub parseable: bool,
+    /// Stable machine key from the input policy's closed reason set.
+    pub reason: String,
+    /// Which rule decided it, phrased for a person.
+    pub detail: String,
+    /// Not indexed, but editing it changes the source set — the watcher must
+    /// still refresh on it. Today: `.gitignore`.
+    pub policy_input: bool,
 }
 
 fn require_dir(root: &str) -> Result<()> {
@@ -195,15 +233,19 @@ fn scan_sync(root: &str) -> NativeScan {
     let path = Path::new(root);
 
     let started = std::time::Instant::now();
-    let scanned = walk::walk(path);
+    let policy = input_policy::InputPolicy::for_root(path);
+    let outcome = walk::walk(path, &policy);
     let walk_ms = started.elapsed().as_millis() as u32;
 
     let started = std::time::Instant::now();
-    let files: Vec<NativeFile> = scanned
+    let files: Vec<NativeFile> = outcome
+        .files
         .par_iter()
         .map_init(parse::Engines::new, |engines, file| {
+            // The input policy already decided whether this file is evidence;
+            // re-deriving it here is how the two used to disagree.
             let parseable =
-                !walk::is_noise(&file.path) && parse::grammar_for(&file.path, file.lang).is_some();
+                file.parseable && parse::grammar_for(&file.path, file.lang).is_some();
 
             let parsed = if parseable {
                 parse::parse(engines, &file.path, file.lang, &file.content)
@@ -315,6 +357,26 @@ fn scan_sync(root: &str) -> NativeScan {
 
     NativeScan {
         files,
+        exclusions: outcome
+            .excluded
+            .into_iter()
+            .map(|entry| NativeExclusion {
+                path: entry.path,
+                directory: entry.directory,
+                reason: entry.reason.to_string(),
+                detail: entry.detail,
+            })
+            .collect(),
+        exclusion_summary: outcome
+            .summary
+            .into_iter()
+            .map(|count| NativeExclusionCount {
+                reason: count.reason.to_string(),
+                paths: count.paths,
+                recorded: count.recorded,
+            })
+            .collect(),
+        diagnostic: outcome.diagnostic,
         walk_ms,
         parse_ms,
     }
@@ -378,14 +440,39 @@ pub fn git_changes(
     }))
 }
 
-/// Classify a watcher path through the Rust-owned repository policy.
+/// Ask the repository input policy about one path, and why.
+///
+/// This is the same function the scan walk uses, so a watcher decision and an
+/// inventory decision cannot disagree. `root` reads the repository's committed
+/// `.gitignore`; pass `None` to classify a bare path on shape alone.
+/// `directory` distinguishes `dist/` the build directory from `dist.ts` the
+/// source file, which is the one thing a path string cannot say by itself.
 #[napi]
-pub fn source_path_policy(path: String) -> NativePathPolicy {
+pub fn source_path_decision(
+    path: String,
+    root: Option<String>,
+    directory: Option<bool>,
+) -> NativePathDecision {
     let normalized = path.replace('\\', "/");
-    NativePathPolicy {
-        language: walk::classify(&normalized).to_string(),
-        ignored: walk::is_watch_ignored_path(&normalized),
-        noise: walk::is_noise(&normalized),
+    let policy = match root.as_deref() {
+        Some(root) => input_policy::InputPolicy::for_root(Path::new(root)),
+        None => input_policy::InputPolicy::path_only(),
+    };
+    let kind = match directory {
+        Some(true) => input_policy::EntryKind::Directory,
+        Some(false) => input_policy::EntryKind::File,
+        // A recursive watcher reports a directory rename as a bare path with
+        // no extension and nothing left to stat.
+        None => input_policy::EntryKind::Unknown,
+    };
+    let decision = policy.decide(&normalized, kind);
+    NativePathDecision {
+        language: decision.language.to_string(),
+        included: decision.included(),
+        parseable: decision.parseable(),
+        reason: decision.reason.key().to_string(),
+        detail: decision.detail,
+        policy_input: decision.policy_input,
     }
 }
 
@@ -410,7 +497,9 @@ fn search_sync(
     if cap == 0 {
         return Vec::new();
     }
-    let files = walk::walk(Path::new(root));
+    let root_path = Path::new(root);
+    let policy = input_policy::InputPolicy::for_root(root_path);
+    let files = walk::walk(root_path, &policy).files;
     let needle = text_filter.map(str::to_lowercase);
     // Each file and the shared aggregate are capped. A broad query must never
     // allocate one result per identifier only to truncate after collection.
@@ -425,7 +514,7 @@ fn search_sync(
     let matches = std::sync::Mutex::new(Vec::<NativeMatch>::with_capacity(cap));
     files
         .par_iter()
-        .filter(|file| wanted.iter().any(|lang| lang == file.lang) && !walk::is_noise(&file.path))
+        .filter(|file| wanted.iter().any(|lang| lang == file.lang) && file.parseable)
         .for_each(|file| {
             let hits = parse::search(
                 &file.path,
@@ -544,7 +633,10 @@ impl Task for ReadRepoFilesTask {
     type JsValue = Vec<NativeSourceFile>;
 
     fn compute(&mut self) -> Result<Self::Output> {
-        Ok(walk::walk(Path::new(&self.root))
+        let root = Path::new(&self.root);
+        let policy = input_policy::InputPolicy::for_root(root);
+        Ok(walk::walk(root, &policy)
+            .files
             .into_iter()
             .map(|file| NativeSourceFile {
                 path: file.path,
