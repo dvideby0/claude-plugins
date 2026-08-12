@@ -155,3 +155,13 @@ agent responses project meaningful operations into the existing `register`,
 relations, while keeping sequence edges as presentation/CFG detail. Unsupported
 control constructs become explicit gap nodes with diagnostics rather than
 fabricated fact edges.
+
+Execution-flow response schema v2 adds an optional `assertedOverlay` beside the
+deterministic nodes, edges, and paths. It is disabled by default. When enabled,
+the native query returns only authored relations whose evidence-source file is
+still present and has the same indexed content hash recorded when the relation
+was written. Every relation remains labeled `asserted`, retains its confidence
+and evidence, and identifies the deterministic nodes it touches. Overlay rows
+never alter path completeness, certainty, terminal effects, or deterministic
+graph structure; stale assertions remain available through the relations query
+for review but are not presented as current execution context.

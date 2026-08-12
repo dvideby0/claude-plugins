@@ -262,6 +262,6 @@ export declare class NativeDatabase {
    * framework adapters. Path enumeration remains inside the native storage
    * boundary and terminates on cycles and configured limits.
    */
-  executionFlow(entryId?: string | undefined | null, maxPaths?: number | undefined | null): string
+  executionFlow(entryId?: string | undefined | null, maxPaths?: number | undefined | null, includeAssertions?: boolean | undefined | null): string
   close(): void
 }

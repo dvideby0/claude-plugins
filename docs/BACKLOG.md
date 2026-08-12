@@ -273,8 +273,14 @@ an explicitly required measured provider now fails instead of passing
 unmeasured when its adapter produces no graph. The real `GET /api/search` route in
 this repository produces the same three response paths with resolved imported
 targets. This is the first vertical slice, not FLOW-001 completion: two more
-real flows, switch/loop/early-return/uncaught-exception coverage, asserted
-overlays, and broader path evaluation remain open.
+real flows, switch/loop/early-return/uncaught-exception coverage, and broader
+path evaluation remain open. A repository dogfood scan currently recognizes 12
+non-fixture daemon HTTP entries, but only `GET /api/search` has a checked-in
+entry-to-effect evaluation, so the broader count is not claimed as measured
+coverage. Current authored relations can now be requested through the native
+query, HTTP API, and MCP `flow` operation and displayed with the desktop's
+opt-in Asserted overlay. The overlay remains separate from deterministic paths,
+excludes stale evidence, and cannot change path certainty or completeness.
 
 ### UI-001: Question-centered code and flow workspace
 

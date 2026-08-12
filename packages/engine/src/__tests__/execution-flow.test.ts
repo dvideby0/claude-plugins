@@ -4,6 +4,7 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { getDb } from "../db/db.js";
 import { createMcpServer } from "../mcp/server.js";
 import { resolveTypes } from "../graph/typed.js";
+import { relate } from "../graph/relations.js";
 import { scan } from "../scan/scan.js";
 import { loadNative } from "../scan/source.js";
 import { cleanup, makeProject } from "./helpers.js";
@@ -311,6 +312,90 @@ export function route(path: string, res: unknown): void {
     });
   });
 
+  it("returns current authored relations only in the opt-in asserted overlay", async () => {
+    root = await makeProject(PROJECT);
+    await scan(root, { full: true, kind: "execution-assertions" });
+    const db = await getDb(root);
+    const entry = db.executionFlow().entries[0];
+    const relation = relate(db, {
+      kind: "calls",
+      srcPath: "src/search.ts",
+      srcSymbol: "crossQuery",
+      dstPath: "src/result-store.ts",
+      dstSymbol: "persistResults",
+      label: "registered result-store writer",
+      evidence: "export async function crossQuery(value: string): Promise<string[]> { return [value]; }",
+      evidenceLine: 6,
+      confidence: "high",
+    });
+
+    const deterministic = db.executionFlow(entry.id);
+    const withAssertions = db.executionFlow(entry.id, 24, true);
+    expect(deterministic.schemaVersion).toBe(2);
+    expect(deterministic.selected?.assertedOverlay).toMatchObject({
+      enabled: false,
+      relations: [],
+      truncated: false,
+    });
+    expect(withAssertions.selected?.nodes).toEqual(deterministic.selected?.nodes);
+    expect(withAssertions.selected?.edges).toEqual(deterministic.selected?.edges);
+    expect(withAssertions.selected?.paths).toEqual(deterministic.selected?.paths);
+    expect(withAssertions.selected?.assertedOverlay.relations).toEqual([
+      expect.objectContaining({
+        kind: "calls",
+        label: "registered result-store writer",
+        from: { path: "src/search.ts", symbol: "crossQuery" },
+        to: { path: "src/result-store.ts", symbol: "persistResults" },
+        evidence: expect.objectContaining({ path: "src/search.ts", startLine: 6 }),
+        provenance: {
+          source: "agent",
+          certainty: "asserted",
+          confidence: "high",
+          freshness: "current",
+        },
+        anchors: [
+          expect.objectContaining({
+            relationEndpoint: "source",
+          }),
+        ],
+      }),
+    ]);
+
+    // Older stores accepted arbitrary numeric evidence lines. One malformed
+    // authored row must not suppress the deterministic flow response.
+    db.run("UPDATE relations SET evidence_line = -1 WHERE id = ?", [relation.id]);
+    expect(
+      db.executionFlow(entry.id, 24, true).selected?.assertedOverlay.relations[0]?.evidence
+        .startLine,
+    ).toBeNull();
+
+    const { writeFile } = await import("node:fs/promises");
+    await writeFile(`${root}/src/search.ts`, `${PROJECT["src/search.ts"]}\n// changed`);
+    await scan(root, { kind: "execution-assertion-stale" });
+    expect(db.executionFlow(entry.id, 24, true).selected?.assertedOverlay.relations).toEqual([]);
+  });
+
+  it("bounds asserted overlay candidates and reports truncation", async () => {
+    root = await makeProject(PROJECT);
+    await scan(root, { full: true, kind: "execution-assertion-limit" });
+    const db = await getDb(root);
+    const entry = db.executionFlow().entries[0];
+    for (let index = 0; index < 129; index++) {
+      relate(db, {
+        kind: "calls",
+        srcPath: "src/search.ts",
+        srcSymbol: "crossQuery",
+        dstPath: `src/result-store-${index}.ts`,
+        dstSymbol: "persistResults",
+        evidence: `result store ${index}`,
+      });
+    }
+
+    const overlay = db.executionFlow(entry.id, 24, true).selected?.assertedOverlay;
+    expect(overlay?.relations).toHaveLength(128);
+    expect(overlay?.truncated).toBe(true);
+  });
+
   it("serves the deterministic paths through the existing MCP flow tool", async () => {
     root = await makeProject(PROJECT);
     await scan(root, { full: true, kind: "execution-flow" });
@@ -321,17 +406,21 @@ export function route(path: string, res: unknown): void {
     try {
       const result = await client.callTool({
         name: "flow",
-        arguments: { projectRoot: root, mode: "execution" },
+        arguments: { projectRoot: root, mode: "execution", includeAssertions: true },
       });
       expect(result.isError).not.toBe(true);
       const content = result.content[0];
       expect(content?.type).toBe("text");
       const response = JSON.parse(content?.type === "text" ? content.text : "{}") as {
         model?: string;
-        selected?: { paths?: Array<{ terminalEffect?: string }> };
+        selected?: {
+          paths?: Array<{ terminalEffect?: string }>;
+          assertedOverlay?: { enabled?: boolean };
+        };
       };
       expect(response.model).toBe("entry-to-effect");
       expect(response.selected?.paths).toHaveLength(3);
+      expect(response.selected?.assertedOverlay?.enabled).toBe(true);
       expect(response.selected?.paths?.map((path) => path.terminalEffect)).toContain(
         "http:response:200",
       );

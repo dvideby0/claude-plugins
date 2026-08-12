@@ -659,7 +659,7 @@ export function createMcpServer(options: McpServerOptions): McpServer {
       dstSymbol: z.string().optional(),
       label: z.string().optional().describe("The name the framework knows it by — a node id, a route."),
       evidence: z.string().describe("The line of code that proves this. Required."),
-      evidenceLine: z.number().optional(),
+      evidenceLine: z.number().int().min(1).max(4_294_967_295).optional(),
       confidence: z.enum(["definite", "high", "medium", "low"]).optional(),
     },
     async ({ projectRoot, ...input }) =>
@@ -775,19 +775,37 @@ export function createMcpServer(options: McpServerOptions): McpServer {
         .optional()
         .describe("Exact deterministic entry id returned by an earlier flow query."),
       maxPaths: z.number().int().min(1).max(64).optional(),
+      includeAssertions: z
+        .boolean()
+        .optional()
+        .describe(
+          "Include current evidence-backed authored relations as a separately labeled overlay. They never complete or alter deterministic paths.",
+        ),
       root: z.string().optional().describe("Start from one symbol. Omit for every entry point."),
       rootPath: z.string().optional().describe("Repository path that disambiguates root."),
       rootId: z.string().optional().describe("Exact declaration id returned by a previous flow."),
       depth: z.number().int().min(0).max(8).optional().describe("Layers to follow. Default 3, max 8."),
     },
-    async ({ projectRoot, mode, entryId, maxPaths, root, rootPath, rootId, depth }) =>
+    async ({
+      projectRoot,
+      mode,
+      entryId,
+      maxPaths,
+      includeAssertions,
+      root,
+      rootPath,
+      rootId,
+      depth,
+    }) =>
       wrap(async () => {
         const db = await getDb(resolveRoot(projectRoot));
         const executionIndex = db.executionFlow();
         if (mode === "execution" || entryId || (mode === undefined && executionIndex.entries.length > 0)) {
           const selectedId =
             entryId ?? (executionIndex.entries.length === 1 ? executionIndex.entries[0]?.id : undefined);
-          return selectedId ? db.executionFlow(selectedId, maxPaths) : executionIndex;
+          return selectedId
+            ? db.executionFlow(selectedId, maxPaths, includeAssertions)
+            : executionIndex;
         }
         const view = flowView(db, {
           ...(root ? { root } : {}),
