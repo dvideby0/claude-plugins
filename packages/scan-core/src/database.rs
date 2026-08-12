@@ -1148,6 +1148,7 @@ fn execution_flow_json(
         edges.sort_by_key(|edge| edge.ordinal);
     }
     let mut paths = Vec::new();
+    let path_limit = max_paths.clamp(1, 64) as usize;
     if let Some(root) = node_rows.iter().find(|node| node.kind == "entry") {
         let mut visited = HashSet::from([root.id.clone()]);
         walk_execution_paths(
@@ -1161,15 +1162,17 @@ fn execution_flow_json(
             &entry.certainty,
             &mut paths,
             &mut diagnostics,
-            max_paths.clamp(1, 64) as usize,
+            path_limit + 1,
         );
     } else {
         diagnostics.push("Execution entry has no root node.".to_string());
     }
-    if paths.len() >= max_paths.clamp(1, 64) as usize {
+    let paths_truncated = paths.len() > path_limit;
+    if paths_truncated {
+        paths.truncate(path_limit);
         diagnostics.push(format!(
             "Path enumeration reached the configured limit of {}.",
-            max_paths.clamp(1, 64)
+            path_limit
         ));
     }
     diagnostics.sort();
@@ -1206,7 +1209,7 @@ fn execution_flow_json(
             "edges": edge_rows.iter().map(execution_edge_value).collect::<Vec<_>>(),
             "paths": path_values,
             "diagnostics": diagnostics,
-            "truncated": paths.len() >= max_paths.clamp(1, 64) as usize,
+            "truncated": paths_truncated,
         },
     }))
     .map_err(|error| storage_error("Cannot encode execution flow response", error))

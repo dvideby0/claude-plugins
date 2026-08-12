@@ -43,6 +43,13 @@ export async function handleApi(path: string, method: string, res: unknown): Pro
   return false;
 }
 `,
+  "fixtures/example-route.ts": `
+export function fixtureRoute(path: string, res: unknown): boolean {
+  if (path === "/fixture") { sendJson(res, 200, {}); return true; }
+  return false;
+}
+function sendJson(_res: unknown, _status: number, _payload: unknown): void {}
+`,
 };
 
 let root: string;

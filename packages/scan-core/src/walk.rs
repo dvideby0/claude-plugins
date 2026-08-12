@@ -70,10 +70,12 @@ pub fn classify(path: &str) -> &'static str {
 /// Test-file conventions supported by the repository inventory.
 pub fn is_test_path(path: &str) -> bool {
     let segments: Vec<&str> = path.split('/').collect();
-    if segments
-        .iter()
-        .any(|part| matches!(*part, "test" | "tests" | "__tests__" | "spec" | "e2e"))
-    {
+    if segments.iter().any(|part| {
+        matches!(
+            *part,
+            "test" | "tests" | "__tests__" | "spec" | "e2e" | "fixture" | "fixtures"
+        )
+    }) {
         return true;
     }
 
@@ -269,6 +271,7 @@ mod tests {
         assert_eq!(classify(".mcp.json"), "config");
         assert_eq!(classify(".DS_Store"), "other");
         assert!(is_test_path("src/app.test.ts"));
+        assert!(is_test_path("packages/engine/fixtures/eval/src/http.ts"));
         assert!(is_noise("dist/app.min.js"));
         assert!(is_watch_ignored_path("node_modules/pkg/index.ts"));
         assert!(is_watch_ignored_path("src/.hidden/app.ts"));
