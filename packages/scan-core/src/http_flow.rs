@@ -10,7 +10,7 @@ use sha2::{Digest, Sha256};
 use tree_sitter::Node;
 
 const PRODUCER_ID: &str = "sdlc-http-route-adapter";
-const PRODUCER_VERSION: &str = "5";
+const PRODUCER_VERSION: &str = "6";
 const MAX_ENTRIES_PER_FILE: usize = 128;
 const MAX_GUARD_ALTERNATIVES: usize = 256;
 const MAX_NODES_PER_ENTRY: usize = 256;
@@ -88,6 +88,12 @@ enum EvaluationObservation<'tree> {
         node: Node<'tree>,
         construct: &'static str,
     },
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum EvaluationContext {
+    Value,
+    Callee,
 }
 
 #[derive(Clone, Default, PartialEq, Eq)]
@@ -333,13 +339,8 @@ fn target_node(node: Node) -> Node {
     node.child_by_field_name("property").unwrap_or(node)
 }
 
-fn collect_calls<'tree>(
-    node: Node<'tree>,
-    bytes: &[u8],
-    awaited: bool,
-    output: &mut Vec<CallObservation<'tree>>,
-) {
-    if matches!(
+fn deferred_body(node: Node) -> bool {
+    matches!(
         node.kind(),
         "arrow_function"
             | "function_expression"
@@ -347,77 +348,94 @@ fn collect_calls<'tree>(
             | "generator_function"
             | "generator_function_declaration"
             | "method_definition"
-            | "class"
-            | "class_declaration"
-            | "abstract_class_declaration"
-    ) {
-        return;
-    }
-    if node.kind() == "await_expression" {
-        let mut cursor = node.walk();
-        for child in node.named_children(&mut cursor) {
-            collect_calls(child, bytes, true, output);
-        }
-        return;
-    }
-    if node.kind() == "call_expression" {
-        if let Some(arguments) = node.child_by_field_name("arguments") {
-            let mut cursor = arguments.walk();
-            for child in arguments.named_children(&mut cursor) {
-                // Argument expressions are evaluated before the outer call.
-                // Only their own await expressions suspend independently.
-                collect_calls(child, bytes, false, output);
-            }
-        }
-        if let Some(function) = node.child_by_field_name("function") {
-            let target = target_node(function);
-            output.push(CallObservation {
-                node,
-                callee: compact(text(function, bytes), 120),
-                target_symbol: last_property(function, bytes),
-                target_line: target.start_position().row as u32 + 1,
-                target_column: target.start_position().column as u32,
-                awaited,
-            });
-        }
-        return;
-    }
-
-    let mut cursor = node.walk();
-    for child in node.named_children(&mut cursor) {
-        collect_calls(child, bytes, awaited, output);
-    }
+    )
 }
 
-fn contains_observable_call(node: Node, bytes: &[u8]) -> bool {
-    let mut calls = Vec::new();
-    collect_calls(node, bytes, false, &mut calls);
-    calls
-        .iter()
-        .any(|call| terminal_effect(call, bytes).is_some() || !ignored_call(call))
+fn class_definition(node: Node) -> bool {
+    matches!(
+        node.kind(),
+        "class" | "class_declaration" | "abstract_class_declaration"
+    )
+}
+
+fn direct_value_conversion(node: Node, bytes: &[u8]) -> bool {
+    node.kind() == "call_expression"
+        && node
+            .child_by_field_name("function")
+            .is_some_and(|function| {
+                function.kind() == "identifier"
+                    && matches!(text(function, bytes), "String" | "Number" | "Boolean")
+            })
+}
+
+/// Whether evaluating this expression can perform work that must not disappear
+/// merely because the adapter chooses not to render that work as a call node.
+fn contains_branch_effect(node: Node, bytes: &[u8]) -> bool {
+    if deferred_body(node) {
+        return false;
+    }
+    if class_definition(node)
+        || matches!(
+            node.kind(),
+            "new_expression"
+                | "assignment_expression"
+                | "augmented_assignment_expression"
+                | "update_expression"
+                | "await_expression"
+                | "yield_expression"
+        )
+    {
+        return true;
+    }
+    if node.kind() == "unary_expression"
+        && node
+            .child_by_field_name("operator")
+            .is_some_and(|operator| text(operator, bytes) == "delete")
+    {
+        return true;
+    }
+    if node.kind() == "call_expression" && !direct_value_conversion(node, bytes) {
+        return true;
+    }
+    let mut cursor = node.walk();
+    let found = node
+        .named_children(&mut cursor)
+        .any(|child| contains_branch_effect(child, bytes));
+    found
+}
+
+fn contains_expression_control(node: Node, bytes: &[u8]) -> bool {
+    if deferred_body(node) {
+        return false;
+    }
+    if node.kind() == "ternary_expression" || node.kind() == "optional_chain" {
+        return true;
+    }
+    if node.kind() == "binary_expression"
+        && node
+            .child_by_field_name("operator")
+            .is_some_and(|operator| matches!(text(operator, bytes), "&&" | "||" | "??"))
+    {
+        return true;
+    }
+    let mut cursor = node.walk();
+    let found = node
+        .named_children(&mut cursor)
+        .any(|child| contains_expression_control(child, bytes));
+    found
 }
 
 fn collect_evaluations<'tree>(
     node: Node<'tree>,
     bytes: &[u8],
     awaited: bool,
+    context: EvaluationContext,
     output: &mut Vec<EvaluationObservation<'tree>>,
 ) {
-    if matches!(
-        node.kind(),
-        "arrow_function"
-            | "function_expression"
-            | "function_declaration"
-            | "generator_function"
-            | "generator_function_declaration"
-            | "method_definition"
-    ) {
+    if deferred_body(node) {
         return;
     }
-    if matches!(
-        node.kind(),
-        "class" | "class_declaration" | "abstract_class_declaration"
-    ) {
+    if class_definition(node) {
         output.push(EvaluationObservation::Gap {
             node,
             construct: "class definition",
@@ -427,19 +445,19 @@ fn collect_evaluations<'tree>(
     if node.kind() == "await_expression" {
         let mut cursor = node.walk();
         for child in node.named_children(&mut cursor) {
-            collect_evaluations(child, bytes, true, output);
+            collect_evaluations(child, bytes, true, EvaluationContext::Value, output);
         }
         return;
     }
     if node.kind() == "ternary_expression" {
         if let Some(condition) = node.child_by_field_name("condition") {
-            collect_evaluations(condition, bytes, awaited, output);
+            collect_evaluations(condition, bytes, awaited, EvaluationContext::Value, output);
         }
         let branch_has_operation = ["consequence", "alternative"]
             .into_iter()
             .filter_map(|field| node.child_by_field_name(field))
-            .any(|branch| contains_observable_call(branch, bytes));
-        if branch_has_operation {
+            .any(|branch| contains_branch_effect(branch, bytes));
+        if context == EvaluationContext::Callee || branch_has_operation {
             output.push(EvaluationObservation::Gap {
                 node,
                 construct: "expression-level branch",
@@ -453,12 +471,12 @@ fn collect_evaluations<'tree>(
             .is_some_and(|operator| matches!(text(operator, bytes), "&&" | "||" | "??"))
     {
         if let Some(left) = node.child_by_field_name("left") {
-            collect_evaluations(left, bytes, awaited, output);
+            collect_evaluations(left, bytes, awaited, EvaluationContext::Value, output);
         }
-        if node
+        let branch_has_operation = node
             .child_by_field_name("right")
-            .is_some_and(|right| contains_observable_call(right, bytes))
-        {
+            .is_some_and(|right| contains_branch_effect(right, bytes));
+        if context == EvaluationContext::Callee || branch_has_operation {
             output.push(EvaluationObservation::Gap {
                 node,
                 construct: "expression-level branch",
@@ -467,13 +485,24 @@ fn collect_evaluations<'tree>(
         return;
     }
     if node.kind() == "call_expression" {
+        let function = node.child_by_field_name("function");
+        let branchy_callee =
+            function.is_some_and(|function| contains_expression_control(function, bytes));
+        if let Some(function) = function {
+            // The callee expression is evaluated before arguments. Its calls
+            // are real operations, while conditional dispatch remains a gap.
+            collect_evaluations(function, bytes, false, EvaluationContext::Callee, output);
+        }
         if let Some(arguments) = node.child_by_field_name("arguments") {
             let mut cursor = arguments.walk();
             for child in arguments.named_children(&mut cursor) {
-                collect_evaluations(child, bytes, false, output);
+                collect_evaluations(child, bytes, false, EvaluationContext::Value, output);
             }
         }
-        if let Some(function) = node.child_by_field_name("function") {
+        if branchy_callee {
+            return;
+        }
+        if let Some(function) = function {
             let target = target_node(function);
             output.push(EvaluationObservation::Call(CallObservation {
                 node,
@@ -489,7 +518,7 @@ fn collect_evaluations<'tree>(
 
     let mut cursor = node.walk();
     for child in node.named_children(&mut cursor) {
-        collect_evaluations(child, bytes, awaited, output);
+        collect_evaluations(child, bytes, awaited, context, output);
     }
 }
 
@@ -1021,7 +1050,13 @@ impl Builder<'_> {
 
     fn walk_calls(&mut self, node: Node, mut incoming: Vec<Frontier>) -> Vec<Frontier> {
         let mut observations = Vec::new();
-        collect_evaluations(node, self.bytes, false, &mut observations);
+        collect_evaluations(
+            node,
+            self.bytes,
+            false,
+            EvaluationContext::Value,
+            &mut observations,
+        );
         for observation in observations {
             let call = match observation {
                 EvaluationObservation::Gap { node, construct } => {
@@ -1479,6 +1514,49 @@ async function handleApi(path: string, method: string, res: unknown) {
                 .iter()
                 .any(|node| node.kind == "terminal-effect"));
         }
+    }
+
+    #[test]
+    fn keeps_conditionally_executed_operations_and_dispatch_from_looking_complete() {
+        let entries = extract_typescript(
+            r#"function route(path: string, res: unknown, ok: boolean, client: any) {
+              if (path === "/member") {
+                ok && client.write("x");
+                sendJson(res, 200, {});
+              }
+              if (path === "/callee") {
+                (ok ? buildA : buildB)();
+                sendJson(res, 201, {});
+              }
+              if (path === "/class-expression") {
+                const Selected = ok ? class { static value = initialize(); } : class {};
+                sendJson(res, 202, { Selected });
+              }
+              if (path === "/constructor") {
+                ok ? new A() : new B();
+                sendJson(res, 203, {});
+              }
+            }"#,
+        );
+        assert_eq!(entries.len(), 4);
+        for entry in &entries {
+            assert!(entry.nodes.iter().any(|node| node.kind == "gap"));
+            assert!(entry
+                .nodes
+                .iter()
+                .any(|node| node.kind == "terminal-effect"));
+            assert!(entry
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.contains("expression-level branch")));
+        }
+        let callee = entries
+            .iter()
+            .find(|entry| entry.route == "/callee")
+            .expect("conditional callee route");
+        assert!(!callee.nodes.iter().any(|node| {
+            node.kind == "call" && (node.label.contains("buildA") || node.label.contains("buildB"))
+        }));
     }
 
     #[test]
