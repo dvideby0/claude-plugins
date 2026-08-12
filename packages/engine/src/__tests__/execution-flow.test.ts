@@ -195,6 +195,39 @@ export async function route(path: string, res: unknown): Promise<void> {
     });
   });
 
+  it("does not resolve a returned-function invocation back to its factory", async () => {
+    root = await makeProject({
+      "package.json": JSON.stringify({ type: "module" }),
+      "src/factory.ts": `
+export function factory(): () => number { return () => 1; }
+`,
+      "src/http.ts": `
+import { factory } from "./factory.js";
+function sendJson(_res: unknown, _status: number, _body: unknown): void {}
+export function route(path: string, res: unknown): void {
+  if (path === "/factory") { factory()(); sendJson(res, 200, {}); }
+}
+`,
+    });
+    await scan(root, { full: true, kind: "execution-returned-function" });
+    const db = await getDb(root);
+    const calls = db
+      .executionFlow(db.executionFlow().entries[0]?.id)
+      .selected?.nodes.filter((node) => node.kind === "call");
+
+    expect(calls).toHaveLength(2);
+    expect(calls?.[0]?.target).toEqual({
+      path: "src/factory.ts",
+      symbol: "factory",
+      external: "",
+    });
+    expect(calls?.[1]?.target).toEqual({
+      path: null,
+      symbol: "factory()",
+      external: "",
+    });
+  });
+
   it("refreshes member-call targets when compiler references replace syntax refs", async () => {
     root = await makeProject({
       "package.json": JSON.stringify({ type: "module" }),

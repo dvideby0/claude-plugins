@@ -297,7 +297,7 @@ The audit ran the following checks successfully against the working tree:
 
 - `npm test`: 37 engine test files and 312 tests passed.
 - `npm run build`: native core, engine, bridge, protocol, and desktop passed.
-- `cargo test` in `packages/scan-core`: 48 Rust tests passed.
+- `cargo test` in `packages/scan-core`: 50 Rust tests passed.
 - The retired migration benchmark found 127 files, parsed 84, and reported 548
   symbols and 342 imports with no agreement differences. The Rust path took
   about 14 ms versus 158 ms for the former TypeScript path in that single run.

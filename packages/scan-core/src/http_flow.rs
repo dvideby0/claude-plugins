@@ -321,22 +321,44 @@ fn enclosing_symbol(mut node: Node, bytes: &[u8]) -> String {
     String::new()
 }
 
-fn last_property(node: Node, bytes: &[u8]) -> String {
-    if node.kind() == "identifier" {
-        return text(node, bytes).to_string();
+fn direct_call_target(node: Node) -> Option<Node> {
+    match node.kind() {
+        "identifier" => Some(node),
+        "member_expression" => node.child_by_field_name("property"),
+        "parenthesized_expression" => {
+            let mut cursor = node.walk();
+            let mut children = node.named_children(&mut cursor);
+            let child = children.next()?;
+            if children.next().is_some() {
+                None
+            } else {
+                direct_call_target(child)
+            }
+        }
+        _ => None,
     }
-    if let Some(property) = node.child_by_field_name("property") {
-        return text(property, bytes).to_string();
-    }
-    text(node, bytes)
-        .rsplit(['.', '?'])
-        .find(|part| !part.is_empty())
-        .unwrap_or("")
-        .to_string()
 }
 
-fn target_node(node: Node) -> Node {
-    node.child_by_field_name("property").unwrap_or(node)
+fn call_target(node: Node, bytes: &[u8]) -> (String, u32, u32) {
+    if let Some(target) = direct_call_target(node) {
+        return (
+            text(target, bytes).to_string(),
+            target.start_position().row as u32 + 1,
+            target.start_position().column as u32,
+        );
+    }
+
+    // A call expression used as another call's callee invokes its return
+    // value. It is not a second reference to the factory itself, so leave the
+    // dynamic target unresolved instead of reusing the inner identifier's
+    // source anchor during reference refresh.
+    (compact(text(node, bytes), 120), 0, 0)
+}
+
+fn has_optional_call_operator(node: Node) -> bool {
+    let mut cursor = node.walk();
+    let found = node.children(&mut cursor).any(|child| child.kind() == "?.");
+    found
 }
 
 fn deferred_body(node: Node) -> bool {
@@ -442,6 +464,15 @@ fn collect_evaluations<'tree>(
         });
         return;
     }
+    if node.kind() == "optional_chain" {
+        if context == EvaluationContext::Callee {
+            output.push(EvaluationObservation::Gap {
+                node,
+                construct: "optional call",
+            });
+        }
+        return;
+    }
     if node.kind() == "await_expression" {
         let mut cursor = node.walk();
         for child in node.named_children(&mut cursor) {
@@ -486,8 +517,9 @@ fn collect_evaluations<'tree>(
     }
     if node.kind() == "call_expression" {
         let function = node.child_by_field_name("function");
-        let branchy_callee =
-            function.is_some_and(|function| contains_expression_control(function, bytes));
+        let branchy_callee = has_optional_call_operator(node)
+            || function.is_some_and(|function| contains_expression_control(function, bytes));
+        let callee_observation_start = output.len();
         if let Some(function) = function {
             // The callee expression is evaluated before arguments. Its calls
             // are real operations, while conditional dispatch remains a gap.
@@ -500,16 +532,25 @@ fn collect_evaluations<'tree>(
             }
         }
         if branchy_callee {
+            if !output[callee_observation_start..]
+                .iter()
+                .any(|observation| matches!(observation, EvaluationObservation::Gap { .. }))
+            {
+                output.push(EvaluationObservation::Gap {
+                    node: function.unwrap_or(node),
+                    construct: "conditional callee",
+                });
+            }
             return;
         }
         if let Some(function) = function {
-            let target = target_node(function);
+            let (target_symbol, target_line, target_column) = call_target(function, bytes);
             output.push(EvaluationObservation::Call(CallObservation {
                 node,
                 callee: compact(text(function, bytes), 120),
-                target_symbol: last_property(function, bytes),
-                target_line: target.start_position().row as u32 + 1,
-                target_column: target.start_position().column as u32,
+                target_symbol,
+                target_line,
+                target_column,
                 awaited,
             }));
         }
@@ -1557,6 +1598,57 @@ async function handleApi(path: string, method: string, res: unknown) {
         assert!(!callee.nodes.iter().any(|node| {
             node.kind == "call" && (node.label.contains("buildA") || node.label.contains("buildB"))
         }));
+    }
+
+    #[test]
+    fn marks_every_suppressed_conditional_callee_as_incomplete() {
+        let entries = extract_typescript(
+            r#"async function route(path: string, res: unknown, ok: boolean, client: any) {
+              if (path === "/optional-member") {
+                await client?.write("x");
+                sendJson(res, 200, {});
+              }
+              if (path === "/optional-call") {
+                await client.write?.("x");
+                sendJson(res, 201, {});
+              }
+              if (path === "/nested-callee") {
+                getFactory(ok ? "a" : "b")();
+                sendJson(res, 202, {});
+              }
+            }"#,
+        );
+        assert_eq!(entries.len(), 3);
+        for entry in &entries {
+            assert!(entry.nodes.iter().any(|node| node.kind == "gap"));
+            assert!(entry
+                .nodes
+                .iter()
+                .any(|node| node.kind == "terminal-effect"));
+            assert!(!entry.diagnostics.is_empty());
+        }
+    }
+
+    #[test]
+    fn leaves_returned_function_invocations_unresolved() {
+        let entries = extract_typescript(
+            r#"function route(path: string, res: unknown) {
+              if (path === "/factory") {
+                factory()();
+                sendJson(res, 200, {});
+              }
+            }"#,
+        );
+        let calls = entries[0]
+            .nodes
+            .iter()
+            .filter(|node| node.kind == "call")
+            .collect::<Vec<_>>();
+        assert_eq!(calls.len(), 2);
+        assert_eq!(calls[0].target_symbol, "factory");
+        assert_ne!(calls[0].target_line, 0);
+        assert_eq!(calls[1].target_symbol, "factory()");
+        assert_eq!((calls[1].target_line, calls[1].target_column), (0, 0));
     }
 
     #[test]
