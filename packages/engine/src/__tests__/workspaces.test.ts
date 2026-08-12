@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { mkdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, mkdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { WorkspaceRegistry } from "../daemon/workspaces.js";
 import { closeDb, getDb } from "../db/db.js";
@@ -92,6 +92,54 @@ describe("workspace identity", () => {
     expect(result.hits).toEqual([]);
     expect(result.unreadable).toEqual(["offline"]);
   });
+
+  it("does not expose an uncached store after its workspace becomes a file", async () => {
+    root = await makeProject({
+      "replaced/package.json": JSON.stringify({ name: "replaced" }),
+      "replaced/src/value.ts": "export const retainedNeedle = 1;\n",
+    });
+    const replaced = join(root, "replaced");
+    await scan(replaced, { kind: "full" });
+    await closeDb(replaced);
+    await rm(replaced, { recursive: true, force: true });
+    await writeFile(replaced, "no longer a workspace");
+
+    const result = await crossQuery(
+      [{ id: "replaced", name: "replaced", root: replaced }],
+      "symbol",
+      "retainedNeedle",
+    );
+
+    expect(result.hits).toEqual([]);
+    expect(result.unreadable).toEqual(["replaced"]);
+  });
+
+  it.skipIf(process.platform === "win32" || process.getuid?.() === 0)(
+    "does not expose an uncached store while its workspace is unreadable",
+    async () => {
+      root = await makeProject({
+        "unreadable/package.json": JSON.stringify({ name: "unreadable" }),
+        "unreadable/src/value.ts": "export const retainedNeedle = 1;\n",
+      });
+      const unreadable = join(root, "unreadable");
+      await scan(unreadable, { kind: "full" });
+      await closeDb(unreadable);
+      await chmod(unreadable, 0);
+
+      try {
+        const result = await crossQuery(
+          [{ id: "unreadable", name: "unreadable", root: unreadable }],
+          "symbol",
+          "retainedNeedle",
+        );
+
+        expect(result.hits).toEqual([]);
+        expect(result.unreadable).toEqual(["unreadable"]);
+      } finally {
+        await chmod(unreadable, 0o700);
+      }
+    },
+  );
 
   it("persists and evicts a removed workspace database handle", async () => {
     root = await makeProject({

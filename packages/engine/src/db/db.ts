@@ -3,7 +3,7 @@
  */
 
 import { constants } from "node:fs";
-import { access, chmod, copyFile, mkdir, open as openFile } from "node:fs/promises";
+import { access, chmod, copyFile, mkdir, open as openFile, stat } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { storeDir } from "@sdlc/protocol";
 import { NativeDatabase } from "@sdlc/scan-core";
@@ -392,9 +392,13 @@ export async function getExistingDb(projectRoot: string): Promise<Db> {
   const key = workspaceIdentityKey(canonical);
   const dbPath = databasePathForWorkspace(canonical);
   return serializeLifecycle(key, async () => {
-    // App-owned storage can outlive a removed or temporarily unmounted source
+    // App-owned storage can outlive a removed, unreadable, or replaced source
     // workspace. Do not present those retained facts as a readable workspace.
-    await access(canonical);
+    const workspace = await stat(canonical);
+    if (!workspace.isDirectory()) {
+      throw new Error(`Workspace root is not a directory: ${canonical}`);
+    }
+    await access(canonical, constants.R_OK | constants.X_OK);
 
     const existing = open.get(key);
     if (existing) {
