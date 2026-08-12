@@ -88,6 +88,16 @@ automatically replace a generally corrupted store from an older backup,
 because silently losing newer human knowledge is worse than presenting an
 explicit recovery choice.
 
+Schema v18 applies the same adoption rule to retrieval. It uses SQLite's
+documented external-content FTS5 pattern and maintenance triggers instead of a
+custom inverted index, plus `unicode61`, prefix indexes, `bm25`, and `snippet`.
+The ordinary `search_documents` table is a provenance/lifecycle projection of
+the authoritative domain tables; FTS remains a rebuildable access path. One
+Rust query boundary normalizes and bounds input so HTTP, MCP, memory recall, and
+the desktop do not each invent search syntax or ranking. Tantivy, a vector
+sidecar, and source-body chunking remain deferred until evaluation shows this
+baseline failing a named workload.
+
 ### External enrichers, not mandatory dependencies
 
 SCIP indexes, CodeQL databases, language servers, compiler metadata, test coverage, and runtime traces can all enrich the common model when present. They should be adapters with explicit provenance and capability discovery. Core indexing and the desktop experience must remain useful without downloading a heavyweight external analysis suite.

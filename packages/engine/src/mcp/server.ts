@@ -855,11 +855,11 @@ export function createMcpServer(options: McpServerOptions): McpServer {
 
   server.tool(
     "cross_search",
-    "Search every repository this engine indexes at once: where a package is used, where a symbol name is defined, matching findings or memories. Use for 'where else do we…' questions.",
+    "Search every repository this engine indexes at once across paths, symbols, components, flows, findings, relations, and memories; package usage is also available as a focused kind. Use for 'where else do we…' questions.",
     {
       kind: z.enum(CROSS_KINDS),
-      query: z.string().min(1),
-      limit: z.number().optional().describe("Per repository. Default 20."),
+      query: z.string().trim().min(1).max(512),
+      limit: z.number().int().min(1).max(100).optional().describe("Per repository. Default 20."),
     },
     async ({ kind, query, limit }) =>
       wrap(async () => {
@@ -915,9 +915,15 @@ export function createMcpServer(options: McpServerOptions): McpServer {
     "Search what previous sessions recorded about this codebase. Use before re-deriving why something is the way it is.",
     {
       ...projectRootArg,
-      query: z.string().optional().describe("Keywords. Omit to list the most recent."),
+      query: z
+        .string()
+        .trim()
+        .min(1)
+        .max(512)
+        .optional()
+        .describe("Keywords. Omit to list the most recent."),
       kind: z.enum(MEMORY_KINDS).optional(),
-      limit: z.number().optional(),
+      limit: z.number().int().min(1).max(100).optional(),
     },
     async ({ projectRoot, query, kind, limit }) =>
       wrap(async () => {

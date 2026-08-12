@@ -44,8 +44,9 @@ the existing Rust module. Schema upgrades now have a Rust-owned compatibility
 gate, integrity checks, transactional rollback, and validated recovery images.
 The remaining storage risk is lifecycle correctness: path-derived identity does
 not yet survive repository relocation, general corruption needs an explicit
-restore workflow, and FTS5 is available but not yet wired into the internal
-retrieval interface.
+restore workflow, and recovery remains user-directed. FTS5 is now wired into a
+shared internal retrieval interface and incrementally maintained from the
+authoritative relational rows.
 
 ## Maturity by capability
 
@@ -57,7 +58,7 @@ retrieval interface.
 | Execution and data flow | Early | The current “flow” is a call graph with heuristic roots, not entry-to-effect program flow. |
 | Human-readable system map | Promising | Components and ordered flows exist, but they are authored overlays rather than evidence-derived semantic objects. |
 | Incremental recomputation | Basic | Content hashes avoid some database rewrites, but invalidation is file-level and native scans still revisit the repository. |
-| Search and context retrieval | Early | Targeted briefs and cross-search exist; ranking is largely exact/keyword and has no retrieval evaluation. |
+| Search and context retrieval | Early | Targeted briefs and a shared FTS5 cross-search exist; graph/task ranking and retrieval evaluation remain open. |
 | Memories and notes | Basic | Anchored durable notes exist; search, evidence, validation, editing, and fine-grained staleness need work. |
 | Desktop experience | Functional shell | Useful maps and operational views exist, but it is not yet a complete code-intelligence workspace. |
 | Claude/Codex installation | Partial | MCP connection exists; complete plugin/skill lifecycle and supported Codex configuration are missing. |
@@ -91,6 +92,11 @@ already distinguishes several useful domains:
 - review runs.
 
 That is a good substrate for evolving toward base facts and derived overlays. The missing piece is an explicit, consistent provenance and dependency model across every fact type.
+
+[Schema v18](../packages/scan-core/src/database_schema_v18.sql) adds an
+external-content FTS5 index over those facts and authored overlays. The
+relational rows remain authoritative; transactional triggers maintain the
+derived search documents and their lifecycle state.
 
 The first versioned provider-neutral envelope is now documented in
 [`FACT_MODEL.md`](FACT_MODEL.md), and the legacy deterministic/asserted tables
@@ -184,7 +190,13 @@ The `brief` implementation is a good beginning: it assembles nearby symbols, imp
 
 The desktop app can supervise the daemon, add/index projects, inspect overview/map/flow/graph/findings/memory views, draw maps, and show integration status. This makes the architecture tangible.
 
-Today it remains primarily an operational viewer. The next product step is a question-centered workspace with global search, source display, precise navigation, callers/callees, saved paths, synchronized code and graph views, change comparison, knowledge editing, and index-health explanations. The engine already has a cross-search endpoint that is not yet elevated into the main UI.
+Today it remains primarily an operational viewer. A first global search
+workspace now queries paths, symbols, components, flows, findings, relations,
+and memories across all indexed repositories and opens file-backed results in
+the indexed file drawer. The next product step remains a question-centered
+workspace with source display, precise range navigation, callers/callees,
+saved paths, synchronized code and graph views, change comparison, knowledge
+editing, and index-health explanations.
 
 A live desktop walkthrough on 2026-08-06 confirmed that repository validation,
 deterministic rescanning, findings drill-down, stale-memory display, Claude and
@@ -235,13 +247,15 @@ no-op while callers are migrated away from the former whole-export lifecycle.
 An existing repository-local prototype database is copied once and retained as
 a backup.
 
-This provides the transaction and FTS5-capable foundation without adding a
-second graph database. Schema v17 now moves compatibility checks, ordered
+This provides the transaction and FTS5 retrieval foundation without adding a
+second graph or vector database. Schema v17 moves compatibility checks, ordered
 migration, its frozen schema declaration, `quick_check`, atomic online backups, and
 rollback into the Rust SQLite owner; the TypeScript layer supplies only the
-workspace path and existing cache adapter. STORE-001 is not complete: stable
-identity across moves, an explicit user-visible restore workflow for a
-generally corrupted store, and the internal FTS query surface remain.
+workspace path and existing cache adapter. Schema v18 uses SQLite's maintained
+external-content index, tokenizer, prefix lookup, snippets, and BM25 through a
+bounded Rust query interface; memory recall, cross-search, HTTP, and the desktop
+share it. STORE-001 is not complete: stable identity across moves and an
+explicit user-visible restore workflow for a generally corrupted store remain.
 
 ## Verification snapshot
 
@@ -260,7 +274,7 @@ These numbers are a useful health snapshot, not a durable benchmark. The benchma
 
 1. **The product promise outruns the flow model.** A call graph cannot yet support reliable entry-to-effect explanations.
 2. **There is no canonical fact/provenance/invalidation contract.** Adding more analyzers now could create incompatible edge types and expensive rebuild behavior.
-3. **Storage identity and general corruption recovery are incomplete.** Direct native persistence and rollback-safe migrations remove the whole-export and schema-upgrade risks, but path-derived workspace ids, an explicit restore workflow, and internal FTS retrieval still need product behavior and tests.
+3. **Storage identity and general corruption recovery are incomplete.** Direct native persistence, rollback-safe migrations, and internal FTS retrieval remove the whole-export, schema-upgrade, and SQL-scan risks, but path-derived workspace ids and an explicit restore workflow still need product behavior and tests.
 4. **Retrieval quality is unmeasured.** More tools and embeddings could add complexity without reducing file reads or improving task outcomes.
 5. **The desktop has not yet found its signature human workflow.** Operational views demonstrate capability but do not yet compete with dedicated code-intelligence products.
 6. **Integration lifecycle is incomplete.** MCP connectivity alone does not deliver the intended one-click Claude/Codex experience.

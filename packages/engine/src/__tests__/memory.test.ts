@@ -127,6 +127,28 @@ describe("memory", () => {
     expect(recall(db, "nothing-matches-this")).toHaveLength(0);
   });
 
+  it("filters memory subtypes before the ranked result limit", async () => {
+    root = await makeProject(PROJECT);
+    await scan(root, { kind: "full" });
+    const db = await getDb(root);
+
+    for (let index = 0; index < 101; index++) {
+      remember(db, {
+        kind: "context",
+        title: `Shared recall phrase ${index}`,
+        body: "Context that should not satisfy a decision-only recall.",
+      });
+    }
+    remember(db, {
+      kind: "decision",
+      title: "The one applicable decision",
+      body: "Shared recall phrase",
+    });
+
+    expect(recall(db, "shared recall phrase", 20, "decision").map((memory) => memory.title))
+      .toEqual(["The one applicable decision"]);
+  });
+
   it("resolves an ambiguous name to candidates instead of guessing", async () => {
     root = await makeProject({
       ...PROJECT,

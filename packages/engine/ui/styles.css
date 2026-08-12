@@ -414,6 +414,133 @@ body.onboarding .body {
   margin-top: 13px;
 }
 
+/* --- search ------------------------------------------------------------- */
+
+.search-page {
+  max-width: 920px;
+}
+
+.search-form {
+  display: grid;
+  grid-template-columns: minmax(220px, 1fr) 150px auto;
+  gap: 8px;
+  margin-bottom: 18px;
+}
+
+.search-form input,
+.search-form select {
+  min-width: 0;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--panel);
+}
+
+.search-form input:focus,
+.search-form select:focus {
+  outline: 2px solid color-mix(in srgb, var(--accent) 45%, transparent);
+  outline-offset: -1px;
+}
+
+.search-summary {
+  color: var(--faint);
+  font-size: 12px;
+  margin: 0 2px 8px;
+}
+
+.search-results {
+  display: grid;
+  gap: 8px;
+}
+
+.search-result {
+  display: block;
+  width: 100%;
+  text-align: left;
+  color: inherit;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 11px 13px;
+}
+
+.search-result.openable {
+  cursor: pointer;
+}
+
+.search-result.openable:hover {
+  border-color: color-mix(in srgb, var(--text) 24%, transparent);
+  background: color-mix(in srgb, var(--panel) 88%, var(--raised));
+}
+
+.search-result-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.search-result-head strong {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.search-workspace {
+  margin-left: auto;
+  color: var(--faint);
+  font-size: 11.5px;
+  white-space: nowrap;
+}
+
+.search-path {
+  margin-top: 5px;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+.search-anchors {
+  display: flex;
+  gap: 5px;
+  flex-wrap: wrap;
+  margin-top: 6px;
+}
+
+.pill.search-stale {
+  color: var(--warn);
+  border-color: color-mix(in srgb, var(--warn) 45%, transparent);
+}
+
+.search-stale-note {
+  margin-top: 5px;
+  color: var(--warn);
+  font-size: 11.5px;
+}
+
+.search-excerpt {
+  margin-top: 5px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.search-open {
+  display: block;
+  margin-top: 6px;
+  color: var(--accent);
+  font-size: 11.5px;
+}
+
+@media (max-width: 720px) {
+  .search-form {
+    grid-template-columns: 1fr auto;
+  }
+
+  .search-form input {
+    grid-column: 1 / -1;
+  }
+}
+
 /* --- tabs / panes ------------------------------------------------------- */
 
 .tabs {
