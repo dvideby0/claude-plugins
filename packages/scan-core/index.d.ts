@@ -134,6 +134,49 @@ export interface NativeRef {
   line: number
   column: number
 }
+export interface NativeExecutionNode {
+  id: string
+  ordinal: number
+  kind: string
+  label: string
+  path: string
+  symbol: string
+  targetSymbol: string
+  external: string
+  startLine: number
+  endLine: number
+  certainty: string
+  terminal: boolean
+  detail: string
+}
+export interface NativeExecutionEdge {
+  ordinal: number
+  from: string
+  to: string
+  kind: string
+  label: string
+  path: string
+  startLine: number
+  certainty: string
+}
+export interface NativeExecutionEntry {
+  id: string
+  kind: string
+  label: string
+  method: string
+  route: string
+  path: string
+  symbol: string
+  startLine: number
+  endLine: number
+  producerId: string
+  producerVersion: string
+  producerKind: string
+  certainty: string
+  nodes: Array<NativeExecutionNode>
+  edges: Array<NativeExecutionEdge>
+  diagnostics: Array<string>
+}
 export interface NativeFile {
   path: string
   lang: string
@@ -147,6 +190,8 @@ export interface NativeFile {
   imports: Array<string>
   /** Uses of imported names, for symbol-level reference resolution. */
   refs: Array<NativeRef>
+  /** Product-specific entry-to-effect facts extracted by bounded adapters. */
+  executionEntries: Array<NativeExecutionEntry>
 }
 export interface NativeScan {
   files: Array<NativeFile>
@@ -210,5 +255,11 @@ export declare class NativeDatabase {
    * FTS expressions across the product boundary.
    */
   searchKnowledge(query: string, kindsJson: string, limit: number, memoryKind?: string | undefined | null): string
+  /**
+   * Query the bounded, evidence-backed execution graph assembled by native
+   * framework adapters. Path enumeration remains inside the native storage
+   * boundary and terminates on cycles and configured limits.
+   */
+  executionFlow(entryId?: string | undefined | null, maxPaths?: number | undefined | null): string
   close(): void
 }

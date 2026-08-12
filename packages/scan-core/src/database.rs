@@ -11,15 +11,17 @@ use napi_derive::napi;
 use rusqlite::types::{Value, ValueRef};
 use rusqlite::{params, params_from_iter, Connection, OpenFlags, OptionalExtension, MAIN_DB};
 use serde_json::{Map, Number};
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-const DATABASE_SCHEMA_VERSION: u32 = 18;
+const DATABASE_SCHEMA_VERSION: u32 = 19;
 const FIRST_VERSIONED_SCHEMA: u32 = 17;
 const SCHEMA_V17_SQL: &str = include_str!("database_schema_v17.sql");
 const SCHEMA_V18_SQL: &str = include_str!("database_schema_v18.sql");
+const SCHEMA_V19_SQL: &str = include_str!("database_schema_v19.sql");
 const SEARCH_KINDS: &[&str] = &[
     "file",
     "symbol",
@@ -486,6 +488,9 @@ fn apply_migration(connection: &Connection, version: u32) -> Result<()> {
         18 => connection
             .execute_batch(SCHEMA_V18_SQL)
             .map_err(|error| database_error("Cannot install SQLite schema v18", error)),
+        19 => connection
+            .execute_batch(SCHEMA_V19_SQL)
+            .map_err(|error| database_error("Cannot install SQLite schema v19", error)),
         _ => Err(invalid_argument(format!(
             "No SQLite migration is registered for schema v{version}"
         ))),
@@ -733,6 +738,480 @@ fn search_knowledge_json(
     query_json(connection, &sql, &values)
 }
 
+#[derive(Clone)]
+struct ExecutionEntryRow {
+    id: String,
+    kind: String,
+    label: String,
+    method: String,
+    route: String,
+    path: String,
+    symbol: String,
+    start_line: u32,
+    end_line: u32,
+    producer_id: String,
+    producer_version: String,
+    producer_kind: String,
+    certainty: String,
+    input_sha: String,
+    freshness: String,
+    terminal_effects: u32,
+    gaps: u32,
+}
+
+#[derive(Clone)]
+struct ExecutionNodeRow {
+    id: String,
+    ordinal: u32,
+    kind: String,
+    label: String,
+    path: String,
+    symbol: String,
+    target_path: Option<String>,
+    target_symbol: String,
+    external: String,
+    start_line: u32,
+    end_line: u32,
+    certainty: String,
+    terminal: bool,
+    detail: String,
+}
+
+#[derive(Clone)]
+struct ExecutionEdgeRow {
+    ordinal: u32,
+    src_id: String,
+    dst_id: String,
+    kind: String,
+    label: String,
+    path: String,
+    start_line: u32,
+    certainty: String,
+}
+
+struct ExecutionPath {
+    node_ids: Vec<String>,
+    edge_ordinals: Vec<u32>,
+    conditions: Vec<String>,
+    terminal_node_id: Option<String>,
+    certainty: String,
+    complete: bool,
+}
+
+fn execution_entry_value(entry: &ExecutionEntryRow) -> serde_json::Value {
+    serde_json::json!({
+        "id": entry.id,
+        "kind": entry.kind,
+        "label": entry.label,
+        "method": entry.method,
+        "route": entry.route,
+        "path": entry.path,
+        "symbol": entry.symbol,
+        "evidence": {
+            "path": entry.path,
+            "startLine": entry.start_line,
+            "endLine": entry.end_line,
+        },
+        "producer": {
+            "id": entry.producer_id,
+            "version": entry.producer_version,
+            "kind": entry.producer_kind,
+        },
+        "certainty": entry.certainty,
+        "freshness": entry.freshness,
+        "generation": { "inputSha": entry.input_sha },
+        "terminalEffects": entry.terminal_effects,
+        "gaps": entry.gaps,
+    })
+}
+
+fn execution_node_value(node: &ExecutionNodeRow) -> serde_json::Value {
+    serde_json::json!({
+        "id": node.id,
+        "ordinal": node.ordinal,
+        "kind": node.kind,
+        "label": node.label,
+        "path": node.path,
+        "symbol": node.symbol,
+        "target": {
+            "path": node.target_path,
+            "symbol": node.target_symbol,
+            "external": node.external,
+        },
+        "evidence": {
+            "path": node.path,
+            "startLine": node.start_line,
+            "endLine": node.end_line,
+        },
+        "certainty": node.certainty,
+        "terminal": node.terminal,
+        "detail": node.detail,
+    })
+}
+
+fn execution_edge_value(edge: &ExecutionEdgeRow) -> serde_json::Value {
+    serde_json::json!({
+        "id": edge.ordinal,
+        "from": edge.src_id,
+        "to": edge.dst_id,
+        "kind": edge.kind,
+        "label": edge.label,
+        "evidence": { "path": edge.path, "startLine": edge.start_line },
+        "certainty": edge.certainty,
+    })
+}
+
+fn weakest_certainty(current: &str, candidate: &str) -> String {
+    const ORDER: &[&str] = &[
+        "exact",
+        "observed",
+        "inferred",
+        "asserted",
+        "ambiguous",
+        "unknown",
+    ];
+    let current_rank = ORDER
+        .iter()
+        .position(|value| *value == current)
+        .unwrap_or(ORDER.len());
+    let candidate_rank = ORDER
+        .iter()
+        .position(|value| *value == candidate)
+        .unwrap_or(ORDER.len());
+    if candidate_rank > current_rank {
+        candidate.to_string()
+    } else {
+        current.to_string()
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn walk_execution_paths(
+    node_id: &str,
+    nodes: &HashMap<String, ExecutionNodeRow>,
+    outgoing: &HashMap<String, Vec<ExecutionEdgeRow>>,
+    visited: &mut HashSet<String>,
+    node_ids: &mut Vec<String>,
+    edge_ordinals: &mut Vec<u32>,
+    conditions: &mut Vec<String>,
+    certainty: &str,
+    paths: &mut Vec<ExecutionPath>,
+    diagnostics: &mut Vec<String>,
+    max_paths: usize,
+) {
+    if paths.len() >= max_paths {
+        return;
+    }
+    let Some(node) = nodes.get(node_id) else {
+        diagnostics.push(format!(
+            "Execution graph references missing node {node_id}."
+        ));
+        return;
+    };
+    let certainty = weakest_certainty(certainty, &node.certainty);
+    node_ids.push(node.id.clone());
+    if node.terminal {
+        paths.push(ExecutionPath {
+            node_ids: node_ids.clone(),
+            edge_ordinals: edge_ordinals.clone(),
+            conditions: conditions.clone(),
+            terminal_node_id: Some(node.id.clone()),
+            certainty,
+            complete: node.kind != "gap",
+        });
+        node_ids.pop();
+        return;
+    }
+    if node_ids.len() >= 64 {
+        diagnostics.push("Execution path exceeded 64 nodes and was truncated.".to_string());
+        paths.push(ExecutionPath {
+            node_ids: node_ids.clone(),
+            edge_ordinals: edge_ordinals.clone(),
+            conditions: conditions.clone(),
+            terminal_node_id: None,
+            certainty: "unknown".to_string(),
+            complete: false,
+        });
+        node_ids.pop();
+        return;
+    }
+
+    let edges = outgoing.get(node_id).cloned().unwrap_or_default();
+    if edges.is_empty() {
+        paths.push(ExecutionPath {
+            node_ids: node_ids.clone(),
+            edge_ordinals: edge_ordinals.clone(),
+            conditions: conditions.clone(),
+            terminal_node_id: None,
+            certainty: "unknown".to_string(),
+            complete: false,
+        });
+        node_ids.pop();
+        return;
+    }
+
+    for edge in edges {
+        if paths.len() >= max_paths {
+            break;
+        }
+        if !visited.insert(edge.dst_id.clone()) {
+            diagnostics.push(format!(
+                "Cycle from {} to {} was bounded during path enumeration.",
+                edge.src_id, edge.dst_id
+            ));
+            continue;
+        }
+        edge_ordinals.push(edge.ordinal);
+        let condition_added =
+            !edge.label.is_empty() && matches!(edge.kind.as_str(), "branch" | "catch" | "throw");
+        if condition_added {
+            conditions.push(edge.label.clone());
+        }
+        let edge_certainty = weakest_certainty(&certainty, &edge.certainty);
+        walk_execution_paths(
+            &edge.dst_id,
+            nodes,
+            outgoing,
+            visited,
+            node_ids,
+            edge_ordinals,
+            conditions,
+            &edge_certainty,
+            paths,
+            diagnostics,
+            max_paths,
+        );
+        if condition_added {
+            conditions.pop();
+        }
+        edge_ordinals.pop();
+        visited.remove(&edge.dst_id);
+    }
+    node_ids.pop();
+}
+
+fn execution_flow_json(
+    connection: &Connection,
+    selected_entry_id: Option<&str>,
+    max_paths: u32,
+) -> Result<String> {
+    if selected_entry_id.is_some_and(|id| id.is_empty() || id.chars().count() > 512) {
+        return Err(invalid_argument(
+            "Execution entry id must contain between 1 and 512 characters",
+        ));
+    }
+    let mut statement = connection
+        .prepare(
+            "SELECT e.id, e.kind, e.label, e.method, e.route, e.path, e.symbol,
+                    e.start_line, e.end_line, e.producer_id, e.producer_version,
+                    e.producer_kind, e.certainty, e.input_sha,
+                    CASE WHEN f.present = 1 AND f.content_sha = e.input_sha
+                         THEN 'current' ELSE 'stale' END AS freshness,
+                    (SELECT COUNT(*) FROM execution_nodes n
+                     WHERE n.entry_id = e.id AND n.kind = 'terminal-effect') AS terminal_effects,
+                    (SELECT COUNT(*) FROM execution_nodes n
+                     WHERE n.entry_id = e.id AND n.kind = 'gap') AS gaps
+             FROM execution_entries e
+             LEFT JOIN files f ON f.path = e.path
+             ORDER BY e.kind, e.method, e.route, e.path, e.start_line",
+        )
+        .map_err(|error| database_error("Cannot prepare execution entry query", error))?;
+    let entries = statement
+        .query_map([], |row| {
+            Ok(ExecutionEntryRow {
+                id: row.get(0)?,
+                kind: row.get(1)?,
+                label: row.get(2)?,
+                method: row.get(3)?,
+                route: row.get(4)?,
+                path: row.get(5)?,
+                symbol: row.get(6)?,
+                start_line: row.get(7)?,
+                end_line: row.get(8)?,
+                producer_id: row.get(9)?,
+                producer_version: row.get(10)?,
+                producer_kind: row.get(11)?,
+                certainty: row.get(12)?,
+                input_sha: row.get(13)?,
+                freshness: row.get(14)?,
+                terminal_effects: row.get(15)?,
+                gaps: row.get(16)?,
+            })
+        })
+        .map_err(|error| database_error("Cannot query execution entries", error))?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(|error| database_error("Cannot read execution entries", error))?;
+    let entry_values = entries
+        .iter()
+        .map(execution_entry_value)
+        .collect::<Vec<_>>();
+
+    let Some(entry_id) = selected_entry_id else {
+        return serde_json::to_string(&serde_json::json!({
+            "schemaVersion": 1,
+            "model": "entry-to-effect",
+            "note": if entries.is_empty() {
+                Some("No deterministic execution entries are indexed. Re-index after installing an adapter that recognizes this repository's entrypoints.")
+            } else {
+                None
+            },
+            "entries": entry_values,
+            "selected": serde_json::Value::Null,
+        }))
+        .map_err(|error| storage_error("Cannot encode execution entry response", error));
+    };
+    let Some(entry) = entries.iter().find(|entry| entry.id == entry_id) else {
+        return serde_json::to_string(&serde_json::json!({
+            "schemaVersion": 1,
+            "model": "entry-to-effect",
+            "note": "The requested execution entry is not present in the current index.",
+            "entries": entry_values,
+            "selected": serde_json::Value::Null,
+        }))
+        .map_err(|error| storage_error("Cannot encode missing execution entry response", error));
+    };
+
+    let mut node_statement = connection
+        .prepare(
+            "SELECT id, ordinal, kind, label, path, symbol, target_path,
+                    target_symbol, external, start_line, end_line, certainty,
+                    terminal, detail
+             FROM execution_nodes WHERE entry_id = ?1 ORDER BY ordinal LIMIT 512",
+        )
+        .map_err(|error| database_error("Cannot prepare execution node query", error))?;
+    let node_rows = node_statement
+        .query_map([entry_id], |row| {
+            Ok(ExecutionNodeRow {
+                id: row.get(0)?,
+                ordinal: row.get(1)?,
+                kind: row.get(2)?,
+                label: row.get(3)?,
+                path: row.get(4)?,
+                symbol: row.get(5)?,
+                target_path: row.get(6)?,
+                target_symbol: row.get(7)?,
+                external: row.get(8)?,
+                start_line: row.get(9)?,
+                end_line: row.get(10)?,
+                certainty: row.get(11)?,
+                terminal: row.get::<_, i64>(12)? != 0,
+                detail: row.get(13)?,
+            })
+        })
+        .map_err(|error| database_error("Cannot query execution nodes", error))?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(|error| database_error("Cannot read execution nodes", error))?;
+    let mut edge_statement = connection
+        .prepare(
+            "SELECT ordinal, src_id, dst_id, kind, label, path, start_line, certainty
+             FROM execution_edges WHERE entry_id = ?1 ORDER BY ordinal LIMIT 1024",
+        )
+        .map_err(|error| database_error("Cannot prepare execution edge query", error))?;
+    let edge_rows = edge_statement
+        .query_map([entry_id], |row| {
+            Ok(ExecutionEdgeRow {
+                ordinal: row.get(0)?,
+                src_id: row.get(1)?,
+                dst_id: row.get(2)?,
+                kind: row.get(3)?,
+                label: row.get(4)?,
+                path: row.get(5)?,
+                start_line: row.get(6)?,
+                certainty: row.get(7)?,
+            })
+        })
+        .map_err(|error| database_error("Cannot query execution edges", error))?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(|error| database_error("Cannot read execution edges", error))?;
+    let mut diagnostic_statement = connection
+        .prepare("SELECT message FROM execution_diagnostics WHERE entry_id = ?1 ORDER BY ordinal")
+        .map_err(|error| database_error("Cannot prepare execution diagnostic query", error))?;
+    let mut diagnostics = diagnostic_statement
+        .query_map([entry_id], |row| row.get::<_, String>(0))
+        .map_err(|error| database_error("Cannot query execution diagnostics", error))?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(|error| database_error("Cannot read execution diagnostics", error))?;
+
+    let nodes = node_rows
+        .iter()
+        .cloned()
+        .map(|node| (node.id.clone(), node))
+        .collect::<HashMap<_, _>>();
+    let mut outgoing: HashMap<String, Vec<ExecutionEdgeRow>> = HashMap::new();
+    for edge in &edge_rows {
+        outgoing
+            .entry(edge.src_id.clone())
+            .or_default()
+            .push(edge.clone());
+    }
+    for edges in outgoing.values_mut() {
+        edges.sort_by_key(|edge| edge.ordinal);
+    }
+    let mut paths = Vec::new();
+    if let Some(root) = node_rows.iter().find(|node| node.kind == "entry") {
+        let mut visited = HashSet::from([root.id.clone()]);
+        walk_execution_paths(
+            &root.id,
+            &nodes,
+            &outgoing,
+            &mut visited,
+            &mut Vec::new(),
+            &mut Vec::new(),
+            &mut Vec::new(),
+            &entry.certainty,
+            &mut paths,
+            &mut diagnostics,
+            max_paths.clamp(1, 64) as usize,
+        );
+    } else {
+        diagnostics.push("Execution entry has no root node.".to_string());
+    }
+    if paths.len() >= max_paths.clamp(1, 64) as usize {
+        diagnostics.push(format!(
+            "Path enumeration reached the configured limit of {}.",
+            max_paths.clamp(1, 64)
+        ));
+    }
+    diagnostics.sort();
+    diagnostics.dedup();
+
+    let path_values = paths
+        .iter()
+        .enumerate()
+        .map(|(index, path)| {
+            let terminal = path
+                .terminal_node_id
+                .as_ref()
+                .and_then(|id| nodes.get(id));
+            serde_json::json!({
+                "id": format!("{}:path:{index}", entry.id),
+                "nodeIds": path.node_ids,
+                "edgeIds": path.edge_ordinals,
+                "conditions": path.conditions,
+                "terminalNodeId": path.terminal_node_id,
+                "terminalEffect": terminal.filter(|node| node.kind == "terminal-effect").map(|node| node.external.clone()),
+                "certainty": path.certainty,
+                "complete": path.complete,
+            })
+        })
+        .collect::<Vec<_>>();
+
+    serde_json::to_string(&serde_json::json!({
+        "schemaVersion": 1,
+        "model": "entry-to-effect",
+        "entries": entry_values,
+        "selected": {
+            "entry": execution_entry_value(entry),
+            "nodes": node_rows.iter().map(execution_node_value).collect::<Vec<_>>(),
+            "edges": edge_rows.iter().map(execution_edge_value).collect::<Vec<_>>(),
+            "paths": path_values,
+            "diagnostics": diagnostics,
+            "truncated": paths.len() >= max_paths.clamp(1, 64) as usize,
+        },
+    }))
+    .map_err(|error| storage_error("Cannot encode execution flow response", error))
+}
+
 /// One directly persisted SQLite connection, owned by the engine process.
 #[napi]
 pub struct NativeDatabase {
@@ -968,6 +1447,22 @@ impl NativeDatabase {
             limit,
             memory_kind.as_deref(),
         )
+    }
+
+    /// Query the bounded, evidence-backed execution graph assembled by native
+    /// framework adapters. Path enumeration remains inside the native storage
+    /// boundary and terminates on cycles and configured limits.
+    #[napi]
+    pub fn execution_flow(
+        &self,
+        entry_id: Option<String>,
+        max_paths: Option<u32>,
+    ) -> Result<String> {
+        let connection = self.connection()?;
+        let connection = connection.as_ref().ok_or_else(|| {
+            Error::new(Status::GenericFailure, "SQLite store is closed".to_string())
+        })?;
+        execution_flow_json(connection, entry_id.as_deref(), max_paths.unwrap_or(24))
     }
 
     #[napi]

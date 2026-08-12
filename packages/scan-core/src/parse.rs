@@ -63,6 +63,7 @@ pub struct Parsed {
     pub symbols: Vec<Symbol>,
     pub imports: Vec<String>,
     pub refs: Vec<Reference>,
+    pub execution_entries: Vec<crate::http_flow::ExecutionEntry>,
 }
 
 /// A name this file bound from an import: local alias -> exported name.
@@ -1540,10 +1541,16 @@ pub fn parse(engines: &mut Engines, path: &str, lang: &str, source: &str) -> Par
     }
 
     let refs = collect_refs(tree.root_node(), bytes, &bindings, grammar);
+    let execution_entries = if grammar == Grammar::Python {
+        Vec::new()
+    } else {
+        crate::http_flow::extract(path, tree.root_node(), bytes)
+    };
     Parsed {
         symbols,
         imports,
         refs,
+        execution_entries,
     }
 }
 

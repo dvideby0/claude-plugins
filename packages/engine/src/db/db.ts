@@ -49,6 +49,73 @@ export interface KnowledgeHit {
   excerpt: string;
 }
 
+export interface ExecutionEntrySummary {
+  id: string;
+  kind: string;
+  label: string;
+  method: string;
+  route: string;
+  path: string;
+  symbol: string;
+  evidence: { path: string; startLine: number; endLine: number };
+  producer: { id: string; version: string; kind: string };
+  certainty: string;
+  freshness: "current" | "stale";
+  generation: { inputSha: string };
+  terminalEffects: number;
+  gaps: number;
+}
+
+export interface ExecutionNodeView {
+  id: string;
+  ordinal: number;
+  kind: string;
+  label: string;
+  path: string;
+  symbol: string;
+  target: { path: string | null; symbol: string; external: string };
+  evidence: { path: string; startLine: number; endLine: number };
+  certainty: string;
+  terminal: boolean;
+  detail: string;
+}
+
+export interface ExecutionEdgeView {
+  id: number;
+  from: string;
+  to: string;
+  kind: string;
+  label: string;
+  evidence: { path: string; startLine: number };
+  certainty: string;
+}
+
+export interface ExecutionPathView {
+  id: string;
+  nodeIds: string[];
+  edgeIds: number[];
+  conditions: string[];
+  terminalNodeId: string | null;
+  terminalEffect: string | null;
+  certainty: string;
+  complete: boolean;
+}
+
+export interface ExecutionFlowView {
+  schemaVersion: 1;
+  model: "entry-to-effect";
+  note?: string | null;
+  entries: ExecutionEntrySummary[];
+  selected: {
+    entry: ExecutionEntrySummary;
+    nodes: ExecutionNodeView[];
+    edges: ExecutionEdgeView[];
+    paths: ExecutionPathView[];
+    diagnostics: string[];
+    truncated: boolean;
+  } | null;
+}
+
 /** Stable location for the current path-derived workspace identity. */
 export function databasePathForWorkspace(canonicalRoot: string): string {
   return join(storeDir(), workspaceIdForCanonicalRoot(canonicalRoot), "audit.db");
@@ -170,6 +237,11 @@ export class Db {
       score: row.score,
       excerpt: row.excerpt,
     }));
+  }
+
+  /** Evidence-backed paths produced by bounded native framework adapters. */
+  executionFlow(entryId?: string, maxPaths = 24): ExecutionFlowView {
+    return JSON.parse(this.raw.executionFlow(entryId, maxPaths)) as ExecutionFlowView;
   }
 
   /** Scalar helper for counts and aggregates. */

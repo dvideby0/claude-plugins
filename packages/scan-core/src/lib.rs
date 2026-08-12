@@ -23,6 +23,7 @@ use rayon::prelude::*;
 use std::path::Path;
 
 mod database;
+mod http_flow;
 mod parse;
 mod provider;
 mod walk;
@@ -59,6 +60,55 @@ pub struct NativeRef {
 }
 
 #[napi(object)]
+pub struct NativeExecutionNode {
+    pub id: String,
+    pub ordinal: u32,
+    pub kind: String,
+    pub label: String,
+    pub path: String,
+    pub symbol: String,
+    pub target_symbol: String,
+    pub external: String,
+    pub start_line: u32,
+    pub end_line: u32,
+    pub certainty: String,
+    pub terminal: bool,
+    pub detail: String,
+}
+
+#[napi(object)]
+pub struct NativeExecutionEdge {
+    pub ordinal: u32,
+    pub from: String,
+    pub to: String,
+    pub kind: String,
+    pub label: String,
+    pub path: String,
+    pub start_line: u32,
+    pub certainty: String,
+}
+
+#[napi(object)]
+pub struct NativeExecutionEntry {
+    pub id: String,
+    pub kind: String,
+    pub label: String,
+    pub method: String,
+    pub route: String,
+    pub path: String,
+    pub symbol: String,
+    pub start_line: u32,
+    pub end_line: u32,
+    pub producer_id: String,
+    pub producer_version: String,
+    pub producer_kind: String,
+    pub certainty: String,
+    pub nodes: Vec<NativeExecutionNode>,
+    pub edges: Vec<NativeExecutionEdge>,
+    pub diagnostics: Vec<String>,
+}
+
+#[napi(object)]
 pub struct NativeFile {
     pub path: String,
     pub lang: String,
@@ -72,6 +122,8 @@ pub struct NativeFile {
     pub imports: Vec<String>,
     /// Uses of imported names, for symbol-level reference resolution.
     pub refs: Vec<NativeRef>,
+    /// Product-specific entry-to-effect facts extracted by bounded adapters.
+    pub execution_entries: Vec<NativeExecutionEntry>,
 }
 
 #[napi(object)]
@@ -160,6 +212,59 @@ fn scan_sync(root: &str) -> NativeScan {
                         module: reference.module,
                         line: reference.line,
                         column: reference.column,
+                    })
+                    .collect(),
+                execution_entries: parsed
+                    .execution_entries
+                    .into_iter()
+                    .map(|entry| NativeExecutionEntry {
+                        id: entry.id,
+                        kind: entry.kind,
+                        label: entry.label,
+                        method: entry.method,
+                        route: entry.route,
+                        path: entry.path,
+                        symbol: entry.symbol,
+                        start_line: entry.start_line,
+                        end_line: entry.end_line,
+                        producer_id: entry.producer_id,
+                        producer_version: entry.producer_version,
+                        producer_kind: entry.producer_kind,
+                        certainty: entry.certainty,
+                        nodes: entry
+                            .nodes
+                            .into_iter()
+                            .map(|node| NativeExecutionNode {
+                                id: node.id,
+                                ordinal: node.ordinal,
+                                kind: node.kind,
+                                label: node.label,
+                                path: node.path,
+                                symbol: node.symbol,
+                                target_symbol: node.target_symbol,
+                                external: node.external,
+                                start_line: node.start_line,
+                                end_line: node.end_line,
+                                certainty: node.certainty,
+                                terminal: node.terminal,
+                                detail: node.detail,
+                            })
+                            .collect(),
+                        edges: entry
+                            .edges
+                            .into_iter()
+                            .map(|edge| NativeExecutionEdge {
+                                ordinal: edge.ordinal,
+                                from: edge.from,
+                                to: edge.to,
+                                kind: edge.kind,
+                                label: edge.label,
+                                path: edge.path,
+                                start_line: edge.start_line,
+                                certainty: edge.certainty,
+                            })
+                            .collect(),
+                        diagnostics: entry.diagnostics,
                     })
                     .collect(),
             }
