@@ -3,6 +3,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { getDb } from "../db/db.js";
 import { createMcpServer } from "../mcp/server.js";
+import { resolveTypes } from "../graph/typed.js";
 import { scan } from "../scan/scan.js";
 import { loadNative } from "../scan/source.js";
 import { cleanup, makeProject } from "./helpers.js";
@@ -74,7 +75,7 @@ withNative("deterministic execution flow", () => {
       gaps: 0,
       producer: {
         id: "sdlc-http-route-adapter",
-        version: "1",
+        version: "2",
         kind: "framework",
       },
       certainty: "inferred",
@@ -133,6 +134,80 @@ withNative("deterministic execution flow", () => {
          WHERE NOT EXISTS (SELECT 1 FROM execution_entries e WHERE e.id = n.entry_id)`,
       ),
     ).toBe(0);
+  });
+
+  it("resolves aliased imports by exact call occurrence", async () => {
+    root = await makeProject({
+      "package.json": JSON.stringify({ type: "module" }),
+      "src/service.ts": `
+export default async function defaultFn(): Promise<number> { return 1; }
+export async function original(): Promise<number> { return 2; }
+`,
+      "src/http.ts": `
+import localDefault from "./service.js";
+import { original as localAlias } from "./service.js";
+function sendJson(_res: unknown, _status: number, _body: unknown): void {}
+export async function route(path: string, res: unknown): Promise<void> {
+  if (path === "/default") { await localDefault(); sendJson(res, 200, {}); }
+  if (path === "/alias") { await localAlias(); sendJson(res, 200, {}); }
+}
+`,
+    });
+    await scan(root, { full: true, kind: "execution-aliases" });
+    const db = await getDb(root);
+    const targets = new Map(
+      db.executionFlow().entries.map((entry) => {
+        const call = db
+          .executionFlow(entry.id)
+          .selected?.nodes.find((node) => node.kind === "await")?.target;
+        return [entry.route, call];
+      }),
+    );
+
+    expect(targets.get("/default")).toEqual({
+      path: "src/service.ts",
+      symbol: "defaultFn",
+      external: "",
+    });
+    expect(targets.get("/alias")).toEqual({
+      path: "src/service.ts",
+      symbol: "original",
+      external: "",
+    });
+  });
+
+  it("refreshes member-call targets when compiler references replace syntax refs", async () => {
+    root = await makeProject({
+      "package.json": JSON.stringify({ type: "module" }),
+      "tsconfig.json": JSON.stringify({
+        compilerOptions: {
+          target: "ES2022",
+          module: "NodeNext",
+          moduleResolution: "NodeNext",
+        },
+        include: ["src/*.ts"],
+      }),
+      "src/service.ts": `
+export class Service { async query(): Promise<number> { return 1; } }
+export const service = new Service();
+`,
+      "src/http.ts": `
+import { service } from "./service.js";
+function sendJson(_res: unknown, _status: number, _body: unknown): void {}
+export async function route(path: string, res: unknown): Promise<void> {
+  if (path === "/typed") { await service.query(); sendJson(res, 200, {}); }
+}
+`,
+    });
+    await scan(root, { full: true, kind: "execution-typed" });
+    const db = await getDb(root);
+    const entry = db.executionFlow().entries[0];
+    const target = () =>
+      db.executionFlow(entry.id).selected?.nodes.find((node) => node.kind === "await")?.target;
+    expect(target()?.path).toBeNull();
+
+    expect(resolveTypes(db, root).ran).toBe(true);
+    expect(target()).toEqual({ path: "src/service.ts", symbol: "query", external: "" });
   });
 
   it("serves the deterministic paths through the existing MCP flow tool", async () => {

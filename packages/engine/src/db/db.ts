@@ -106,6 +106,7 @@ export interface ExecutionFlowView {
   model: "entry-to-effect";
   note?: string | null;
   entries: ExecutionEntrySummary[];
+  diagnostics: string[];
   selected: {
     entry: ExecutionEntrySummary;
     nodes: ExecutionNodeView[];
@@ -306,7 +307,34 @@ export class Db {
            (s.end_column - s.start_column) ASC,
            s.start_line ASC
          LIMIT 1
-       )`,
+        )`,
+    );
+    // Execution nodes retain the local callee spelling and exact source
+    // occurrence. Resolve through that occurrence rather than comparing names:
+    // import aliases intentionally use a different local and exported name.
+    // Keeping this beside reference identity also makes compiler-pass updates
+    // immediately visible without waiting for another repository scan.
+    this.run(
+      `UPDATE execution_nodes SET
+         target_path = (
+           SELECT r.dst_path FROM refs r
+           WHERE r.src_path = execution_nodes.path
+             AND r.src_line = execution_nodes.target_line
+             AND r.src_column = execution_nodes.target_column
+             AND r.dst_path IS NOT NULL
+           LIMIT 1
+         ),
+         target_symbol = COALESCE((
+           SELECT COALESCE(s.name, r.name)
+           FROM refs r
+           LEFT JOIN symbols s ON s.id = r.dst_symbol_id
+           WHERE r.src_path = execution_nodes.path
+             AND r.src_line = execution_nodes.target_line
+             AND r.src_column = execution_nodes.target_column
+             AND r.dst_path IS NOT NULL
+           LIMIT 1
+         ), execution_nodes.target_local)
+       WHERE execution_nodes.target_local != ''`,
     );
   }
 

@@ -140,6 +140,11 @@ Schema v19 persists the first production framework-adapter graph in
 certainty, source evidence, file-owned replacement scope, and input content
 hash; query freshness compares that hash with the current indexed file.
 
+Schema v20 records the execution target's local source spelling and exact
+line/column occurrence separately from its resolved destination path and
+symbol. Reference providers can refresh the destination after syntax or typed
+resolution without losing aliases, default imports, or evidence identity.
+
 The native graph uses a private `next` edge for bounded path ordering. `next`
 is not silently promoted into the version-1 fact vocabulary. Evaluation and
 agent responses project meaningful operations into the existing `register`,

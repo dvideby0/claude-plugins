@@ -42,6 +42,8 @@ export interface ParsedExecutionNode {
   path: string;
   symbol: string;
   targetSymbol: string;
+  targetLine: number;
+  targetColumn: number;
   external: string;
   startLine: number;
   endLine: number;

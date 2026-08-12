@@ -17,11 +17,12 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-const DATABASE_SCHEMA_VERSION: u32 = 19;
+const DATABASE_SCHEMA_VERSION: u32 = 20;
 const FIRST_VERSIONED_SCHEMA: u32 = 17;
 const SCHEMA_V17_SQL: &str = include_str!("database_schema_v17.sql");
 const SCHEMA_V18_SQL: &str = include_str!("database_schema_v18.sql");
 const SCHEMA_V19_SQL: &str = include_str!("database_schema_v19.sql");
+const SCHEMA_V20_SQL: &str = include_str!("database_schema_v20.sql");
 const SEARCH_KINDS: &[&str] = &[
     "file",
     "symbol",
@@ -491,6 +492,9 @@ fn apply_migration(connection: &Connection, version: u32) -> Result<()> {
         19 => connection
             .execute_batch(SCHEMA_V19_SQL)
             .map_err(|error| database_error("Cannot install SQLite schema v19", error)),
+        20 => connection
+            .execute_batch(SCHEMA_V20_SQL)
+            .map_err(|error| database_error("Cannot install SQLite schema v20", error)),
         _ => Err(invalid_argument(format!(
             "No SQLite migration is registered for schema v{version}"
         ))),
@@ -1045,6 +1049,19 @@ fn execution_flow_json(
         .iter()
         .map(execution_entry_value)
         .collect::<Vec<_>>();
+    let mut inventory_diagnostic_statement = connection
+        .prepare(
+            "SELECT DISTINCT message FROM execution_diagnostics
+             WHERE message LIKE '%inventory was truncated%'
+                OR message LIKE '%remaining alternatives were not indexed%'
+             ORDER BY message LIMIT 128",
+        )
+        .map_err(|error| database_error("Cannot prepare execution inventory diagnostics", error))?;
+    let inventory_diagnostics = inventory_diagnostic_statement
+        .query_map([], |row| row.get::<_, String>(0))
+        .map_err(|error| database_error("Cannot query execution inventory diagnostics", error))?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(|error| database_error("Cannot read execution inventory diagnostics", error))?;
 
     let Some(entry_id) = selected_entry_id else {
         return serde_json::to_string(&serde_json::json!({
@@ -1056,6 +1073,7 @@ fn execution_flow_json(
                 None
             },
             "entries": entry_values,
+            "diagnostics": inventory_diagnostics,
             "selected": serde_json::Value::Null,
         }))
         .map_err(|error| storage_error("Cannot encode execution entry response", error));
@@ -1066,6 +1084,7 @@ fn execution_flow_json(
             "model": "entry-to-effect",
             "note": "The requested execution entry is not present in the current index.",
             "entries": entry_values,
+            "diagnostics": inventory_diagnostics,
             "selected": serde_json::Value::Null,
         }))
         .map_err(|error| storage_error("Cannot encode missing execution entry response", error));
@@ -1203,6 +1222,7 @@ fn execution_flow_json(
         "schemaVersion": 1,
         "model": "entry-to-effect",
         "entries": entry_values,
+        "diagnostics": inventory_diagnostics,
         "selected": {
             "entry": execution_entry_value(entry),
             "nodes": node_rows.iter().map(execution_node_value).collect::<Vec<_>>(),

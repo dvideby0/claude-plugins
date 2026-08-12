@@ -111,6 +111,11 @@ flows. Entries, nodes, control edges, diagnostics, producer/certainty metadata,
 evidence anchors, and per-file input hashes are replaced transactionally with
 their owning source file.
 
+[Schema v20](../packages/scan-core/src/database_schema_v20.sql) adds the exact
+source occurrence and local spelling for execution-call targets. Syntax and
+compiler reference passes can therefore refresh destination identity without
+guessing through import aliases or default-import names.
+
 The first versioned provider-neutral envelope is now documented in
 [`FACT_MODEL.md`](FACT_MODEL.md), and the legacy deterministic/asserted tables
 can be projected into it without changing their authority. SCIP facts are not
@@ -179,11 +184,14 @@ This is useful call-graph navigation, but it should not be presented as determin
 The first exception is the bounded Rust-owned HTTP adapter in
 [`packages/scan-core/src/http_flow.rs`](../packages/scan-core/src/http_flow.rs).
 For explicit `path === "/..."` guards it constructs a small operation/control
-graph, retains both `if` outcomes and caught exceptions, labels awaited calls,
-and recognizes concrete HTTP response effects. Native SQLite enumerates paths
-with node/path limits and cycle detection. Unsupported loop/switch control is
-preserved as an `unknown` gap. The adapter currently proves the product shape
-for one measured route family; it does not fill the general gaps listed above.
+graph, preserves bounded positive boolean route alternatives without inventing
+facts from negation, retains both `if` outcomes and caught exceptions, runs
+`finally` blocks before deferred returns or throws, labels the actually awaited
+call, and recognizes concrete HTTP response effects. Native SQLite enumerates
+paths with node/path limits and cycle detection. Unsupported loop/switch
+control and bounded-input truncation are preserved as visible diagnostics. The
+adapter currently proves the product shape for one measured route family; it
+does not fill the general gaps listed above.
 
 The gap workflow in [`packages/engine/src/graph/gaps.ts`](../packages/engine/src/graph/gaps.ts) and asserted relations in [`packages/engine/src/graph/relations.ts`](../packages/engine/src/graph/relations.ts) are valuable escape hatches. However, asserted relations are not yet a first-class overlay in the main flow and trace queries, so teaching the system a missed relationship does not consistently improve its answers.
 
@@ -285,9 +293,9 @@ explicit user-visible restore workflow for a generally corrupted store remain.
 
 The audit ran the following checks successfully against the working tree:
 
-- `npm test`: 37 engine test files and 305 tests passed.
+- `npm test`: 37 engine test files and 309 tests passed.
 - `npm run build`: native core, engine, bridge, protocol, and desktop passed.
-- `cargo test` in `packages/scan-core`: 33 Rust tests passed.
+- `cargo test` in `packages/scan-core`: 38 Rust tests passed.
 - The retired migration benchmark found 127 files, parsed 84, and reported 548
   symbols and 342 imports with no agreement differences. The Rust path took
   about 14 ms versus 158 ms for the former TypeScript path in that single run.

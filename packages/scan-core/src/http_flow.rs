@@ -9,8 +9,9 @@
 use tree_sitter::Node;
 
 const PRODUCER_ID: &str = "sdlc-http-route-adapter";
-const PRODUCER_VERSION: &str = "1";
+const PRODUCER_VERSION: &str = "2";
 const MAX_ENTRIES_PER_FILE: usize = 128;
+const MAX_GUARD_ALTERNATIVES: usize = 256;
 const MAX_NODES_PER_ENTRY: usize = 256;
 const MAX_EDGES_PER_ENTRY: usize = 512;
 
@@ -42,6 +43,8 @@ pub struct ExecutionNode {
     pub path: String,
     pub symbol: String,
     pub target_symbol: String,
+    pub target_line: u32,
+    pub target_column: u32,
     pub external: String,
     pub start_line: u32,
     pub end_line: u32,
@@ -73,7 +76,46 @@ struct CallObservation<'tree> {
     node: Node<'tree>,
     callee: String,
     target_symbol: String,
+    target_line: u32,
+    target_column: u32,
     awaited: bool,
+}
+
+#[derive(Clone, Default, PartialEq, Eq)]
+struct GuardAlternative {
+    route: Option<String>,
+    method: Option<String>,
+}
+
+struct GuardAnalysis {
+    alternatives: Vec<GuardAlternative>,
+    truncated: bool,
+}
+
+#[derive(Clone, Copy)]
+struct SourceAnchor {
+    start_line: u32,
+    end_line: u32,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum AbruptKind {
+    Return,
+    Throw,
+}
+
+#[derive(Clone)]
+struct DeferredAbrupt {
+    frontier: Frontier,
+    kind: AbruptKind,
+    source: SourceAnchor,
+    label: String,
+    external: String,
+}
+
+enum AbruptFrame {
+    Catch(Vec<Frontier>),
+    Finally(Vec<DeferredAbrupt>),
 }
 
 struct Builder<'a> {
@@ -82,6 +124,7 @@ struct Builder<'a> {
     next_node: u32,
     next_edge: u32,
     bounded: bool,
+    abrupt_frames: Vec<AbruptFrame>,
 }
 
 fn text<'a>(node: Node, bytes: &'a [u8]) -> &'a str {
@@ -110,34 +153,131 @@ fn unquote(value: &str) -> Option<String> {
     Some(value[1..value.len() - 1].to_string())
 }
 
-fn comparison_literal(node: Node, bytes: &[u8], wanted: &str) -> Option<String> {
-    if node.kind() == "binary_expression" {
-        let left = node.child_by_field_name("left");
-        let right = node.child_by_field_name("right");
-        let operator = node
-            .child_by_field_name("operator")
-            .map(|operator| text(operator, bytes));
-        if matches!(operator, Some("===") | Some("==")) {
-            if let (Some(left), Some(right)) = (left, right) {
-                if text(left, bytes).trim() == wanted {
-                    if let Some(value) = unquote(text(right, bytes)) {
-                        return Some(value);
-                    }
+fn equality_guard(node: Node, bytes: &[u8]) -> Option<GuardAlternative> {
+    let left = node.child_by_field_name("left")?;
+    let right = node.child_by_field_name("right")?;
+    let operator = node
+        .child_by_field_name("operator")
+        .map(|operator| text(operator, bytes));
+    if !matches!(operator, Some("===") | Some("==")) {
+        return None;
+    }
+    for (name, value) in [(left, right), (right, left)] {
+        let literal = unquote(text(value, bytes));
+        match (text(name, bytes).trim(), literal) {
+            ("path", Some(route)) => {
+                return Some(GuardAlternative {
+                    route: Some(route),
+                    method: None,
+                });
+            }
+            ("method", Some(method)) => {
+                return Some(GuardAlternative {
+                    route: None,
+                    method: Some(method),
+                });
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+fn merge_guards(left: &GuardAlternative, right: &GuardAlternative) -> Option<GuardAlternative> {
+    let route = match (&left.route, &right.route) {
+        (Some(left), Some(right)) if left != right => return None,
+        (Some(value), _) | (_, Some(value)) => Some(value.clone()),
+        _ => None,
+    };
+    let method = match (&left.method, &right.method) {
+        (Some(left), Some(right)) if !left.eq_ignore_ascii_case(right) => return None,
+        (Some(value), _) | (_, Some(value)) => Some(value.clone()),
+        _ => None,
+    };
+    Some(GuardAlternative { route, method })
+}
+
+fn guard_analysis(node: Node, bytes: &[u8]) -> GuardAnalysis {
+    if node.kind() == "parenthesized_expression" {
+        let mut cursor = node.walk();
+        return node
+            .named_children(&mut cursor)
+            .next()
+            .map(|child| guard_analysis(child, bytes))
+            .unwrap_or_else(|| GuardAnalysis {
+                alternatives: vec![GuardAlternative::default()],
+                truncated: false,
+            });
+    }
+    if node.kind() != "binary_expression" {
+        // In particular, do not recurse through unary `!`: a positive-looking
+        // comparison below it has the opposite route meaning.
+        return GuardAnalysis {
+            alternatives: vec![GuardAlternative::default()],
+            truncated: false,
+        };
+    }
+    if let Some(guard) = equality_guard(node, bytes) {
+        return GuardAnalysis {
+            alternatives: vec![guard],
+            truncated: false,
+        };
+    }
+    let Some(left) = node.child_by_field_name("left") else {
+        return GuardAnalysis {
+            alternatives: vec![GuardAlternative::default()],
+            truncated: false,
+        };
+    };
+    let Some(right) = node.child_by_field_name("right") else {
+        return GuardAnalysis {
+            alternatives: vec![GuardAlternative::default()],
+            truncated: false,
+        };
+    };
+    let operator = node
+        .child_by_field_name("operator")
+        .map(|operator| text(operator, bytes));
+    if !matches!(operator, Some("&&") | Some("||")) {
+        return GuardAnalysis {
+            alternatives: vec![GuardAlternative::default()],
+            truncated: false,
+        };
+    }
+    let left = guard_analysis(left, bytes);
+    let right = guard_analysis(right, bytes);
+    let mut alternatives = Vec::new();
+    let mut truncated = left.truncated || right.truncated;
+    if operator == Some("||") {
+        for guard in left.alternatives.into_iter().chain(right.alternatives) {
+            if !alternatives.contains(&guard) {
+                if alternatives.len() >= MAX_GUARD_ALTERNATIVES {
+                    truncated = true;
+                    break;
                 }
-                if text(right, bytes).trim() == wanted {
-                    if let Some(value) = unquote(text(left, bytes)) {
-                        return Some(value);
+                alternatives.push(guard);
+            }
+        }
+    } else {
+        'outer: for left in &left.alternatives {
+            for right in &right.alternatives {
+                if let Some(guard) = merge_guards(left, right) {
+                    if alternatives.contains(&guard) {
+                        continue;
                     }
+                    if alternatives.len() >= MAX_GUARD_ALTERNATIVES {
+                        truncated = true;
+                        break 'outer;
+                    }
+                    alternatives.push(guard);
                 }
             }
         }
     }
-
-    let mut cursor = node.walk();
-    let found = node
-        .named_children(&mut cursor)
-        .find_map(|child| comparison_literal(child, bytes, wanted));
-    found
+    GuardAnalysis {
+        alternatives,
+        truncated,
+    }
 }
 
 fn enclosing_symbol(mut node: Node, bytes: &[u8]) -> String {
@@ -180,6 +320,10 @@ fn last_property(node: Node, bytes: &[u8]) -> String {
         .to_string()
 }
 
+fn target_node(node: Node) -> Node {
+    node.child_by_field_name("property").unwrap_or(node)
+}
+
 fn collect_calls<'tree>(
     node: Node<'tree>,
     bytes: &[u8],
@@ -203,14 +347,19 @@ fn collect_calls<'tree>(
         if let Some(arguments) = node.child_by_field_name("arguments") {
             let mut cursor = arguments.walk();
             for child in arguments.named_children(&mut cursor) {
-                collect_calls(child, bytes, awaited, output);
+                // Argument expressions are evaluated before the outer call.
+                // Only their own await expressions suspend independently.
+                collect_calls(child, bytes, false, output);
             }
         }
         if let Some(function) = node.child_by_field_name("function") {
+            let target = target_node(function);
             output.push(CallObservation {
                 node,
                 callee: compact(text(function, bytes), 120),
                 target_symbol: last_property(function, bytes),
+                target_line: target.start_position().row as u32 + 1,
+                target_column: target.start_position().column as u32,
                 awaited,
             });
         }
@@ -289,6 +438,39 @@ impl Builder<'_> {
         label: String,
         symbol: String,
         target_symbol: String,
+        target_line: u32,
+        target_column: u32,
+        external: String,
+        terminal: bool,
+        detail: String,
+    ) -> Option<String> {
+        self.add_node_at(
+            SourceAnchor {
+                start_line: source.start_position().row as u32 + 1,
+                end_line: source.end_position().row as u32 + 1,
+            },
+            kind,
+            label,
+            symbol,
+            target_symbol,
+            target_line,
+            target_column,
+            external,
+            terminal,
+            detail,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn add_node_at(
+        &mut self,
+        source: SourceAnchor,
+        kind: &str,
+        label: String,
+        symbol: String,
+        target_symbol: String,
+        target_line: u32,
+        target_column: u32,
         external: String,
         terminal: bool,
         detail: String,
@@ -313,14 +495,116 @@ impl Builder<'_> {
             path: self.entry.path.clone(),
             symbol,
             target_symbol,
+            target_line,
+            target_column,
             external,
-            start_line: source.start_position().row as u32 + 1,
-            end_line: source.end_position().row as u32 + 1,
+            start_line: source.start_line,
+            end_line: source.end_line,
             certainty: "inferred".to_string(),
             terminal,
             detail,
         });
         Some(id)
+    }
+
+    fn abrupt_handler_index(&self, kind: AbruptKind) -> Option<usize> {
+        match kind {
+            AbruptKind::Return => self
+                .abrupt_frames
+                .iter()
+                .rposition(|frame| matches!(frame, AbruptFrame::Finally(_))),
+            AbruptKind::Throw => self.abrupt_frames.len().checked_sub(1),
+        }
+    }
+
+    fn propagate_abrupt(&mut self, abrupt: DeferredAbrupt) {
+        let Some(index) = self.abrupt_handler_index(abrupt.kind) else {
+            let kind = match abrupt.kind {
+                AbruptKind::Return => "return",
+                AbruptKind::Throw => "throw",
+            };
+            let detail = match abrupt.kind {
+                AbruptKind::Return => {
+                    "The pending return completes after all enclosing finalizers."
+                }
+                AbruptKind::Throw => "The pending exception leaves the recognized route.",
+            };
+            let Some(id) = self.add_node_at(
+                abrupt.source,
+                kind,
+                format!("Complete {}", abrupt.label),
+                self.entry.symbol.clone(),
+                String::new(),
+                0,
+                0,
+                abrupt.external,
+                true,
+                detail.to_string(),
+            ) else {
+                return;
+            };
+            self.connect(&[abrupt.frontier], &id);
+            return;
+        };
+
+        match &mut self.abrupt_frames[index] {
+            AbruptFrame::Catch(frontiers) => frontiers.push(Frontier {
+                from: abrupt.frontier.from,
+                kind: "catch".to_string(),
+                label: "explicit throw caught".to_string(),
+                line: abrupt.frontier.line,
+            }),
+            AbruptFrame::Finally(abrupts) => abrupts.push(abrupt),
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn emit_abrupt(
+        &mut self,
+        source: Node,
+        incoming: Vec<Frontier>,
+        kind: AbruptKind,
+        label: String,
+        external: String,
+        detail: String,
+    ) {
+        let handled = self.abrupt_handler_index(kind).is_some();
+        let node_kind = match kind {
+            AbruptKind::Return => "return",
+            AbruptKind::Throw => "throw",
+        };
+        let Some(id) = self.add_node(
+            source,
+            node_kind,
+            label.clone(),
+            self.entry.symbol.clone(),
+            String::new(),
+            0,
+            0,
+            external.clone(),
+            !handled,
+            detail,
+        ) else {
+            return;
+        };
+        self.connect(&incoming, &id);
+        if handled {
+            self.propagate_abrupt(DeferredAbrupt {
+                frontier: Frontier {
+                    from: id,
+                    kind: "next".to_string(),
+                    label: String::new(),
+                    line: source.start_position().row as u32 + 1,
+                },
+                kind,
+                source: SourceAnchor {
+                    start_line: source.start_position().row as u32 + 1,
+                    end_line: source.end_position().row as u32 + 1,
+                },
+                label,
+                external,
+            });
+        }
     }
 
     fn connect(&mut self, incoming: &[Frontier], target: &str) {
@@ -366,6 +650,8 @@ impl Builder<'_> {
             label.clone(),
             self.entry.symbol.clone(),
             String::new(),
+            0,
+            0,
             String::new(),
             false,
             "The HTTP adapter preserves this unsupported construct as an explicit uncertainty gap."
@@ -413,41 +699,32 @@ impl Builder<'_> {
                     return after_calls;
                 }
                 let value = compact(text(node, self.bytes).trim_start_matches("return"), 100);
-                let Some(id) = self.add_node(
+                let label = if value.is_empty() {
+                    "Return".to_string()
+                } else {
+                    format!("Return {value}")
+                };
+                self.emit_abrupt(
                     node,
-                    "return",
-                    if value.is_empty() {
-                        "Return".to_string()
-                    } else {
-                        format!("Return {value}")
-                    },
-                    self.entry.symbol.clone(),
-                    String::new(),
+                    after_calls,
+                    AbruptKind::Return,
+                    label,
                     "return".to_string(),
-                    true,
                     "The handler exits without another recognized effect in this branch."
                         .to_string(),
-                ) else {
-                    return after_calls;
-                };
-                self.connect(&after_calls, &id);
+                );
                 Vec::new()
             }
             "throw_statement" => {
-                let Some(id) = self.add_node(
+                self.emit_abrupt(
                     node,
-                    "throw",
+                    incoming,
+                    AbruptKind::Throw,
                     compact(text(node, self.bytes), 120),
-                    self.entry.symbol.clone(),
-                    String::new(),
                     "exception".to_string(),
-                    true,
                     "Exception leaves this route branch unless an enclosing handler catches it."
                         .to_string(),
-                ) else {
-                    return incoming;
-                };
-                self.connect(&incoming, &id);
+                );
                 Vec::new()
             }
             _ => self.walk_calls(node, incoming),
@@ -465,6 +742,8 @@ impl Builder<'_> {
             condition_label.clone(),
             self.entry.symbol.clone(),
             String::new(),
+            0,
+            0,
             String::new(),
             false,
             "Both syntactic outcomes are retained; runtime feasibility is not claimed.".to_string(),
@@ -511,21 +790,34 @@ impl Builder<'_> {
     }
 
     fn walk_try(&mut self, node: Node, incoming: Vec<Frontier>) -> Vec<Frontier> {
+        let finalizer = node.child_by_field_name("finalizer");
+        if finalizer.is_some() {
+            self.abrupt_frames.push(AbruptFrame::Finally(Vec::new()));
+        }
+        let handler = node.child_by_field_name("handler");
         let Some(control) = self.add_node(
             node,
             "branch",
             "Try block".to_string(),
             self.entry.symbol.clone(),
             String::new(),
+            0,
+            0,
             String::new(),
             false,
             "Normal and caught-exception outcomes are retained; the throwing operation is not guessed."
                 .to_string(),
         ) else {
+            if finalizer.is_some() {
+                self.abrupt_frames.pop();
+            }
             return incoming;
         };
         self.connect(&incoming, &control);
         let line = node.start_position().row as u32 + 1;
+        if handler.is_some() {
+            self.abrupt_frames.push(AbruptFrame::Catch(Vec::new()));
+        }
         let mut output = node
             .child_by_field_name("body")
             .map(|body| {
@@ -533,48 +825,59 @@ impl Builder<'_> {
                     body,
                     vec![Frontier {
                         from: control.clone(),
-                        kind: "branch".to_string(),
-                        label: "try block completes".to_string(),
+                        kind: "next".to_string(),
+                        label: String::new(),
                         line,
                     }],
                 )
             })
             .unwrap_or_default();
-        if let Some(handler) = node.child_by_field_name("handler") {
-            output.extend(self.walk_statement(
-                handler,
+        if let Some(handler) = handler {
+            let explicit_throws = match self.abrupt_frames.pop() {
+                Some(AbruptFrame::Catch(frontiers)) => frontiers,
+                _ => Vec::new(),
+            };
+            let catch_incoming = if explicit_throws.is_empty() {
                 vec![Frontier {
                     from: control,
                     kind: "catch".to_string(),
                     label: "try block throws".to_string(),
                     line,
-                }],
-            ));
-        } else {
-            let Some(throw) = self.add_node(
-                node,
-                "throw",
-                "Unhandled exception".to_string(),
-                self.entry.symbol.clone(),
-                String::new(),
-                "exception".to_string(),
-                true,
-                "No catch handler is present for this try block.".to_string(),
-            ) else {
-                return output;
+                }]
+            } else {
+                explicit_throws
             };
-            self.connect(
-                &[Frontier {
+            output.extend(self.walk_statement(handler, catch_incoming));
+        } else {
+            self.emit_abrupt(
+                node,
+                vec![Frontier {
                     from: control,
                     kind: "throw".to_string(),
                     label: "try block throws".to_string(),
                     line,
                 }],
-                &throw,
+                AbruptKind::Throw,
+                "Unhandled exception".to_string(),
+                "exception".to_string(),
+                "No catch handler is present for this try block.".to_string(),
             );
         }
-        if let Some(finalizer) = node.child_by_field_name("finalizer") {
+        if let Some(finalizer) = finalizer {
+            let deferred = match self.abrupt_frames.pop() {
+                Some(AbruptFrame::Finally(abrupts)) => abrupts,
+                _ => Vec::new(),
+            };
             output = self.walk_statement(finalizer, output);
+            for abrupt in deferred {
+                let resumed = self.walk_statement(finalizer, vec![abrupt.frontier.clone()]);
+                for frontier in resumed {
+                    self.propagate_abrupt(DeferredAbrupt {
+                        frontier,
+                        ..abrupt.clone()
+                    });
+                }
+            }
         }
         output
     }
@@ -583,9 +886,6 @@ impl Builder<'_> {
         let mut calls = Vec::new();
         collect_calls(node, self.bytes, false, &mut calls);
         for call in calls {
-            if ignored_call(&call) {
-                continue;
-            }
             if let Some((label, external)) = terminal_effect(&call, self.bytes) {
                 let Some(id) = self.add_node(
                     call.node,
@@ -593,6 +893,8 @@ impl Builder<'_> {
                     label,
                     self.entry.symbol.clone(),
                     call.target_symbol,
+                    call.target_line,
+                    call.target_column,
                     external,
                     true,
                     "Recognized by the bounded HTTP response adapter.".to_string(),
@@ -601,6 +903,9 @@ impl Builder<'_> {
                 };
                 self.connect(&incoming, &id);
                 return Vec::new();
+            }
+            if ignored_call(&call) {
+                continue;
             }
 
             let kind = if call.awaited { "await" } else { "call" };
@@ -615,6 +920,8 @@ impl Builder<'_> {
                 label,
                 self.entry.symbol.clone(),
                 call.target_symbol,
+                call.target_line,
+                call.target_column,
                 String::new(),
                 false,
                 if call.awaited {
@@ -641,6 +948,7 @@ fn build_entry(
     method: String,
 ) -> ExecutionEntry {
     let line = node.start_position().row as u32 + 1;
+    let column = node.start_position().column as u32;
     let symbol = enclosing_symbol(node, bytes);
     let method = if method.is_empty() {
         "ANY".to_string()
@@ -648,7 +956,7 @@ fn build_entry(
         method.to_ascii_uppercase()
     };
     let label = format!("{method} {route}");
-    let id = format!("{path}#http:{method}:{route}@{line}");
+    let id = format!("{path}#http:{method}:{route}@{line}:{column}");
     let mut builder = Builder {
         entry: ExecutionEntry {
             id: id.clone(),
@@ -672,6 +980,7 @@ fn build_entry(
         next_node: 0,
         next_edge: 0,
         bounded: false,
+        abrupt_frames: Vec::new(),
     };
 
     let entry_node = builder
@@ -681,6 +990,8 @@ fn build_entry(
             label,
             symbol,
             String::new(),
+            0,
+            0,
             String::new(),
             false,
             "HTTP route guard recognized from source syntax.".to_string(),
@@ -706,6 +1017,8 @@ fn build_entry(
                 "Route branch exits without a recognized terminal effect".to_string(),
                 builder.entry.symbol.clone(),
                 String::new(),
+                0,
+                0,
                 String::new(),
                 true,
                 "The adapter reached the end of the guarded block without seeing a response, throw, or return."
@@ -719,27 +1032,54 @@ fn build_entry(
     builder.entry
 }
 
-fn visit(path: &str, node: Node, bytes: &[u8], entries: &mut Vec<ExecutionEntry>) {
-    if entries.len() >= MAX_ENTRIES_PER_FILE {
-        return;
-    }
+fn visit(
+    path: &str,
+    node: Node,
+    bytes: &[u8],
+    entries: &mut Vec<ExecutionEntry>,
+    truncated: &mut bool,
+) {
     if node.kind() == "if_statement" {
         if let Some(condition) = node.child_by_field_name("condition") {
-            if let Some(route) = comparison_literal(condition, bytes, "path") {
-                if route.starts_with('/') {
-                    let method = comparison_literal(condition, bytes, "method").unwrap_or_default();
-                    entries.push(build_entry(path, node, bytes, route, method));
-                    // Nested path guards are separate routes only when they are
-                    // not already owned by this recognized guarded block.
-                    return;
+            let analysis = guard_analysis(condition, bytes);
+            let mut guards = analysis
+                .alternatives
+                .into_iter()
+                .filter_map(|guard| {
+                    let route = guard.route?;
+                    route
+                        .starts_with('/')
+                        .then_some((route, guard.method.unwrap_or_default()))
+                })
+                .collect::<Vec<_>>();
+            guards.sort();
+            guards.dedup();
+            if !guards.is_empty() {
+                for (route, method) in guards {
+                    if entries.len() >= MAX_ENTRIES_PER_FILE {
+                        *truncated = true;
+                        break;
+                    }
+                    let mut entry = build_entry(path, node, bytes, route, method);
+                    if analysis.truncated {
+                        entry.diagnostics.push(format!(
+                            "{}:{} has more than {MAX_GUARD_ALTERNATIVES} boolean route alternatives; remaining alternatives were not indexed.",
+                            path,
+                            condition.start_position().row + 1
+                        ));
+                    }
+                    entries.push(entry);
                 }
+                // Nested path guards are separate routes only when they are
+                // not already owned by this recognized guarded block.
+                return;
             }
         }
     }
     let mut cursor = node.walk();
     for child in node.named_children(&mut cursor) {
-        visit(path, child, bytes, entries);
-        if entries.len() >= MAX_ENTRIES_PER_FILE {
+        visit(path, child, bytes, entries, truncated);
+        if *truncated {
             break;
         }
     }
@@ -747,7 +1087,18 @@ fn visit(path: &str, node: Node, bytes: &[u8], entries: &mut Vec<ExecutionEntry>
 
 pub fn extract(path: &str, root: Node, bytes: &[u8]) -> Vec<ExecutionEntry> {
     let mut entries = Vec::new();
-    visit(path, root, bytes, &mut entries);
+    let mut truncated = false;
+    visit(path, root, bytes, &mut entries, &mut truncated);
+    if truncated {
+        let diagnostic = format!(
+            "{path} contains more than {MAX_ENTRIES_PER_FILE} recognized HTTP entries; the file-level route inventory was truncated."
+        );
+        for entry in &mut entries {
+            if !entry.diagnostics.contains(&diagnostic) {
+                entry.diagnostics.push(diagnostic.clone());
+            }
+        }
+    }
     entries
 }
 
@@ -819,6 +1170,125 @@ async function handleApi(path: string, method: string, res: unknown) {
         );
         assert!(entry.edges.iter().any(|edge| edge.kind == "catch"));
         assert!(entry.edges.iter().any(|edge| edge.kind == "branch"));
+    }
+
+    #[test]
+    fn preserves_positive_boolean_route_alternatives_without_cross_pairing() {
+        let entries = extract_typescript(
+            r#"function route(path: string, method: string, res: unknown) {
+              if (path === "/" || path === "/index.html") { res.end(); }
+              if (!(path === "/excluded")) { sendJson(res, 201, {}); }
+              if ((path === "/get" && method === "GET") ||
+                  (path === "/post" && method === "POST")) { sendJson(res, 202, {}); }
+            }"#,
+        );
+        let mut labels = entries
+            .iter()
+            .map(|entry| entry.label.as_str())
+            .collect::<Vec<_>>();
+        labels.sort();
+        assert_eq!(
+            labels,
+            ["ANY /", "ANY /index.html", "GET /get", "POST /post"]
+        );
+        assert!(entries.iter().all(|entry| {
+            entry
+                .nodes
+                .iter()
+                .any(|node| node.kind == "terminal-effect")
+        }));
+    }
+
+    #[test]
+    fn keeps_same_line_duplicate_routes_collision_free() {
+        let entries = extract_typescript(
+            r#"function a(path: string, res: unknown) { if (path === "/x") { sendJson(res, 200, {}); } } function b(path: string, res: unknown) { if (path === "/x") { sendJson(res, 200, {}); } }"#,
+        );
+        assert_eq!(entries.len(), 2);
+        assert_ne!(entries[0].id, entries[1].id);
+    }
+
+    #[test]
+    fn distinguishes_nested_calls_from_the_awaited_outer_call() {
+        let entries = extract_typescript(
+            r#"async function route(path: string, res: unknown) {
+              if (path === "/await") { await outer(inner()); sendJson(res, 200, {}); }
+            }"#,
+        );
+        let operations = entries[0]
+            .nodes
+            .iter()
+            .filter(|node| matches!(node.kind.as_str(), "call" | "await"))
+            .map(|node| (node.kind.as_str(), node.label.as_str()))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            operations,
+            [("call", "Call inner"), ("await", "Await outer")]
+        );
+    }
+
+    #[test]
+    fn routes_explicit_throws_into_catches_and_runs_finally_before_return() {
+        let entries = extract_typescript(
+            r#"function route(path: string, res: unknown) {
+              if (path === "/caught") {
+                try { throw new Error("bad"); }
+                catch (error) { sendJson(res, 400, { error }); }
+              }
+              if (path === "/finally") {
+                try { return work(); }
+                finally { sendJson(res, 200, {}); }
+              }
+            }"#,
+        );
+        let caught = entries
+            .iter()
+            .find(|entry| entry.route == "/caught")
+            .expect("caught route");
+        let throw = caught
+            .nodes
+            .iter()
+            .find(|node| node.kind == "throw")
+            .expect("explicit throw node");
+        assert!(!throw.terminal);
+        assert!(caught
+            .edges
+            .iter()
+            .any(|edge| edge.from == throw.id && edge.kind == "catch"));
+        assert!(!caught
+            .nodes
+            .iter()
+            .any(|node| node.terminal && node.external == "exception"));
+
+        let finally = entries
+            .iter()
+            .find(|entry| entry.route == "/finally")
+            .expect("finally route");
+        assert!(finally
+            .nodes
+            .iter()
+            .any(|node| node.terminal && node.external == "http:response:200"));
+        assert!(!finally
+            .nodes
+            .iter()
+            .any(|node| node.terminal && node.external == "return"));
+    }
+
+    #[test]
+    fn exposes_the_per_file_entry_cap_as_a_diagnostic() {
+        let mut source = String::from("function route(path: string, res: unknown) {");
+        for index in 0..=MAX_ENTRIES_PER_FILE {
+            source.push_str(&format!(
+                "if (path === '/route-{index}') {{ sendJson(res, 200, {{}}); }}"
+            ));
+        }
+        source.push('}');
+        let entries = extract_typescript(&source);
+        assert_eq!(entries.len(), MAX_ENTRIES_PER_FILE);
+        assert!(entries.iter().all(|entry| entry
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.contains("inventory was truncated"))));
     }
 
     #[test]

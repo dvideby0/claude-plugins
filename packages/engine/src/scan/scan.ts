@@ -27,7 +27,7 @@ import { sourceSignature } from "./signature.js";
  *
  * When the stored version is behind, the next scan is promoted to a full one.
  */
-export const EXTRACTION_VERSION = 11;
+export const EXTRACTION_VERSION = 12;
 
 export interface ScanOptions {
   /** Re-parse every file, ignoring content hashes. */
@@ -258,9 +258,10 @@ async function doScan(projectRoot: string, options: ScanOptions = {}): Promise<S
         for (const node of entry.nodes) {
           db.run(
             `INSERT INTO execution_nodes(
-               id, entry_id, ordinal, kind, label, path, symbol, target_symbol,
-               external, start_line, end_line, certainty, terminal, detail
-             ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+               id, entry_id, ordinal, kind, label, path, symbol, target_local,
+               target_symbol, target_line, target_column, external, start_line,
+               end_line, certainty, terminal, detail
+             ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
             [
               node.id,
               entry.id,
@@ -270,6 +271,9 @@ async function doScan(projectRoot: string, options: ScanOptions = {}): Promise<S
               node.path,
               node.symbol,
               node.targetSymbol,
+              node.targetSymbol,
+              node.targetLine,
+              node.targetColumn,
               node.external,
               node.startLine,
               node.endLine,
@@ -359,18 +363,6 @@ async function doScan(projectRoot: string, options: ScanOptions = {}): Promise<S
     // typed declaration lines where available, so duplicate method names stay
     // distinct instead of collapsing to path + name.
     db.refreshReferenceIdentity();
-    db.run(
-      `UPDATE execution_nodes SET target_path = (
-         SELECT r.dst_path FROM refs r
-         WHERE r.src_path = execution_nodes.path
-           AND r.name = execution_nodes.target_symbol
-           AND r.dst_path IS NOT NULL
-           AND r.src_line BETWEEN execution_nodes.start_line AND execution_nodes.end_line
-         ORDER BY r.src_line, r.src_column
-         LIMIT 1
-       )
-       WHERE execution_nodes.target_symbol != ''`,
-    );
   });
 
   const symbolCount = db.count("SELECT COUNT(*) AS n FROM symbols");

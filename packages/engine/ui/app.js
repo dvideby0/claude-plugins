@@ -1915,7 +1915,10 @@ async function paneExecutionFlow(workspace, pane, index) {
     </div>
     <div class="flow-split execution-split">
       <aside class="flow-rail" id="execution-rail"></aside>
-      <div class="execution-stage" id="execution-stage"><div class="loading">Tracing evidence…</div></div>
+      <div class="execution-stage" id="execution-stage">
+        ${index.diagnostics?.length ? `<div class="execution-diagnostics"><strong>Inventory limits</strong>${index.diagnostics.map((diagnostic) => `<p>${esc(diagnostic)}</p>`).join("")}</div>` : ""}
+        <div class="loading">Tracing evidence…</div>
+      </div>
     </div>
     <aside class="inspector execution-inspector" id="execution-inspector" hidden></aside>
   `;
@@ -1924,6 +1927,9 @@ async function paneExecutionFlow(workspace, pane, index) {
   const rail = document.getElementById("execution-rail");
   const stage = document.getElementById("execution-stage");
   const inspector = document.getElementById("execution-inspector");
+  const inventoryNotice = index.diagnostics?.length
+    ? `<div class="execution-diagnostics"><strong>Inventory limits</strong>${index.diagnostics.map((diagnostic) => `<p>${esc(diagnostic)}</p>`).join("")}</div>`
+    : "";
 
   function renderRail() {
     rail.innerHTML = `
@@ -1950,7 +1956,7 @@ async function paneExecutionFlow(workspace, pane, index) {
   }
 
   async function loadExecution() {
-    stage.innerHTML = `<div class="loading">Tracing evidence…</div>`;
+    stage.innerHTML = `${inventoryNotice}<div class="loading">Tracing evidence…</div>`;
     inspector.hidden = true;
     try {
       const view = await api(
@@ -1963,7 +1969,7 @@ async function paneExecutionFlow(workspace, pane, index) {
       }
       const entry = selected.entry;
       const nodes = new Map(selected.nodes.map((node) => [node.id, node]));
-      stage.innerHTML = `
+      stage.innerHTML = `${inventoryNotice}
         <div class="execution-head">
           <div>
             <span class="execution-kicker">${esc(entry.kind.replaceAll("-", " "))}</span>

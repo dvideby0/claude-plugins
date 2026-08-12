@@ -253,14 +253,20 @@ Progress (2026-08-12, HTTP vertical slice): a bounded Rust Tree-sitter
 framework adapter now recognizes explicit TypeScript/JavaScript HTTP route
 guards and persists file-owned execution entries, operations, control edges,
 diagnostics, producer identity, certainty, source evidence, and input hashes in
-schema v19. It retains `if` branches, caught-exception outcomes, awaited calls,
-returns/throws, and recognized HTTP response effects; unsupported loops and
-switches become explicit gaps. Native path enumeration is cycle- and
-budget-bounded. The existing MCP `flow` operation prefers this model when it is
+schema v19, with exact call-target occurrences added in schema v20. It retains
+bounded positive boolean route alternatives, `if` branches, caught explicit
+throws, `finally` transitions before deferred returns/throws, awaited calls,
+returns/throws, and recognized HTTP response effects; unsupported loops,
+switches, and input truncation become explicit gaps or diagnostics. Native path
+enumeration is cycle- and budget-bounded. Reference refresh resolves aliased and
+default imports and incorporates later compiler targets. The existing MCP
+`flow` operation prefers this model when it is
 available, while preserving the older call graph as `mode: calls`, and the
 desktop now presents entry-to-effect paths as its primary Flow workspace. A
 checked-in HTTP fixture measures one entry, seven unique semantic relations,
-and three paths at 1.0 precision/recall. The real `GET /api/search` route in
+eight distinct evidence occurrences, and three paths at 1.0 precision/recall;
+an explicitly required measured provider now fails instead of passing
+unmeasured when its adapter produces no graph. The real `GET /api/search` route in
 this repository produces the same three response paths with resolved imported
 targets. This is the first vertical slice, not FLOW-001 completion: two more
 real flows, switch/loop/early-return/uncaught-exception coverage, asserted
@@ -281,8 +287,9 @@ Acceptance criteria:
 
 Progress (2026-08-12): the desktop now has a first global search workspace over
 the shared FTS5 index and can open file-backed results in the existing indexed
-file drawer. Precise range navigation, exact source-text indexing, synchronized
-source/graph/path selection, and the flow-centered workspace remain open.
+file drawer. The first flow-centered entry-to-effect workspace is available for
+supported deterministic entries. Precise range navigation, exact source-text
+indexing, and synchronized source/graph/path selection remain open.
 
 ### QUERY-001: One budgeted task-context query
 
