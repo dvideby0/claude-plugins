@@ -138,8 +138,9 @@ transaction returns to the daemon event loop.
 
 ## Writes are synchronous inside a transaction
 
-sql.js shares one handle per store across every request. An `await` inside an
-open transaction lets unrelated writes join it — and roll back with it.
+Native SQLite exposes one directly persisted connection per store to every
+request. An `await` inside an open transaction lets unrelated writes join it —
+and roll back with it.
 `Db.transaction(fn)` takes a synchronous callback on purpose: read and parse
 first, then write in one synchronous pass. Scans are additionally serialised
 per store (`scan.ts`), because the watcher, the HTTP job and the MCP tool are

@@ -163,8 +163,11 @@ Everything the engine owns lives in `~/.sdlc/`:
 | `daemon.json` | Port and bearer token of the running engine (mode 0600) |
 | `workspaces.json` | Repositories the engine has been asked to index |
 | `daemon.log` | What the engine did |
+| `stores/<workspace-id>/audit.db` | Native SQLite code-intelligence store |
 
-Per-repository audit stores stay in the repository, under `sdlc-audit/`.
+On first open, an older repository-local `sdlc-audit/audit.db` is copied into
+app-owned storage and retained in place as a recoverable legacy backup. New
+stores and all subsequent writes stay outside the source repository.
 
 ## Security
 

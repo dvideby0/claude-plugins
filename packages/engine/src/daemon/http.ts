@@ -702,7 +702,7 @@ export function createHttpServer(options: HttpServerOptions): HttpServerHandle {
       if (!sub && method === "DELETE") {
         const job = jobs.get(id);
         removedRoots.add(workspace.root);
-        // A tool request can hold the same sql.js image independently of the
+        // A tool request can hold the same SQLite connection independently of the
         // desktop's index jobs. Stop only sessions that touched this workspace,
         // then wait for their handlers to release the handle before eviction.
         const workspaceSessions: ActiveMcpSession[] = [];

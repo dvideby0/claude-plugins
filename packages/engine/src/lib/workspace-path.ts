@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { readFile, realpath } from "node:fs/promises";
 import { resolve, sep } from "node:path";
 
@@ -5,9 +6,9 @@ import { resolve, sep } from "node:path";
  * Resolve aliases to the filesystem's real identity before a workspace gets
  * an id, a scan queue, or a live database handle.
  *
- * A symlink and its target can address the same audit.db. Treating them as two
- * roots creates two in-memory sql.js databases whose flushes overwrite each
- * other. `realpath` also returns canonical casing on case-insensitive hosts.
+ * A symlink and its target can address the same app-owned store. Treating them
+ * as two roots would create competing identities. `realpath` also returns
+ * canonical casing on case-insensitive hosts.
  */
 export async function canonicalWorkspaceRoot(projectRoot: string): Promise<string> {
   const absolute = resolve(projectRoot);
@@ -23,6 +24,14 @@ export async function canonicalWorkspaceRoot(projectRoot: string): Promise<strin
 /** Key form only; preserve canonical display casing in stored Workspace.root. */
 export function workspaceIdentityKey(canonicalRoot: string): string {
   return process.platform === "win32" ? canonicalRoot.toLowerCase() : canonicalRoot;
+}
+
+/** Current deterministic workspace id; shared by the registry and store. */
+export function workspaceIdForCanonicalRoot(canonicalRoot: string): string {
+  return createHash("sha256")
+    .update(workspaceIdentityKey(canonicalRoot))
+    .digest("hex")
+    .slice(0, 12);
 }
 
 /** Resolve an agent-supplied path without letting it escape the workspace. */

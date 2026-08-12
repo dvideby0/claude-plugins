@@ -30,12 +30,13 @@ so rather than installing a second copy of the engine inside the plugin.
 
 ## Persistent knowledge
 
-The prototype currently keeps each workspace store in
-`sdlc-audit/audit.db` inside that workspace. Moving those stores under the
-app-owned `~/.sdlc/stores` directory is tracked roadmap work. Repeated scans
-reuse unchanged results, finding fingerprints survive line movement, accepted
-risks and false positives remain sticky, and memories can be attached to code
-with deterministic signatures so stale knowledge is visible after changes.
+The app keeps each workspace store in
+`~/.sdlc/stores/<workspace-id>/audit.db` (or under `SDLC_HOME`). On first open,
+an older repository-local `sdlc-audit/audit.db` is copied into app-owned storage
+and retained as a recoverable legacy backup. Repeated scans reuse unchanged
+results, finding fingerprints survive line movement, accepted risks and false
+positives remain sticky, and memories can be attached to code with deterministic
+signatures so stale knowledge is visible after changes.
 
 The desktop app renders the same store directly. MCP tools such as
 `audit_status`, `audit_scan`, `audit_run_tools`, `audit_plan`, `audit_review`,

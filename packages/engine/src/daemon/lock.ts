@@ -192,7 +192,7 @@ export async function acquireDaemonLock(
       if (existing && alive && sameProcess) {
         // A health timeout is not proof that the owner died: indexing and
         // compiler passes can keep the event loop busy beyond the ping window.
-        // Reclaiming from a live PID would permit two sql.js writers and let a
+        // Reclaiming from a live PID would permit two SQLite writers and let a
         // later flush overwrite the other daemon's state. We only reclaim when
         // the PID is gone or the recorded machine boot no longer matches.
         await rm(candidate, { recursive: true, force: true });

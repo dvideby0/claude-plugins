@@ -190,3 +190,11 @@ export interface NativeMatch {
 export declare function searchStructural(root: string, query: string, languages?: Array<string> | undefined | null, limit?: number | undefined | null, textFilter?: string | undefined | null): Promise<Array<NativeMatch>>
 /** Read the bounded source inventory for deterministic content analyzers. */
 export declare function readRepoFiles(root: string): Promise<Array<NativeSourceFile>>
+/** One directly persisted SQLite connection, owned by the engine process. */
+export declare class NativeDatabase {
+  constructor(path: string, createIfMissing: boolean)
+  executeBatch(sql: string): void
+  run(sql: string, paramsJson: string): void
+  all(sql: string, paramsJson: string): string
+  close(): void
+}

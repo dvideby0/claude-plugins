@@ -258,9 +258,13 @@ export async function runEvaluationWorker(
   if (!oracle.providers.includes(provider)) {
     throw new Error(`Provider ${provider} is not selected by scenario ${oracle.scenario}.`);
   }
-  const project = await mkdtemp(join(tmpdir(), `sdlc-eval-${provider}-`));
-  const artifacts = await mkdtemp(join(tmpdir(), `sdlc-eval-artifacts-${provider}-`));
+  const previousStateDir = process.env.SDLC_HOME;
+  const evaluationState = await mkdtemp(join(tmpdir(), `sdlc-eval-state-${provider}-`));
+  process.env.SDLC_HOME = evaluationState;
+  let cleanupProject: string | null = null;
+  let cleanupArtifacts: string | null = null;
   let dbOpened = false;
+  let workspaceDbPath: string | null = null;
   let batch: FactBatch;
   let timings: EvaluationTimings;
   let official: OfficialScipTest | null = null;
@@ -269,8 +273,15 @@ export async function runEvaluationWorker(
   let providerArtifactBytes: number | null = null;
   let sourceEngine: ScanResult["engine"] = "native";
 
-  await cp(fixture, project, { recursive: true });
   try {
+    // Setup belongs inside the cleanup boundary: if either temporary directory
+    // or the fixture copy fails, SDLC_HOME still has to be restored.
+    const project = await mkdtemp(join(tmpdir(), `sdlc-eval-${provider}-`));
+    cleanupProject = project;
+    const artifacts = await mkdtemp(join(tmpdir(), `sdlc-eval-artifacts-${provider}-`));
+    cleanupArtifacts = artifacts;
+    await cp(fixture, project, { recursive: true });
+
     if (provider === "native-tree-sitter") {
       const { projectLegacyFacts } = await import("../facts/legacy.js");
       const cold = await timed(() => scan(project, { full: true, kind: "evaluation-cold" }));
@@ -280,6 +291,7 @@ export async function runEvaluationWorker(
       const changed = await timed(() => scan(project, { kind: "evaluation-one-file-change" }));
       const db = await getDb(project);
       dbOpened = true;
+      workspaceDbPath = db.path;
       batch = projectLegacyFacts(db, {
         workspaceId: workspaceId(oracle.scenario, provider),
         generatedAt: "1970-01-01T00:00:00.000Z",
@@ -288,7 +300,7 @@ export async function runEvaluationWorker(
         coldMs: cold.durationMs,
         warmMs: warm.durationMs,
         changedFileMs: changed.durationMs,
-        scope: "repository scan and transactional prototype-store update",
+        scope: "repository scan and native workspace-store update",
       };
     } else if (provider === "native-plus-typescript-checker") {
       const [{ projectLegacyFacts }, { resolveTypes }] = await Promise.all([
@@ -299,6 +311,7 @@ export async function runEvaluationWorker(
       sourceEngine = scanned.engine;
       const db = await getDb(project);
       dbOpened = true;
+      workspaceDbPath = db.path;
       const cold = await timed(() => resolveTypes(db, project));
       requireTypedRun("cold run", cold.value);
       const warm = await timed(() => resolveTypes(db, project));
@@ -334,6 +347,7 @@ export async function runEvaluationWorker(
       sourceEngine = scanned.engine;
       const db = await getDb(project);
       dbOpened = true;
+      workspaceDbPath = db.path;
       const sourceSignature = indexedSourceSignature(db);
       const evaluated = await timed(() =>
         runScipEvaluation(workspaceId(oracle.scenario, provider), project, db, artifacts),
@@ -409,6 +423,7 @@ export async function runEvaluationWorker(
       sourceEngine = scanned.engine;
       const db = await getDb(project);
       dbOpened = true;
+      workspaceDbPath = db.path;
       const sourceSignature = indexedSourceSignature(db);
       const indexPath = join(artifacts, "index.scip");
       const environmentPath = join(artifacts, "environment.json");
@@ -505,7 +520,8 @@ export async function runEvaluationWorker(
       await closeDb(project);
       dbOpened = false;
     }
-    const workspaceDbBytes = await fileBytes(join(project, "sdlc-audit", "audit.db"));
+    if (!workspaceDbPath) throw new Error("Evaluation completed without a workspace store.");
+    const workspaceDbBytes = await fileBytes(workspaceDbPath);
     return {
       provider,
       scenario: oracle.scenario,
@@ -535,11 +551,17 @@ export async function runEvaluationWorker(
           : ["entry-to-effect path precision and recall", "retrieval quality"],
     };
   } finally {
-    if (dbOpened) await closeDb(project).catch(() => false);
-    await Promise.all([
-      rm(project, { recursive: true, force: true }),
-      rm(artifacts, { recursive: true, force: true }),
-    ]);
+    // scan() can cache a connection before the branch reaches its explicit
+    // getDb() bookkeeping. Always attempt eviction once setup created a root.
+    if (cleanupProject) await closeDb(cleanupProject).catch(() => false);
+    if (previousStateDir === undefined) delete process.env.SDLC_HOME;
+    else process.env.SDLC_HOME = previousStateDir;
+    const cleanup: Array<Promise<void>> = [
+      ...(cleanupProject ? [rm(cleanupProject, { recursive: true, force: true })] : []),
+      ...(cleanupArtifacts ? [rm(cleanupArtifacts, { recursive: true, force: true })] : []),
+      rm(evaluationState, { recursive: true, force: true }),
+    ];
+    await Promise.all(cleanup);
   }
 }
 

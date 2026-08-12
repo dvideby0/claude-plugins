@@ -1,54 +1,96 @@
 /**
- * SQLite access. One writer (this server), one file: sdlc-audit/audit.db.
+ * SQLite access. One writer (this server), one app-owned store per workspace.
  */
 
-import { access, mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { constants } from "node:fs";
+import { access, chmod, copyFile, mkdir, open as openFile, stat } from "node:fs/promises";
 import { dirname, join } from "node:path";
-import { loadSqlJs, type SqlDatabase } from "../runtime/assets.js";
+import { storeDir } from "@sdlc/protocol";
+import { NativeDatabase } from "@sdlc/scan-core";
 import { SCHEMA_SQL, SCHEMA_VERSION } from "./schema.js";
-import { canonicalWorkspaceRoot, workspaceIdentityKey } from "../lib/workspace-path.js";
+import {
+  canonicalWorkspaceRoot,
+  workspaceIdentityKey,
+  workspaceIdForCanonicalRoot,
+} from "../lib/workspace-path.js";
 
 export type Params = Array<string | number | null>;
 
+/** Stable location for the current path-derived workspace identity. */
+export function databasePathForWorkspace(canonicalRoot: string): string {
+  return join(storeDir(), workspaceIdForCanonicalRoot(canonicalRoot), "audit.db");
+}
+
+/**
+ * Copy the prototype's repository-local store once, leaving the source as a
+ * recoverable backup. New writes always target app-owned storage.
+ */
+async function migrateLegacyStore(projectRoot: string, dbPath: string): Promise<void> {
+  try {
+    await access(dbPath);
+    return;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+  }
+
+  const legacyPath = join(projectRoot, "sdlc-audit", "audit.db");
+  try {
+    await copyFile(legacyPath, dbPath, constants.COPYFILE_EXCL);
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code !== "ENOENT" && code !== "EEXIST") throw error;
+  }
+}
+
 export class Db {
   private constructor(
-    private readonly raw: SqlDatabase,
+    private readonly raw: NativeDatabase,
     readonly path: string,
   ) {}
 
   static async open(projectRoot: string, createIfMissing = true): Promise<Db> {
-    const dbPath = join(projectRoot, "sdlc-audit", "audit.db");
-    const SQL = await loadSqlJs();
-
-    let raw: SqlDatabase;
-    try {
-      const bytes = await readFile(dbPath);
-      raw = new SQL.Database(new Uint8Array(bytes));
-    } catch (error) {
-      // A missing store is the only reason to start a new one. Treating a
-      // permission error or corrupt SQLite image as "not found" silently
-      // replaces an index the user still needs with an empty database.
-      if ((error as NodeJS.ErrnoException).code !== "ENOENT" || !createIfMissing) throw error;
-      raw = new SQL.Database();
+    const dbPath = databasePathForWorkspace(projectRoot);
+    await mkdir(dirname(dbPath), { recursive: true, mode: 0o700 });
+    await migrateLegacyStore(projectRoot, dbPath);
+    if (createIfMissing) {
+      try {
+        const file = await openFile(dbPath, "wx", 0o600);
+        await file.close();
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+      }
+    } else {
+      await access(dbPath);
     }
+    await chmod(dbPath, 0o600);
 
+    // NativeDatabase opens the file directly. A permission or corruption
+    // failure propagates; it is never reinterpreted as permission to replace
+    // an existing index with an empty store.
+    const raw = new NativeDatabase(dbPath, createIfMissing);
     const db = new Db(raw, dbPath);
+    try {
+      // Migrate before the schema runs. `CREATE TABLE IF NOT EXISTS` does
+      // nothing to an existing table, so added columns must converge first.
+      db.migrate();
 
-    // Migrate before the schema runs. `CREATE TABLE IF NOT EXISTS` does nothing
-    // to a table that already exists, so a new column never appears on an
-    // existing store — and an index over that column then fails to create,
-    // which is how this was found. SCHEMA_VERSION was recorded but never read.
-    db.migrate();
-
-    db.raw.run(SCHEMA_SQL);
-    db.refreshReferenceIdentity();
-    db.run("INSERT OR REPLACE INTO meta(key, value) VALUES('schema_version', ?)", [
-      String(SCHEMA_VERSION),
-    ]);
-    db.run("INSERT OR REPLACE INTO meta(key, value) VALUES('project_root', ?)", [
-      projectRoot,
-    ]);
-    return db;
+      db.raw.executeBatch(SCHEMA_SQL);
+      db.refreshReferenceIdentity();
+      db.run("INSERT OR REPLACE INTO meta(key, value) VALUES('schema_version', ?)", [
+        String(SCHEMA_VERSION),
+      ]);
+      db.run("INSERT OR REPLACE INTO meta(key, value) VALUES('project_root', ?)", [
+        projectRoot,
+      ]);
+      return db;
+    } catch (error) {
+      try {
+        db.close();
+      } catch {
+        // Preserve the initialization failure, which is the actionable error.
+      }
+      throw error;
+    }
   }
 
   /** Columns every table must have, added to existing stores if absent. */
@@ -153,19 +195,11 @@ export class Db {
   }
 
   run(sql: string, params: Params = []): void {
-    this.raw.run(sql, params);
+    this.raw.run(sql, JSON.stringify(params));
   }
 
   all<T = Record<string, unknown>>(sql: string, params: Params = []): T[] {
-    const stmt = this.raw.prepare(sql);
-    try {
-      stmt.bind(params);
-      const rows: T[] = [];
-      while (stmt.step()) rows.push(stmt.getAsObject() as T);
-      return rows;
-    } finally {
-      stmt.free();
-    }
+    return JSON.parse(this.raw.all(sql, JSON.stringify(params))) as T[];
   }
 
   get<T = Record<string, unknown>>(sql: string, params: Params = []): T | null {
@@ -241,8 +275,8 @@ export class Db {
   /**
    * Run a batch of writes atomically.
    *
-   * The callback is deliberately synchronous: sql.js shares one handle per
-   * store across every request, so an `await` inside an open transaction
+   * The callback is deliberately synchronous: the engine shares one handle
+   * per store across every request, so an `await` inside an open transaction
    * would let unrelated writes join it — and roll back with it on failure.
    * Do the reading and parsing first, then write in one synchronous pass.
    */
@@ -262,18 +296,9 @@ export class Db {
     }
   }
 
-  /** Flushes are chained: two overlapping exports share one tmp path. */
-  private flushing: Promise<void> = Promise.resolve();
-
-  /** Persist to disk atomically. */
+  /** Compatibility boundary: native SQLite commits directly to disk. */
   flush(): Promise<void> {
-    this.flushing = this.flushing.catch(() => {}).then(async () => {
-      await mkdir(dirname(this.path), { recursive: true });
-      const tmp = `${this.path}.tmp`;
-      await writeFile(tmp, Buffer.from(this.raw.export()));
-      await rename(tmp, this.path);
-    });
-    return this.flushing;
+    return Promise.resolve();
   }
 
   close(): void {
@@ -294,8 +319,8 @@ const lifecycle = new Map<string, Promise<unknown>>();
  * Waiting only for a known close is not sufficient: getDb() and closeDb()
  * both canonicalize their paths asynchronously, so either call can otherwise
  * reach the cache between another call's lookup, eviction, and replacement.
- * Holding this queue through open/flush/close guarantees there is never more
- * than one live sql.js image for a workspace.
+ * Holding this queue through open/close guarantees there is never more than
+ * one live native connection for a workspace.
  */
 function serializeLifecycle<T>(key: string, action: () => Promise<T>): Promise<T> {
   const previous = lifecycle.get(key) ?? Promise.resolve();
@@ -365,20 +390,25 @@ export async function closeDb(projectRoot: string): Promise<boolean> {
 export async function getExistingDb(projectRoot: string): Promise<Db> {
   const canonical = await canonicalWorkspaceRoot(projectRoot);
   const key = workspaceIdentityKey(canonical);
-  const dbPath = join(canonical, "sdlc-audit", "audit.db");
+  const dbPath = databasePathForWorkspace(canonical);
   return serializeLifecycle(key, async () => {
+    // App-owned storage can outlive a removed, unreadable, or replaced source
+    // workspace. Do not present those retained facts as a readable workspace.
+    const workspace = await stat(canonical);
+    if (!workspace.isDirectory()) {
+      throw new Error(`Workspace root is not a directory: ${canonical}`);
+    }
+    await access(canonical, constants.R_OK | constants.X_OK);
+
     const existing = open.get(key);
     if (existing) {
-      // A cached image is safe to read, but only while its backing workspace is
-      // reachable. Reporting stale cached data for an absent external volume is
-      // less honest than marking that workspace unavailable.
       await access(dbPath);
       return existing;
     }
 
-    // Do not implement this as access() followed by getDb(): the file can vanish
-    // between those calls, causing getDb() to cache a new empty image that a
-    // later flush would publish over the real store when the volume returns.
+    // Db.open(..., false) admits a legacy repository-local store so it can be
+    // copied, then requires the app-owned database to exist. A missing store
+    // can therefore never turn this read-only acquisition into a new empty one.
     const opening = Db.open(canonical, false);
     open.set(key, opening);
     try {

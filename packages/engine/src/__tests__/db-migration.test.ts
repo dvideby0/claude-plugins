@@ -1,9 +1,9 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { mkdir, rename, writeFile } from "node:fs/promises";
+import { access, mkdir, rename } from "node:fs/promises";
 import { join } from "node:path";
+import { NativeDatabase } from "@sdlc/scan-core";
 import { getDb, getExistingDb, resetDbCache } from "../db/db.js";
 import { SCHEMA_VERSION } from "../db/schema.js";
-import { loadSqlJs } from "../runtime/assets.js";
 import { cleanup, makeProject } from "./helpers.js";
 
 let root: string;
@@ -16,10 +16,13 @@ describe("database migrations", () => {
     root = await makeProject({ "package.json": "{}" });
     const db = await getDb(root);
     db.run("INSERT OR REPLACE INTO meta(key, value) VALUES('sentinel', 'kept')");
-    await db.flush();
+    const path = db.path;
+    expect(path.startsWith(root)).toBe(false);
+    await expect(access(join(root, "sdlc-audit", "audit.db"))).rejects.toMatchObject({
+      code: "ENOENT",
+    });
     await resetDbCache();
 
-    const path = join(root, "sdlc-audit", "audit.db");
     const offline = `${path}.offline`;
     await rename(path, offline);
     await expect(getExistingDb(root)).rejects.toMatchObject({ code: "ENOENT" });
@@ -32,9 +35,10 @@ describe("database migrations", () => {
 
   it("rebuilds the legacy refs key with source-column occurrence identity", async () => {
     root = await makeProject({ "package.json": "{}" });
-    const SQL = await loadSqlJs();
-    const legacy = new SQL.Database();
-    legacy.run(`CREATE TABLE refs (
+    const legacyPath = join(root, "sdlc-audit", "audit.db");
+    await mkdir(join(root, "sdlc-audit"), { recursive: true });
+    const legacy = new NativeDatabase(legacyPath, true);
+    legacy.executeBatch(`CREATE TABLE refs (
       src_path TEXT NOT NULL,
       src_line INTEGER NOT NULL,
       src_column INTEGER NOT NULL DEFAULT 0,
@@ -50,12 +54,15 @@ describe("database migrations", () => {
     )`);
     legacy.run(
       "INSERT INTO refs(src_path, src_line, src_column, name, specifier) VALUES('src/app.ts', 1, 4, 'run', 'typed:x')",
+      "[]",
     );
-    await mkdir(join(root, "sdlc-audit"), { recursive: true });
-    await writeFile(join(root, "sdlc-audit", "audit.db"), Buffer.from(legacy.export()));
     legacy.close();
 
-    const db = await getDb(root);
+    // Status and cross-workspace reads use getExistingDb; they must perform
+    // the one-time legacy copy without manufacturing an empty store.
+    const db = await getExistingDb(root);
+    expect(db.path).not.toBe(legacyPath);
+    await expect(access(legacyPath)).resolves.toBeUndefined();
     const primaryKey = db
       .all<{ name: string; pk: number }>("PRAGMA table_info(refs)")
       .filter((column) => column.pk > 0)
@@ -71,9 +78,10 @@ describe("database migrations", () => {
 
   it("adds per-file compiler generation attestations to existing stores", async () => {
     root = await makeProject({ "package.json": "{}" });
-    const SQL = await loadSqlJs();
-    const legacy = new SQL.Database();
-    legacy.run(`CREATE TABLE files (
+    const legacyPath = join(root, "sdlc-audit", "audit.db");
+    await mkdir(join(root, "sdlc-audit"), { recursive: true });
+    const legacy = new NativeDatabase(legacyPath, true);
+    legacy.executeBatch(`CREATE TABLE files (
       path TEXT PRIMARY KEY,
       lang TEXT NOT NULL,
       loc INTEGER NOT NULL DEFAULT 0,
@@ -89,9 +97,8 @@ describe("database migrations", () => {
     )`);
     legacy.run(
       "INSERT INTO files(path, lang, content_sha, ref_coverage) VALUES('src/app.ts', 'typescript', 'abc', 'typed')",
+      "[]",
     );
-    await mkdir(join(root, "sdlc-audit"), { recursive: true });
-    await writeFile(join(root, "sdlc-audit", "audit.db"), Buffer.from(legacy.export()));
     legacy.close();
 
     const db = await getDb(root);

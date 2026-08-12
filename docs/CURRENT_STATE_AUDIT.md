@@ -38,7 +38,12 @@ The repository already validates the most important architectural choice: a reus
 
 The largest mismatch is terminology and depth around “flow.” The current deterministic model is primarily files, symbols, imports, and identifier references. Its flow and trace views traverse a call-like symbol graph; they do not yet model control-flow branches, conditions, exceptions, async transitions, data flow, framework dispatch, or terminal effects. The human map and memory layers are promising, but are mostly agent-authored and become stale at whole-file granularity.
 
-The other structural risk is storage. The engine currently writes a `sql.js` database inside each repository and exports the whole database on flush. That is workable for a prototype but conflicts with the intended app-owned runtime and will become expensive as facts, source anchors, control-flow edges, search indexes, and derived knowledge grow.
+The native-storage foundation now writes each workspace's SQLite database under
+the app-owned SDLC state directory and commits transactions directly through
+the existing Rust module. The remaining storage risk is lifecycle correctness:
+path-derived identity does not yet survive repository relocation, migrations do
+not yet have an explicit rollback/recovery protocol, and FTS5 is available but
+not yet wired into the internal retrieval interface.
 
 ## Maturity by capability
 
@@ -218,17 +223,27 @@ The official Claude and Codex plugin/marketplace interfaces make this achievable
 
 ### Storage and ownership
 
-[`packages/protocol/src/paths.ts`](../packages/protocol/src/paths.ts) anticipates app-owned workspace stores under the user’s SDLC directory. [`packages/engine/src/db/db.ts`](../packages/engine/src/db/db.ts), however, currently writes `sdlc-audit/audit.db` inside the indexed repository, loads it through `sql.js`, and exports the database for persistence.
+[`packages/protocol/src/paths.ts`](../packages/protocol/src/paths.ts) and
+[`packages/engine/src/db/db.ts`](../packages/engine/src/db/db.ts) now agree on
+app-owned workspace stores under the user's SDLC directory. The connection is
+owned by the existing Rust N-API binary through bundled `rusqlite`; the
+TypeScript `Db` class is a compatibility adapter, and `flush()` is a temporary
+no-op while callers are migrated away from the former whole-export lifecycle.
+An existing repository-local prototype database is copied once and retained as
+a backup.
 
-This discrepancy should be resolved before the data model expands. A bundled native SQLite owner behind the daemon is a simpler foundation for transactions, FTS5, concurrent readers, migrations, and incremental writes. Graph traversal can continue over indexed edge tables; a second graph database is not a prerequisite.
+This provides the transaction and FTS5-capable foundation without adding a
+second graph database. STORE-001 is not complete: stable identity across moves,
+explicit migration rollback/recovery, backups, and the internal FTS query
+surface remain.
 
 ## Verification snapshot
 
 The audit ran the following checks successfully against the working tree:
 
-- `npm test`: 35 engine test files and 291 tests passed.
+- `npm test`: 35 engine test files and 292 tests passed.
 - `npm run build`: native core, engine, bridge, protocol, and desktop passed.
-- `cargo test` in `packages/scan-core`: 29 Rust tests passed.
+- `cargo test` in `packages/scan-core`: 30 Rust tests passed.
 - The retired migration benchmark found 127 files, parsed 84, and reported 548
   symbols and 342 imports with no agreement differences. The Rust path took
   about 14 ms versus 158 ms for the former TypeScript path in that single run.
@@ -239,7 +254,7 @@ These numbers are a useful health snapshot, not a durable benchmark. The benchma
 
 1. **The product promise outruns the flow model.** A call graph cannot yet support reliable entry-to-effect explanations.
 2. **There is no canonical fact/provenance/invalidation contract.** Adding more analyzers now could create incompatible edge types and expensive rebuild behavior.
-3. **The storage implementation will become a bottleneck.** Whole-database `sql.js` export and in-repository state are poor fits for the target scale and ownership boundary.
+3. **Storage identity and recovery are incomplete.** Direct native persistence removes the whole-export bottleneck, but path-derived workspace ids, migration rollback, backup policy, corruption repair, and internal FTS retrieval still need product behavior and tests.
 4. **Retrieval quality is unmeasured.** More tools and embeddings could add complexity without reducing file reads or improving task outcomes.
 5. **The desktop has not yet found its signature human workflow.** Operational views demonstrate capability but do not yet compete with dedicated code-intelligence products.
 6. **Integration lifecycle is incomplete.** MCP connectivity alone does not deliver the intended one-click Claude/Codex experience.

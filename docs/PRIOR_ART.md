@@ -46,6 +46,34 @@ Research date: 2026-08-05. The goal is not to reproduce any one product. It is t
 
 This is cheaper operationally than maintaining independent relational, graph, and vector services, and it preserves a straightforward local installation. The query layer can expose all three access patterns without exposing the physical store.
 
+### Native SQLite implementation decision (2026-08-12)
+
+SDLC adopts the MIT-licensed
+[`rusqlite`](https://github.com/rusqlite/rusqlite) bindings with bundled SQLite
+inside its existing Rust N-API module. This reuses SQLite's maintained
+transaction, WAL, migration, and FTS5 machinery while preserving the engine's
+small synchronous database boundary. It also ships in the same five-platform
+native artifact matrix the desktop app already verifies.
+
+The obvious alternatives were evaluated rather than reimplemented:
+
+- Node's official [`node:sqlite`](https://nodejs.org/api/sqlite.html) was added
+  after the Node 20 runtime embedded by the current Electron baseline, so it
+  cannot be the application boundary yet.
+- [`better-sqlite3`](https://github.com/WiseLibs/better-sqlite3) is mature and
+  has an excellent synchronous API, but would introduce a separate
+  Node/Electron ABI-specific native artifact and rebuild lifecycle alongside
+  the N-API module SDLC already packages.
+- [`@vscode/sqlite3`](https://www.npmjs.com/package/@vscode/sqlite3) provides
+  maintained Node-API prebuilds, but its asynchronous API would force a broad
+  rewrite of the existing synchronous query/transaction call graph while
+  retaining app-owned storage orchestration in TypeScript.
+
+The TypeScript `Db` class therefore remains only as a compatibility adapter;
+SQLite ownership and persistence are Rust responsibilities. This choice does
+not justify custom migration, search, or graph engines: those should continue
+to use SQLite's proven facilities.
+
 ### External enrichers, not mandatory dependencies
 
 SCIP indexes, CodeQL databases, language servers, compiler metadata, test coverage, and runtime traces can all enrich the common model when present. They should be adapters with explicit provenance and capability discovery. Core indexing and the desktop experience must remain useful without downloading a heavyweight external analysis suite.
@@ -118,7 +146,7 @@ The application should keep separate connector implementations behind one produc
 
 ## Research-driven decision rules
 
-- Do not add a storage engine until a benchmark shows the current one cannot satisfy a named workload.
+- Do not add a second storage engine or sidecar until native SQLite fails a named, measured workload.
 - Do not add embeddings until hybrid retrieval beats lexical-plus-graph baselines at the same context budget.
 - Do not call a relation deterministic unless its producer and limits are recorded.
 - Do not add a public MCP tool if an existing intent-oriented tool can compose the operation internally.

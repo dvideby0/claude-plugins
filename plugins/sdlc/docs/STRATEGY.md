@@ -15,7 +15,7 @@ that is all the model is asked for.
 ```
 scan ──▶ run_tools ──▶ plan ──▶ context ──▶ agents ──▶ record ──▶ export
  │           │           │                                │
- └───────────┴───────────┴──── audit.db (the store) ◀─────┘
+ └───────────┴───────────┴──── app store/audit.db ◀───────┘
 ```
 
 1. **scan** — walk the repo, parse every TS/JS/Python file with tree-sitter,
@@ -32,7 +32,8 @@ scan ──▶ run_tools ──▶ plan ──▶ context ──▶ agents ─�
 
 ## The store
 
-One SQLite file, `sdlc-audit/audit.db`:
+One native SQLite file per workspace,
+`~/.sdlc/stores/<workspace-id>/audit.db` (or under `SDLC_HOME`):
 
 | Table | Holds |
 |---|---|

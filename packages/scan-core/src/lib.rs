@@ -22,6 +22,7 @@ use napi_derive::napi;
 use rayon::prelude::*;
 use std::path::Path;
 
+mod database;
 mod parse;
 mod provider;
 mod walk;
