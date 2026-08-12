@@ -83,6 +83,14 @@
         "evidence": { "path": "src/http.ts", "startLine": 8 }
       },
       {
+        "id": "normalization-catch",
+        "kind": "catch",
+        "source": { "external": "condition:Try block" },
+        "target": { "external": "http:response:400" },
+        "certainty": "inferred",
+        "evidence": { "path": "src/http.ts", "startLine": 7 }
+      },
+      {
         "id": "invalid-branch",
         "kind": "branch",
         "source": { "path": "src/http.ts", "symbol": "handleApi" },
@@ -127,7 +135,12 @@
       {
         "id": "normalization-failed",
         "entrypoint": "http:GET:/api/search",
-        "relations": ["route-registration", "try-branch", "normalization-response-400"],
+        "relations": [
+          "route-registration",
+          "try-branch",
+          "normalization-catch",
+          "normalization-response-400"
+        ],
         "terminalRelation": "normalization-response-400",
         "conditions": ["try block throws"],
         "certainty": "inferred"

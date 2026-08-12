@@ -75,7 +75,7 @@ withNative("deterministic execution flow", () => {
       gaps: 0,
       producer: {
         id: "sdlc-http-route-adapter",
-        version: "4",
+        version: "5",
         kind: "framework",
       },
       certainty: "inferred",
@@ -134,6 +134,25 @@ withNative("deterministic execution flow", () => {
          WHERE NOT EXISTS (SELECT 1 FROM execution_entries e WHERE e.id = n.entry_id)`,
       ),
     ).toBe(0);
+  });
+
+  it("keeps entries with long route literals queryable by their generated identity", async () => {
+    const route = `/${"a".repeat(1_000)}`;
+    root = await makeProject({
+      "src/http.ts": `
+function sendJson(_res: unknown, _status: number, _body: unknown): void {}
+export function route(path: string, res: unknown): void {
+  if (path === ${JSON.stringify(route)}) sendJson(res, 200, {});
+}
+`,
+    });
+    await scan(root, { full: true, kind: "execution-long-route" });
+    const db = await getDb(root);
+    const entry = db.executionFlow().entries[0];
+
+    expect(entry?.route).toBe(route);
+    expect(entry?.id.length).toBeLessThanOrEqual(512);
+    expect(db.executionFlow(entry?.id).selected?.paths).toHaveLength(1);
   });
 
   it("resolves aliased imports by exact call occurrence", async () => {

@@ -58,13 +58,14 @@ terminal effects, conditions, and complete entry-to-effect paths. The ordinary
 evaluation command scores that truth for providers explicitly listed in the
 oracle's `measuredProviders`. A required provider that emits no candidate graph
 fails the declared thresholds; providers without a product adapter remain
-explicitly `unmeasured`. Merely checking flow truth into the repository does not
-grant a provider path credit.
+explicitly `unmeasured` and are rejected from `measuredProviders`. Merely
+checking flow truth into the repository, or running a separate provider beside
+the native adapter, does not grant that provider path credit.
 
 The TypeScript HTTP fixture exercises an explicit route guard, a caught
 exception, an `if` branch, an awaited cross-file call, and three terminal HTTP
-response paths. The bounded Rust HTTP adapter finds its one entrypoint, seven
-unique semantic relations (eight evidence-bearing occurrences), and all three
+response paths. The bounded Rust HTTP adapter finds its one entrypoint, eight
+unique semantic relations (nine evidence-bearing occurrences), and all three
 paths at 1.0 precision/recall with matching evidence anchors. Repeated semantic
 relations consume evidence occurrences one-to-one, so one source location
 cannot satisfy multiple reviewed anchors. Branch-condition equivalence, runtime

@@ -6,10 +6,11 @@
 //! explain each route's response effects. Unsupported control constructs are
 //! emitted as visible gaps instead of being guessed through.
 
+use sha2::{Digest, Sha256};
 use tree_sitter::Node;
 
 const PRODUCER_ID: &str = "sdlc-http-route-adapter";
-const PRODUCER_VERSION: &str = "4";
+const PRODUCER_VERSION: &str = "5";
 const MAX_ENTRIES_PER_FILE: usize = 128;
 const MAX_GUARD_ALTERNATIVES: usize = 256;
 const MAX_NODES_PER_ENTRY: usize = 256;
@@ -79,6 +80,14 @@ struct CallObservation<'tree> {
     target_line: u32,
     target_column: u32,
     awaited: bool,
+}
+
+enum EvaluationObservation<'tree> {
+    Call(CallObservation<'tree>),
+    Gap {
+        node: Node<'tree>,
+        construct: &'static str,
+    },
 }
 
 #[derive(Clone, Default, PartialEq, Eq)]
@@ -338,6 +347,9 @@ fn collect_calls<'tree>(
             | "generator_function"
             | "generator_function_declaration"
             | "method_definition"
+            | "class"
+            | "class_declaration"
+            | "abstract_class_declaration"
     ) {
         return;
     }
@@ -377,7 +389,20 @@ fn collect_calls<'tree>(
     }
 }
 
-fn contains_expression_branch(node: Node, bytes: &[u8]) -> bool {
+fn contains_observable_call(node: Node, bytes: &[u8]) -> bool {
+    let mut calls = Vec::new();
+    collect_calls(node, bytes, false, &mut calls);
+    calls
+        .iter()
+        .any(|call| terminal_effect(call, bytes).is_some() || !ignored_call(call))
+}
+
+fn collect_evaluations<'tree>(
+    node: Node<'tree>,
+    bytes: &[u8],
+    awaited: bool,
+    output: &mut Vec<EvaluationObservation<'tree>>,
+) {
     if matches!(
         node.kind(),
         "arrow_function"
@@ -387,24 +412,85 @@ fn contains_expression_branch(node: Node, bytes: &[u8]) -> bool {
             | "generator_function_declaration"
             | "method_definition"
     ) {
-        return false;
+        return;
+    }
+    if matches!(
+        node.kind(),
+        "class" | "class_declaration" | "abstract_class_declaration"
+    ) {
+        output.push(EvaluationObservation::Gap {
+            node,
+            construct: "class definition",
+        });
+        return;
+    }
+    if node.kind() == "await_expression" {
+        let mut cursor = node.walk();
+        for child in node.named_children(&mut cursor) {
+            collect_evaluations(child, bytes, true, output);
+        }
+        return;
     }
     if node.kind() == "ternary_expression" {
-        return true;
+        if let Some(condition) = node.child_by_field_name("condition") {
+            collect_evaluations(condition, bytes, awaited, output);
+        }
+        let branch_has_operation = ["consequence", "alternative"]
+            .into_iter()
+            .filter_map(|field| node.child_by_field_name(field))
+            .any(|branch| contains_observable_call(branch, bytes));
+        if branch_has_operation {
+            output.push(EvaluationObservation::Gap {
+                node,
+                construct: "expression-level branch",
+            });
+        }
+        return;
     }
     if node.kind() == "binary_expression"
         && node
             .child_by_field_name("operator")
             .is_some_and(|operator| matches!(text(operator, bytes), "&&" | "||" | "??"))
     {
-        return true;
+        if let Some(left) = node.child_by_field_name("left") {
+            collect_evaluations(left, bytes, awaited, output);
+        }
+        if node
+            .child_by_field_name("right")
+            .is_some_and(|right| contains_observable_call(right, bytes))
+        {
+            output.push(EvaluationObservation::Gap {
+                node,
+                construct: "expression-level branch",
+            });
+        }
+        return;
+    }
+    if node.kind() == "call_expression" {
+        if let Some(arguments) = node.child_by_field_name("arguments") {
+            let mut cursor = arguments.walk();
+            for child in arguments.named_children(&mut cursor) {
+                collect_evaluations(child, bytes, false, output);
+            }
+        }
+        if let Some(function) = node.child_by_field_name("function") {
+            let target = target_node(function);
+            output.push(EvaluationObservation::Call(CallObservation {
+                node,
+                callee: compact(text(function, bytes), 120),
+                target_symbol: last_property(function, bytes),
+                target_line: target.start_position().row as u32 + 1,
+                target_column: target.start_position().column as u32,
+                awaited,
+            }));
+        }
+        return;
     }
 
     let mut cursor = node.walk();
-    let found = node
-        .named_children(&mut cursor)
-        .any(|child| contains_expression_branch(child, bytes));
-    found
+    for child in node.named_children(&mut cursor) {
+        collect_evaluations(child, bytes, awaited, output);
+    }
 }
 
 fn ignored_call(call: &CallObservation) -> bool {
@@ -772,9 +858,6 @@ impl Builder<'_> {
                 );
                 Vec::new()
             }
-            _ if contains_expression_branch(node, self.bytes) => {
-                self.emit_gap(node, incoming, "expression-level branch")
-            }
             _ => self.walk_calls(node, incoming),
         }
     }
@@ -937,9 +1020,16 @@ impl Builder<'_> {
     }
 
     fn walk_calls(&mut self, node: Node, mut incoming: Vec<Frontier>) -> Vec<Frontier> {
-        let mut calls = Vec::new();
-        collect_calls(node, self.bytes, false, &mut calls);
-        for call in calls {
+        let mut observations = Vec::new();
+        collect_evaluations(node, self.bytes, false, &mut observations);
+        for observation in observations {
+            let call = match observation {
+                EvaluationObservation::Gap { node, construct } => {
+                    incoming = self.emit_gap(node, incoming, construct);
+                    continue;
+                }
+                EvaluationObservation::Call(call) => call,
+            };
             if let Some((label, external)) = terminal_effect(&call, self.bytes) {
                 let Some(id) = self.add_node(
                     call.node,
@@ -1010,7 +1100,16 @@ fn build_entry(
         method.to_ascii_uppercase()
     };
     let label = format!("{method} {route}");
-    let id = format!("{path}#http:{method}:{route}@{line}:{column}");
+    let mut digest = Sha256::new();
+    digest.update(path.as_bytes());
+    digest.update(b"\0");
+    digest.update(method.as_bytes());
+    digest.update(b"\0");
+    digest.update(route.as_bytes());
+    digest.update(b"\0");
+    digest.update(line.to_le_bytes());
+    digest.update(column.to_le_bytes());
+    let id = format!("http:{:x}", digest.finalize());
     let mut builder = Builder {
         entry: ExecutionEntry {
             id: id.clone(),
@@ -1296,27 +1395,90 @@ async function handleApi(path: string, method: string, res: unknown) {
     #[test]
     fn exposes_expression_level_branches_as_incomplete_gaps() {
         let entries = extract_typescript(
-            r#"function route(path: string, res: unknown, ok: boolean) {
+            r#"async function route(path: string, res: unknown, ok: boolean) {
               if (path === "/ternary") {
                 ok ? sendJson(res, 200, {}) : sendJson(res, 400, {});
               }
               if (path === "/logical") {
                 ok && sendJson(res, 201, {});
               }
+              if (path === "/return") {
+                return ok ? sendJson(res, 202, {}) : sendJson(res, 422, {});
+              }
+              if (path === "/condition") {
+                if (ok && await work()) sendJson(res, 203, {});
+                else sendJson(res, 403, {});
+              }
+              if (path === "/outer") {
+                sendJson(res, 500, { value: ok ? buildA() : buildB() });
+              }
+              if (path === "/value") {
+                const value = ok ? "yes" : "no";
+                sendJson(res, 204, { value });
+              }
+              if (path === "/payload") {
+                sendJson(res, 400, { error: ok ? "yes" : String("no") });
+              }
             }"#,
         );
-        assert_eq!(entries.len(), 2);
-        assert!(entries.iter().all(|entry| {
-            entry.nodes.iter().any(|node| node.kind == "gap")
-                && !entry
-                    .nodes
-                    .iter()
-                    .any(|node| node.kind == "terminal-effect")
-                && entry
-                    .diagnostics
-                    .iter()
-                    .any(|diagnostic| diagnostic.contains("expression-level branch"))
-        }));
+        assert_eq!(entries.len(), 7);
+        for route in ["/ternary", "/logical", "/return"] {
+            let entry = entries
+                .iter()
+                .find(|entry| entry.route == route)
+                .expect("branchy route");
+            assert!(
+                entry.nodes.iter().any(|node| node.kind == "gap")
+                    && !entry
+                        .nodes
+                        .iter()
+                        .any(|node| node.kind == "terminal-effect")
+                    && entry
+                        .diagnostics
+                        .iter()
+                        .any(|diagnostic| diagnostic.contains("expression-level branch"))
+            );
+        }
+
+        let condition = entries
+            .iter()
+            .find(|entry| entry.route == "/condition")
+            .expect("short-circuit condition");
+        assert!(condition.nodes.iter().any(|node| node.kind == "gap"));
+        assert!(!condition
+            .nodes
+            .iter()
+            .any(|node| node.label == "Await work"));
+        assert_eq!(
+            condition
+                .nodes
+                .iter()
+                .filter(|node| node.kind == "terminal-effect")
+                .count(),
+            2
+        );
+
+        let outer = entries
+            .iter()
+            .find(|entry| entry.route == "/outer")
+            .expect("outer effect");
+        assert!(outer.nodes.iter().any(|node| node.kind == "gap"));
+        assert!(outer
+            .nodes
+            .iter()
+            .any(|node| node.external == "http:response:500"));
+
+        for route in ["/value", "/payload"] {
+            let entry = entries
+                .iter()
+                .find(|entry| entry.route == route)
+                .expect("value-only branch route");
+            assert!(!entry.nodes.iter().any(|node| node.kind == "gap"));
+            assert!(entry
+                .nodes
+                .iter()
+                .any(|node| node.kind == "terminal-effect"));
+        }
     }
 
     #[test]
@@ -1403,6 +1565,42 @@ async function handleApi(path: string, method: string, res: unknown) {
             .map(|node| node.external.as_str())
             .collect::<Vec<_>>();
         assert_eq!(effects, ["http:response:200"]);
+    }
+
+    #[test]
+    fn marks_class_definition_semantics_as_a_gap_without_running_instance_bodies() {
+        let entries = extract_typescript(
+            r#"function route(path: string, res: unknown) {
+              if (path === "/class") {
+                class Deferred {
+                  field = shouldNotRun();
+                  static eager = doesRun();
+                  method() { alsoNotRun(); }
+                }
+                sendJson(res, 200, {});
+              }
+            }"#,
+        );
+        let entry = &entries[0];
+        assert!(entry.nodes.iter().any(|node| node.kind == "gap"));
+        assert!(!entry.nodes.iter().any(|node| {
+            ["shouldNotRun", "doesRun", "alsoNotRun"].contains(&node.target_symbol.as_str())
+        }));
+        assert!(entry
+            .nodes
+            .iter()
+            .any(|node| node.external == "http:response:200"));
+    }
+
+    #[test]
+    fn bounds_entry_identity_independently_of_route_length() {
+        let route = format!("/{}", "a".repeat(1_000));
+        let entries = extract_typescript(&format!(
+            "function route(path: string, res: unknown) {{ if (path === '{route}') sendJson(res, 200, {{}}); }}"
+        ));
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].route, route);
+        assert_eq!(entries[0].id.len(), 69);
     }
 
     #[test]

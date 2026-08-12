@@ -256,8 +256,9 @@ diagnostics, producer identity, certainty, source evidence, and input hashes in
 schema v19, with exact call-target occurrences added in schema v20. It retains
 bounded positive boolean route alternatives, `if` branches, caught explicit
 throws, `finally` transitions before deferred returns/throws, awaited calls,
-returns/throws, and recognized HTTP response effects; unsupported loops,
-switches, and input truncation become explicit gaps or diagnostics. Native path
+returns/throws, and recognized HTTP response effects. Conditional operations
+inside expressions, class-definition execution, loops, and switches remain
+explicit gaps; input truncation remains diagnostic. Native path
 enumeration is cycle- and budget-bounded. Reference refresh resolves aliased and
 default imports, incorporates later compiler targets, and removes those targets
 when their compiler generation becomes stale. Normalized method alternatives
@@ -266,8 +267,8 @@ callback bodies are not treated as executed. The existing MCP `flow` operation
 prefers this model when it is
 available, while preserving the older call graph as `mode: calls`, and the
 desktop now presents entry-to-effect paths as its primary Flow workspace. A
-checked-in HTTP fixture measures one entry, seven unique semantic relations,
-eight distinct evidence occurrences, and three paths at 1.0 precision/recall;
+checked-in HTTP fixture measures one entry, eight unique semantic relations,
+nine distinct evidence occurrences, and three paths at 1.0 precision/recall;
 an explicitly required measured provider now fails instead of passing
 unmeasured when its adapter produces no graph. The real `GET /api/search` route in
 this repository produces the same three response paths with resolved imported

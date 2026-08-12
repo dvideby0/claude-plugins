@@ -15,6 +15,15 @@ export const EVALUATION_PROVIDERS = [
 ] as const;
 export type EvaluationProvider = (typeof EVALUATION_PROVIDERS)[number];
 
+/** Providers whose own output can currently be projected into scored paths. */
+export const FLOW_EVALUATION_PROVIDERS = ["native-tree-sitter"] as const;
+
+export function supportsFlowEvaluationProvider(
+  provider: EvaluationProvider,
+): provider is (typeof FLOW_EVALUATION_PROVIDERS)[number] {
+  return provider === "native-tree-sitter";
+}
+
 export function isResolvedReferenceKind(kind: FactEdge["kind"]): boolean {
   return kind === "reference" || kind === "read" || kind === "write";
 }
@@ -250,6 +259,13 @@ export const evaluationOracleSchema = z
         context.addIssue({
           code: z.ZodIssueCode.custom,
           message: `Flow provider ${provider} is not selected by the fixture.`,
+          path: ["entryToEffect", "measuredProviders"],
+        });
+      }
+      if (!supportsFlowEvaluationProvider(provider)) {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: `Flow provider ${provider} has no provider-owned entry-to-effect projection.`,
           path: ["entryToEffect", "measuredProviders"],
         });
       }

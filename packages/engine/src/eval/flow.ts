@@ -99,6 +99,21 @@ function executionNodeRelationKind(node: ExecutionNodeView): FactEdgeKind | null
   }
 }
 
+function executionNodeTarget(node: ExecutionNodeView): FlowEntity {
+  return node.target.external
+    ? { external: node.target.external }
+    : node.target.path
+      ? {
+          path: node.target.path,
+          ...(node.target.symbol ? { symbol: node.target.symbol } : {}),
+        }
+      : node.kind === "branch"
+        ? { external: `condition:${node.label}` }
+        : node.target.symbol
+          ? { external: `unresolved-call:${node.target.symbol}` }
+          : { external: `${node.kind}:${node.label}` };
+}
+
 /**
  * Project the persisted execution-path view into the same provider-neutral
  * graph used by EVAL-001. Sequence edges remain presentation/CFG detail;
@@ -142,26 +157,15 @@ export function executionFlowCandidate(view: ExecutionFlowView): CandidateFlowGr
     producer,
   };
   const nodeRelations = new Map<string, CandidateFlowRelation>();
+  const nodesById = new Map(selected.nodes.map((node) => [node.id, node]));
   for (const node of selected.nodes) {
     const kind = executionNodeRelationKind(node);
     if (!kind) continue;
-    const target: FlowEntity = node.target.external
-      ? { external: node.target.external }
-      : node.target.path
-        ? {
-            path: node.target.path,
-            ...(node.target.symbol ? { symbol: node.target.symbol } : {}),
-          }
-        : node.kind === "branch"
-          ? { external: `condition:${node.label}` }
-          : node.target.symbol
-            ? { external: `unresolved-call:${node.target.symbol}` }
-            : { external: `${node.kind}:${node.label}` };
     nodeRelations.set(node.id, {
       id: `${entrypointId}:node:${node.ordinal}`,
       kind,
       source: { path: node.path, ...(node.symbol ? { symbol: node.symbol } : {}) },
-      target,
+      target: executionNodeTarget(node),
       certainty: node.certainty as CertaintyClass,
       evidence: {
         path: node.evidence.path,
@@ -171,15 +175,44 @@ export function executionFlowCandidate(view: ExecutionFlowView): CandidateFlowGr
       producer,
     });
   }
-  const relations = [registration, ...nodeRelations.values()];
+  const projectionDiagnostics: string[] = [];
+  const edgeRelations = new Map<number, CandidateFlowRelation>();
+  for (const edge of selected.edges) {
+    if (edge.kind !== "catch") continue;
+    const source = nodesById.get(edge.from);
+    const target = nodesById.get(edge.to);
+    if (!source || !target) {
+      projectionDiagnostics.push(
+        `${edge.evidence.path}:${edge.evidence.startLine}: catch transition references a missing execution node.`,
+      );
+      continue;
+    }
+    edgeRelations.set(edge.id, {
+      id: `${entrypointId}:edge:${edge.id}`,
+      kind: "catch",
+      source: executionNodeTarget(source),
+      target: executionNodeTarget(target),
+      certainty: edge.certainty as CertaintyClass,
+      evidence: {
+        path: edge.evidence.path,
+        startLine: Math.max(0, edge.evidence.startLine - 1),
+        detail: edge.label || "catch transition",
+      },
+      producer,
+    });
+  }
+  const relations = [registration, ...nodeRelations.values(), ...edgeRelations.values()];
   const paths: CandidateFlowPath[] = selected.paths.flatMap((path, index) => {
-    const relationIds = [
-      registrationId,
-      ...path.nodeIds.flatMap((nodeId) => {
-        const relation = nodeRelations.get(nodeId);
-        return relation ? [relation.id] : [];
-      }),
-    ];
+    const relationIds = [registrationId];
+    for (const [nodeIndex, nodeId] of path.nodeIds.entries()) {
+      if (nodeIndex > 0) {
+        const edgeId = path.edgeIds[nodeIndex - 1];
+        const edgeRelation = edgeId === undefined ? undefined : edgeRelations.get(edgeId);
+        if (edgeRelation) relationIds.push(edgeRelation.id);
+      }
+      const nodeRelation = nodeRelations.get(nodeId);
+      if (nodeRelation) relationIds.push(nodeRelation.id);
+    }
     const terminalRelation = path.terminalNodeId
       ? nodeRelations.get(path.terminalNodeId)
       : undefined;
@@ -210,6 +243,7 @@ export function executionFlowCandidate(view: ExecutionFlowView): CandidateFlowGr
     paths,
     diagnostics: [
       ...selected.diagnostics,
+      ...projectionDiagnostics,
       ...selected.nodes
         .filter((node) => node.kind === "gap")
         .map((node) => `${node.evidence.path}:${node.evidence.startLine}: ${node.label}`),

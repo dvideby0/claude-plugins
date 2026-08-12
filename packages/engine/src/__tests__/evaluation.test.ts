@@ -190,6 +190,56 @@ describe("evaluation scorer", () => {
     ).toThrow("Threshold configured for unselected provider scip-python");
   });
 
+  it("rejects flow scoring for providers without a provider-owned projection", () => {
+    expect(() =>
+      evaluationOracleSchema.parse({
+        ...oracle,
+        providers: ["native-tree-sitter", "native-plus-typescript-checker"],
+        thresholds: {
+          ...oracle.thresholds,
+          "native-plus-typescript-checker": oracle.thresholds["native-tree-sitter"],
+        },
+        entryToEffect: {
+          measuredProviders: ["native-plus-typescript-checker"],
+          thresholds: {
+            entrypoints: { minimumRecall: 1 },
+            relations: { minimumRecall: 1 },
+            paths: { minimumRecall: 1 },
+          },
+          entrypoints: [
+            {
+              id: "entry",
+              registration: { path: "src/a.ts", startLine: 1 },
+              target: { path: "src/a.ts", symbol: "entry" },
+            },
+          ],
+          relations: [
+            {
+              id: "effect",
+              kind: "terminal-effect",
+              source: { path: "src/a.ts", symbol: "entry" },
+              target: { external: "http:response:200" },
+              certainty: "inferred",
+              evidence: { path: "src/a.ts", startLine: 2 },
+            },
+          ],
+          paths: [
+            {
+              id: "path",
+              entrypoint: "entry",
+              relations: ["effect"],
+              terminalRelation: "effect",
+              conditions: [],
+              certainty: "inferred",
+            },
+          ],
+        },
+      }),
+    ).toThrow(
+      "Flow provider native-plus-typescript-checker has no provider-owned entry-to-effect projection",
+    );
+  });
+
   it("rejects entry-to-effect paths that do not resolve to a terminal relation", () => {
     expect(() =>
       evaluationOracleSchema.parse({

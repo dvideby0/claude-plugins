@@ -17,6 +17,7 @@ import {
   isResolvedReferenceKind,
   loadEvaluationOracle,
   scoreFactBatch,
+  supportsFlowEvaluationProvider,
   thresholdFailures,
   type EvaluationProvider,
   type FactScores,
@@ -521,6 +522,11 @@ export async function runEvaluationWorker(
     const failures = [...thresholdFailures(provider, scores, oracle), ...providerFailures];
     let flow: ProviderEvaluationReport["flow"] = null;
     if (oracle.entryToEffect?.measuredProviders.includes(provider)) {
+      if (!supportsFlowEvaluationProvider(provider)) {
+        throw new Error(
+          `${provider} cannot be scored with the native HTTP adapter's execution graph.`,
+        );
+      }
       const db = await getDb(project);
       dbOpened = true;
       const executionIndex = db.executionFlow();
