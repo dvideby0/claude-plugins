@@ -28,7 +28,12 @@ import { connectHarness, detectHarnesses, disconnectHarness, type BridgeCommand 
 import { suppress } from "../findings/record.js";
 import { buildReports } from "../report/export.js";
 import { findingsView, fileView, graphView, memoriesView, overviewView } from "./views.js";
-import { CROSS_KINDS, crossQuery, type CrossKind } from "../graph/cross.js";
+import {
+  CROSS_KINDS,
+  crossQuery,
+  normalizeSearchQuery,
+  type CrossKind,
+} from "../graph/cross.js";
 import { flowView } from "../graph/flow.js";
 import { componentDetail, systemMap } from "../graph/map.js";
 import { resolveTypesInWorker } from "../graph/typed.js";
@@ -504,12 +509,14 @@ export function createHttpServer(options: HttpServerOptions): HttpServerHandle {
 
     if (path === "/api/search" && method === "GET") {
       const query = new URL(req.url ?? "/", "http://127.0.0.1").searchParams;
-      const term = query.get("q");
-      if (!term) {
-        sendJson(res, 400, { error: "Provide q." });
+      let term: string;
+      try {
+        term = normalizeSearchQuery(query.get("q") ?? "");
+      } catch (error) {
+        sendJson(res, 400, { error: error instanceof Error ? error.message : String(error) });
         return true;
       }
-      const kind = (query.get("kind") ?? "symbol") as CrossKind;
+      const kind = (query.get("kind") ?? "all") as CrossKind;
       if (!CROSS_KINDS.includes(kind)) {
         sendJson(res, 400, { error: `kind must be one of ${CROSS_KINDS.join(", ")}` });
         return true;

@@ -204,5 +204,11 @@ export declare class NativeDatabase {
   executeBatch(sql: string): void
   run(sql: string, paramsJson: string): void
   all(sql: string, paramsJson: string): string
+  /**
+   * Ranked lexical retrieval over deterministic facts and authored
+   * knowledge. Query syntax is generated here so callers never pass raw
+   * FTS expressions across the product boundary.
+   */
+  searchKnowledge(query: string, kindsJson: string, limit: number, memoryKind?: string | undefined | null): string
   close(): void
 }

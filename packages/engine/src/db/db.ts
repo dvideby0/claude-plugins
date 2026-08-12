@@ -15,6 +15,40 @@ import {
 
 export type Params = Array<string | number | null>;
 
+export const KNOWLEDGE_KINDS = [
+  "file",
+  "symbol",
+  "memory",
+  "finding",
+  "component",
+  "flow",
+  "relation",
+] as const;
+export type KnowledgeKind = (typeof KNOWLEDGE_KINDS)[number];
+
+interface NativeKnowledgeHit {
+  kind: KnowledgeKind;
+  source_id: string;
+  title: string;
+  path: string;
+  symbol: string;
+  updated_at: string | null;
+  score: number;
+  excerpt: string;
+}
+
+/** One ranked result from the Rust-owned FTS5 index. */
+export interface KnowledgeHit {
+  kind: KnowledgeKind;
+  sourceId: string;
+  title: string;
+  path: string;
+  symbol: string;
+  updatedAt: string | null;
+  score: number;
+  excerpt: string;
+}
+
 /** Stable location for the current path-derived workspace identity. */
 export function databasePathForWorkspace(canonicalRoot: string): string {
   return join(storeDir(), workspaceIdForCanonicalRoot(canonicalRoot), "audit.db");
@@ -110,6 +144,32 @@ export class Db {
 
   get<T = Record<string, unknown>>(sql: string, params: Params = []): T | null {
     return this.all<T>(sql, params)[0] ?? null;
+  }
+
+  /**
+   * Ranked lexical retrieval across indexed facts and authored knowledge.
+   * FTS syntax, ranking weights, and query bounds stay inside the native
+   * storage owner rather than being reimplemented by each caller.
+   */
+  searchKnowledge(
+    query: string,
+    kinds: readonly KnowledgeKind[] = [],
+    limit = 20,
+    options: { memoryKind?: string } = {},
+  ): KnowledgeHit[] {
+    const rows = JSON.parse(
+      this.raw.searchKnowledge(query, JSON.stringify(kinds), limit, options.memoryKind),
+    ) as NativeKnowledgeHit[];
+    return rows.map((row) => ({
+      kind: row.kind,
+      sourceId: row.source_id,
+      title: row.title,
+      path: row.path,
+      symbol: row.symbol,
+      updatedAt: row.updated_at,
+      score: row.score,
+      excerpt: row.excerpt,
+    }));
   }
 
   /** Scalar helper for counts and aggregates. */

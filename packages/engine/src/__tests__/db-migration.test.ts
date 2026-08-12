@@ -154,7 +154,12 @@ describe("database migrations", () => {
     }>("SELECT from_version, backup_path FROM schema_migrations WHERE version = ?", [
       SCHEMA_VERSION,
     ]);
-    expect(migration).toMatchObject({ from_version: 0 });
+    expect(migration).toMatchObject({ from_version: 17 });
+    expect(
+      db.get<{ from_version: number }>(
+        "SELECT from_version FROM schema_migrations WHERE version = 17",
+      ),
+    ).toEqual({ from_version: 0 });
     expect(dirname(migration?.backup_path ?? "")).toBe(join(dirname(db.path), "backups"));
     expect(basename(migration?.backup_path ?? "")).toMatch(
       new RegExp(`^pre-v${SCHEMA_VERSION}-\\d+\\.db$`),

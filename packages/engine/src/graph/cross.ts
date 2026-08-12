@@ -8,11 +8,26 @@
  * not.
  */
 
-import { getExistingDb } from "../db/db.js";
-import { recall as recallMemories } from "../memory/store.js";
+import { getExistingDb, KNOWLEDGE_KINDS } from "../db/db.js";
+import { memoriesByIds } from "../memory/store.js";
 
-export const CROSS_KINDS = ["package", "symbol", "memory", "finding", "file"] as const;
+export const CROSS_KINDS = ["all", "package", ...KNOWLEDGE_KINDS] as const;
 export type CrossKind = (typeof CROSS_KINDS)[number];
+export const MAX_SEARCH_QUERY_LENGTH = 512;
+
+export function normalizeSearchQuery(query: string): string {
+  const normalized = query.trim();
+  if (!normalized) throw new Error("Search query must not be blank.");
+  if ([...normalized].length > MAX_SEARCH_QUERY_LENGTH) {
+    throw new Error(`Search query must be at most ${MAX_SEARCH_QUERY_LENGTH} characters.`);
+  }
+  return normalized;
+}
+
+function normalizeSearchLimit(limit: number): number {
+  if (!Number.isFinite(limit)) throw new Error("Search limit must be finite.");
+  return Math.min(100, Math.max(1, Math.trunc(limit)));
+}
 
 export interface WorkspaceRef {
   id: string;
@@ -42,10 +57,11 @@ export async function crossQuery(
   query: string,
   limit = 20,
 ): Promise<CrossResult> {
-  const hits: CrossHit[] = [];
+  const normalizedQuery = normalizeSearchQuery(query);
+  const normalizedLimit = normalizeSearchLimit(limit);
+  const rankedHits: Array<{ hit: CrossHit; localRank: number }> = [];
   const totals: Record<string, number> = {};
   const unreadable: string[] = [];
-  const like = `%${query}%`;
 
   for (const workspace of workspaces) {
     let rows: Array<Record<string, unknown>> = [];
@@ -57,37 +73,51 @@ export async function crossQuery(
       if (kind === "package") {
         rows = db.all(
           `SELECT external AS package, COUNT(DISTINCT src_path) AS used_by
-           FROM edges WHERE external IS NOT NULL AND LOWER(external) LIKE LOWER(?)
+           FROM edges
+           WHERE external IS NOT NULL AND INSTR(LOWER(external), LOWER(?)) > 0
            GROUP BY external ORDER BY used_by DESC LIMIT ?`,
-          [like, limit],
-        );
-      } else if (kind === "symbol") {
-        rows = db.all(
-          `SELECT s.name, s.kind, s.path, s.start_line,
-                  (SELECT COUNT(*) FROM refs r
-                    WHERE r.dst_symbol_id = s.id OR
-                      (r.dst_symbol_id IS NULL AND r.dst_path = s.path AND r.name = s.name AND
-                       (SELECT COUNT(*) FROM symbols same
-                         WHERE same.path = s.path AND same.name = s.name) = 1)) AS ref_count
-           FROM symbols s WHERE s.name = ? OR LOWER(s.name) LIKE LOWER(?)
-           ORDER BY ref_count DESC LIMIT ?`,
-          [query, like, limit],
-        );
-      } else if (kind === "file") {
-        rows = db.all(
-          "SELECT path, lang, loc FROM files WHERE present = 1 AND LOWER(path) LIKE LOWER(?) ORDER BY path LIMIT ?",
-          [like, limit],
-        );
-      } else if (kind === "finding") {
-        rows = db.all(
-          `SELECT id, rule_id, severity, path, line_start, title
-           FROM findings WHERE status IN ('open','regressed')
-             AND (LOWER(title) LIKE LOWER(?) OR LOWER(rule_id) LIKE LOWER(?))
-           LIMIT ?`,
-          [like, like, limit],
+          [normalizedQuery, normalizedLimit],
         );
       } else {
-        rows = recallMemories(db, query, limit) as unknown as Array<Record<string, unknown>>;
+        const kinds = kind === "all" ? [] : [kind];
+        const knowledgeHits = db.searchKnowledge(normalizedQuery, kinds, normalizedLimit);
+        const memoryById = new Map(
+          memoriesByIds(
+            db,
+            knowledgeHits
+              .filter((hit) => hit.kind === "memory")
+              .map((hit) => hit.sourceId),
+          ).map((memory) => [memory.id, memory]),
+        );
+        rows = knowledgeHits.map((hit) => {
+          const memory = hit.kind === "memory" ? memoryById.get(hit.sourceId) : undefined;
+          return {
+            id: hit.sourceId,
+            sourceId: hit.sourceId,
+            kind: hit.kind,
+            title: hit.title,
+            // Keep the old symbol result's most useful field while giving every
+            // result class one stable shape for the desktop and MCP clients.
+            ...(hit.kind === "symbol" ? { name: hit.title } : {}),
+            path: hit.path || null,
+            symbol: hit.symbol || null,
+            excerpt: hit.excerpt,
+            score: hit.score,
+            updatedAt: hit.updatedAt,
+            ...(memory
+              ? {
+                  memoryKind: memory.kind,
+                  body: memory.body,
+                  source: memory.source,
+                  status: memory.status,
+                  createdAt: memory.createdAt,
+                  updatedAt: memory.updatedAt,
+                  anchors: memory.anchors,
+                  stale: memory.anchors.some((anchor) => anchor.stale),
+                }
+              : {}),
+          };
+        });
       }
     } catch {
       unreadable.push(workspace.name);
@@ -96,14 +126,31 @@ export async function crossQuery(
 
     if (rows.length === 0) continue;
     totals[workspace.name] = rows.length;
-    for (const row of rows) {
-      hits.push({ workspace: workspace.name, root: workspace.root, detail: row });
+    for (const [localRank, row] of rows.entries()) {
+      rankedHits.push({
+        localRank,
+        hit: { workspace: workspace.name, root: workspace.root, detail: row },
+      });
     }
   }
 
+  // FTS5 BM25 scores depend on each workspace's corpus and are not comparable
+  // across databases. Interleave the already-ranked local streams by ordinal,
+  // preserving exact-match priority and avoiding false global precision.
+  rankedHits.sort((left, right) => {
+    const byRank = left.localRank - right.localRank;
+    if (byRank !== 0) return byRank;
+    const byWorkspace = left.hit.workspace.localeCompare(right.hit.workspace);
+    if (byWorkspace !== 0) return byWorkspace;
+    return String(left.hit.detail.title ?? left.hit.detail.package ?? "").localeCompare(
+      String(right.hit.detail.title ?? right.hit.detail.package ?? ""),
+    );
+  });
+  const hits = rankedHits.map(({ hit }) => hit);
+
   return {
     kind,
-    query,
+    query: normalizedQuery,
     searched: workspaces.length,
     unreadable,
     totals,

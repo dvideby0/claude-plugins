@@ -16,9 +16,27 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-const DATABASE_SCHEMA_VERSION: u32 = 17;
+const DATABASE_SCHEMA_VERSION: u32 = 18;
 const FIRST_VERSIONED_SCHEMA: u32 = 17;
 const SCHEMA_V17_SQL: &str = include_str!("database_schema_v17.sql");
+const SCHEMA_V18_SQL: &str = include_str!("database_schema_v18.sql");
+const SEARCH_KINDS: &[&str] = &[
+    "file",
+    "symbol",
+    "memory",
+    "finding",
+    "component",
+    "flow",
+    "relation",
+];
+const MEMORY_KINDS: &[&str] = &[
+    "decision",
+    "convention",
+    "constraint",
+    "gotcha",
+    "context",
+    "todo",
+];
 
 const ADDED_COLUMNS: &[(&str, &str, &str)] = &[
     ("refs", "src_symbol", "TEXT"),
@@ -465,6 +483,9 @@ fn apply_migration(connection: &Connection, version: u32) -> Result<()> {
                 .execute_batch(SCHEMA_V17_SQL)
                 .map_err(|error| database_error("Cannot install SQLite schema v17", error))
         }
+        18 => connection
+            .execute_batch(SCHEMA_V18_SQL)
+            .map_err(|error| database_error("Cannot install SQLite schema v18", error)),
         _ => Err(invalid_argument(format!(
             "No SQLite migration is registered for schema v{version}"
         ))),
@@ -523,6 +544,193 @@ fn row_value(value: ValueRef<'_>) -> Result<serde_json::Value> {
             "SQLite BLOB results are not supported by the knowledge-store boundary".to_string(),
         )),
     }
+}
+
+fn query_json(connection: &Connection, sql: &str, params: &[Value]) -> Result<String> {
+    let mut statement = connection
+        .prepare(sql)
+        .map_err(|error| database_error("Cannot prepare SQLite query", error))?;
+    let columns: Vec<String> = statement
+        .column_names()
+        .into_iter()
+        .map(ToOwned::to_owned)
+        .collect();
+    let mut rows = statement
+        .query(params_from_iter(params.iter()))
+        .map_err(|error| database_error("Cannot execute SQLite query", error))?;
+    let mut result = Vec::new();
+
+    while let Some(row) = rows
+        .next()
+        .map_err(|error| database_error("Cannot read SQLite row", error))?
+    {
+        let mut object = Map::with_capacity(columns.len());
+        for (index, column) in columns.iter().enumerate() {
+            let value = row
+                .get_ref(index)
+                .map_err(|error| database_error("Cannot read SQLite value", error))?;
+            object.insert(column.clone(), row_value(value)?);
+        }
+        result.push(serde_json::Value::Object(object));
+    }
+
+    serde_json::to_string(&result).map_err(|error| {
+        Error::new(
+            Status::GenericFailure,
+            format!("Cannot encode SQLite rows: {error}"),
+        )
+    })
+}
+
+fn fts_query(input: &str) -> Result<Option<String>> {
+    if input.chars().count() > 512 {
+        return Err(invalid_argument(
+            "Knowledge search query must be at most 512 characters",
+        ));
+    }
+
+    let mut terms = Vec::new();
+    let mut current = String::new();
+    let flush = |current: &mut String, terms: &mut Vec<String>| {
+        if current.is_empty() || terms.len() >= 8 {
+            current.clear();
+            return;
+        }
+        let normalized = current.to_lowercase();
+        if !terms.iter().any(|term| term == &normalized) {
+            terms.push(normalized);
+        }
+        current.clear();
+    };
+
+    for character in input.chars() {
+        if character.is_alphanumeric() {
+            if current.chars().count() < 64 {
+                current.push(character);
+            }
+        } else {
+            flush(&mut current, &mut terms);
+        }
+        if terms.len() >= 8 {
+            break;
+        }
+    }
+    flush(&mut current, &mut terms);
+
+    if terms.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(
+        terms
+            .into_iter()
+            .map(|term| {
+                let prefix = if term.chars().count() >= 3 { "*" } else { "" };
+                format!("\"{term}\"{prefix}")
+            })
+            .collect::<Vec<_>>()
+            .join(" OR "),
+    ))
+}
+
+fn parse_search_kinds(kinds_json: &str) -> Result<Vec<String>> {
+    let kinds: Vec<String> = serde_json::from_str(kinds_json)
+        .map_err(|error| invalid_argument(format!("Invalid knowledge search kinds: {error}")))?;
+    let mut validated = Vec::new();
+    for kind in kinds {
+        if !SEARCH_KINDS.contains(&kind.as_str()) {
+            return Err(invalid_argument(format!(
+                "Unknown knowledge search kind {kind}. Expected one of: {}",
+                SEARCH_KINDS.join(", ")
+            )));
+        }
+        if !validated.contains(&kind) {
+            validated.push(kind);
+        }
+    }
+    Ok(validated)
+}
+
+fn parse_memory_kind(memory_kind: Option<&str>) -> Result<Option<String>> {
+    let Some(memory_kind) = memory_kind else {
+        return Ok(None);
+    };
+    if !MEMORY_KINDS.contains(&memory_kind) {
+        return Err(invalid_argument(format!(
+            "Unknown memory kind {memory_kind}. Expected one of: {}",
+            MEMORY_KINDS.join(", ")
+        )));
+    }
+    Ok(Some(memory_kind.to_string()))
+}
+
+fn search_knowledge_json(
+    connection: &Connection,
+    query: &str,
+    kinds_json: &str,
+    limit: u32,
+    memory_kind: Option<&str>,
+) -> Result<String> {
+    let Some(match_query) = fts_query(query)? else {
+        return Ok("[]".to_string());
+    };
+    let kinds = parse_search_kinds(kinds_json)?;
+    let memory_kind = parse_memory_kind(memory_kind)?;
+    if memory_kind.is_some() && !kinds.is_empty() && !kinds.iter().any(|kind| kind == "memory") {
+        return Err(invalid_argument(
+            "A memory subtype filter requires the memory knowledge kind",
+        ));
+    }
+    let limit = limit.clamp(1, 100);
+    let mut sql = String::from(
+        "SELECT d.kind,
+                d.source_id,
+                d.title,
+                d.path,
+                d.symbol,
+                d.updated_at,
+                -bm25(knowledge_fts, 10.0, 1.0, 6.0, 8.0) AS score,
+                snippet(knowledge_fts, -1, '[', ']', ' … ', 24) AS excerpt
+         FROM knowledge_fts
+         JOIN search_documents d ON d.rowid = knowledge_fts.rowid
+         WHERE knowledge_fts MATCH ?1 AND d.active = 1",
+    );
+    let mut values = vec![
+        Value::Text(match_query),
+        Value::Text(query.trim().to_string()),
+    ];
+    if !kinds.is_empty() {
+        let placeholders = (0..kinds.len())
+            .map(|index| format!("?{}", index + 3))
+            .collect::<Vec<_>>()
+            .join(", ");
+        sql.push_str(&format!(" AND d.kind IN ({placeholders})"));
+        values.extend(kinds.into_iter().map(Value::Text));
+    }
+    if let Some(memory_kind) = memory_kind {
+        let memory_kind_parameter = values.len() + 1;
+        sql.push_str(&format!(
+            " AND d.kind = 'memory'
+              AND EXISTS (
+                SELECT 1 FROM memories m
+                WHERE m.id = d.source_id AND m.kind = ?{memory_kind_parameter}
+              )"
+        ));
+        values.push(Value::Text(memory_kind));
+    }
+    let limit_parameter = values.len() + 1;
+    sql.push_str(&format!(
+        " ORDER BY
+            CASE WHEN LOWER(d.title) = LOWER(?2)
+                    OR LOWER(d.path) = LOWER(?2)
+                    OR LOWER(d.symbol) = LOWER(?2)
+                 THEN 0 ELSE 1 END,
+            bm25(knowledge_fts, 10.0, 1.0, 6.0, 8.0),
+            d.kind,
+            d.title
+          LIMIT ?{limit_parameter}"
+    ));
+    values.push(Value::Integer(i64::from(limit)));
+    query_json(connection, &sql, &values)
 }
 
 /// One directly persisted SQLite connection, owned by the engine process.
@@ -735,39 +943,31 @@ impl NativeDatabase {
         let connection = connection.as_ref().ok_or_else(|| {
             Error::new(Status::GenericFailure, "SQLite store is closed".to_string())
         })?;
-        let mut statement = connection
-            .prepare(&sql)
-            .map_err(|error| database_error("Cannot prepare SQLite query", error))?;
-        let columns: Vec<String> = statement
-            .column_names()
-            .into_iter()
-            .map(ToOwned::to_owned)
-            .collect();
-        let mut rows = statement
-            .query(params_from_iter(params.iter()))
-            .map_err(|error| database_error("Cannot execute SQLite query", error))?;
-        let mut result = Vec::new();
+        query_json(connection, &sql, &params)
+    }
 
-        while let Some(row) = rows
-            .next()
-            .map_err(|error| database_error("Cannot read SQLite row", error))?
-        {
-            let mut object = Map::with_capacity(columns.len());
-            for (index, column) in columns.iter().enumerate() {
-                let value = row
-                    .get_ref(index)
-                    .map_err(|error| database_error("Cannot read SQLite value", error))?;
-                object.insert(column.clone(), row_value(value)?);
-            }
-            result.push(serde_json::Value::Object(object));
-        }
-
-        serde_json::to_string(&result).map_err(|error| {
-            Error::new(
-                Status::GenericFailure,
-                format!("Cannot encode SQLite rows: {error}"),
-            )
-        })
+    /// Ranked lexical retrieval over deterministic facts and authored
+    /// knowledge. Query syntax is generated here so callers never pass raw
+    /// FTS expressions across the product boundary.
+    #[napi]
+    pub fn search_knowledge(
+        &self,
+        query: String,
+        kinds_json: String,
+        limit: u32,
+        memory_kind: Option<String>,
+    ) -> Result<String> {
+        let connection = self.connection()?;
+        let connection = connection.as_ref().ok_or_else(|| {
+            Error::new(Status::GenericFailure, "SQLite store is closed".to_string())
+        })?;
+        search_knowledge_json(
+            connection,
+            &query,
+            &kinds_json,
+            limit,
+            memory_kind.as_deref(),
+        )
     }
 
     #[napi]
@@ -791,6 +991,101 @@ mod tests {
             .as_nanos();
         let path = std::env::temp_dir().join(format!("sdlc-native-sqlite-{nonce}.db"));
         path.to_string_lossy().into_owned()
+    }
+
+    #[test]
+    fn migrates_ranked_knowledge_search_and_tracks_lifecycle() {
+        let mut connection = Connection::open_in_memory().expect("database opens");
+        migrate_connection(&mut connection, "/workspace", "/unused")
+            .expect("fresh schema migrates");
+        let version: u32 = connection
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .expect("schema version is readable");
+        assert_eq!(version, DATABASE_SCHEMA_VERSION);
+
+        connection
+            .execute_batch(
+                "INSERT INTO files(path, lang, content_sha, present)
+                   VALUES('src/core/db.ts', 'typescript', 'abc', 1);
+                 INSERT INTO symbols(
+                   id, path, kind, name, start_line, end_line, signature
+                 ) VALUES(
+                   'src/core/db.ts#function:query@1:0', 'src/core/db.ts',
+                   'function', 'query', 1, 1, 'query(sql: string)'
+                 );
+                 INSERT INTO memories(
+                   id, kind, title, body, source, status, created_at, updated_at
+                 ) VALUES
+                   ('primary', 'decision', 'Retry policy for uploads',
+                    'Use three attempts.', 'human', 'active', 'now', 'now'),
+                   ('secondary', 'context', 'Upload operations',
+                    'The retry policy for uploads is documented elsewhere.',
+                    'agent', 'active', 'now', 'now');
+                 INSERT INTO memory_anchors(memory_id, path, symbol, content_sha)
+                   VALUES('primary', 'src/core/db.ts', 'query', 'abc');",
+            )
+            .expect("search sources insert");
+
+        let ranked: Vec<serde_json::Value> = serde_json::from_str(
+            &search_knowledge_json(&connection, "retry uploads", "[\"memory\"]", 20, None)
+                .expect("knowledge search succeeds"),
+        )
+        .expect("search result decodes");
+        assert_eq!(ranked.len(), 2);
+        assert_eq!(ranked[0]["source_id"], "primary");
+        assert_eq!(ranked[0]["kind"], "memory");
+
+        let partial: Vec<serde_json::Value> = serde_json::from_str(
+            &search_knowledge_json(
+                &connection,
+                "retry term-that-is-not-present",
+                "[\"memory\"]",
+                20,
+                None,
+            )
+            .expect("partial multi-term search succeeds"),
+        )
+        .expect("partial search result decodes");
+        assert_eq!(partial.len(), 2);
+
+        let decisions: Vec<serde_json::Value> = serde_json::from_str(
+            &search_knowledge_json(&connection, "uploads", "[\"memory\"]", 20, Some("decision"))
+                .expect("memory subtype search succeeds"),
+        )
+        .expect("memory subtype result decodes");
+        assert_eq!(decisions.len(), 1);
+        assert_eq!(decisions[0]["source_id"], "primary");
+
+        let anchored: Vec<serde_json::Value> = serde_json::from_str(
+            &search_knowledge_json(&connection, "src/core/db.ts", "[\"memory\"]", 20, None)
+                .expect("path search succeeds"),
+        )
+        .expect("path result decodes");
+        assert_eq!(anchored[0]["source_id"], "primary");
+
+        let symbols: Vec<serde_json::Value> = serde_json::from_str(
+            &search_knowledge_json(&connection, "query", "[\"symbol\"]", 20, None)
+                .expect("symbol search succeeds"),
+        )
+        .expect("symbol result decodes");
+        assert_eq!(symbols[0]["path"], "src/core/db.ts");
+
+        connection
+            .execute(
+                "UPDATE memories SET status = 'superseded' WHERE id = 'primary'",
+                [],
+            )
+            .expect("memory retires");
+        let retired: Vec<serde_json::Value> = serde_json::from_str(
+            &search_knowledge_json(&connection, "three attempts", "[\"memory\"]", 20, None)
+                .expect("retired search succeeds"),
+        )
+        .expect("retired result decodes");
+        assert!(retired.is_empty());
+
+        // Punctuation is data, never raw FTS syntax supplied by the caller.
+        search_knowledge_json(&connection, "query() OR \\\"unterminated", "[]", 20, None)
+            .expect("unsafe-looking input is normalized safely");
     }
 
     #[test]

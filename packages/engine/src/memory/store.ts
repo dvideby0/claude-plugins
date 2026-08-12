@@ -151,6 +151,20 @@ function hydrate(db: Db, rows: Array<Record<string, unknown>>): Memory[] {
   }));
 }
 
+/** Hydrate active memories without losing anchor freshness information. */
+export function memoriesByIds(db: Db, ids: readonly string[]): Memory[] {
+  if (ids.length === 0) return [];
+  const placeholders = ids.map(() => "?").join(",");
+  return hydrate(
+    db,
+    db.all(
+      `SELECT * FROM memories
+       WHERE status = 'active' AND id IN (${placeholders})`,
+      [...ids],
+    ),
+  );
+}
+
 export function listMemories(db: Db, kind?: string, limit = 100): Memory[] {
   const rows = kind
     ? db.all(
@@ -163,63 +177,25 @@ export function listMemories(db: Db, kind?: string, limit = 100): Memory[] {
   return hydrate(db, rows);
 }
 
-/**
- * Keyword search over titles, bodies and anchor paths.
- *
- * Deliberately not an embedding index: at the scale one repository produces,
- * ranked LIKE matching returns the same answers without a model in the loop or
- * a vector store to keep in sync.
- */
+/** Ranked FTS5 recall over memory titles, bodies, and anchors. */
 export function recall(db: Db, query: string, limit = 20, kind?: MemoryKind): Memory[] {
-  const terms = query
-    .toLowerCase()
-    .split(/[^a-z0-9_./-]+/i)
-    .filter((term) => term.length > 2)
-    .slice(0, 8);
+  if (!query.trim()) return listMemories(db, kind, limit);
 
-  if (terms.length === 0) return listMemories(db, kind, limit);
+  const boundedLimit = Number.isFinite(limit)
+    ? Math.min(100, Math.max(0, Math.trunc(limit)))
+    : 20;
+  if (boundedLimit === 0) return [];
 
-  const scored = new Map<string, number>();
-  for (const term of terms) {
-    const like = `%${term}%`;
-    for (const row of db.all<{ id: string }>(
-      `SELECT id FROM memories WHERE status = 'active' AND LOWER(title) LIKE ?${
-        kind ? " AND kind = ?" : ""
-      }`,
-      kind ? [like, kind] : [like],
-    )) {
-      scored.set(row.id, (scored.get(row.id) ?? 0) + 3);
-    }
-    for (const row of db.all<{ id: string }>(
-      `SELECT id FROM memories WHERE status = 'active' AND LOWER(body) LIKE ?${
-        kind ? " AND kind = ?" : ""
-      }`,
-      kind ? [like, kind] : [like],
-    )) {
-      scored.set(row.id, (scored.get(row.id) ?? 0) + 1);
-    }
-    for (const row of db.all<{ memory_id: string }>(
-      `SELECT a.memory_id FROM memory_anchors a
-       JOIN memories m ON m.id = a.memory_id
-       WHERE m.status = 'active' AND (LOWER(a.path) LIKE ? OR LOWER(a.symbol) LIKE ?)${
-         kind ? " AND m.kind = ?" : ""
-       }`,
-      kind ? [like, like, kind] : [like, like],
-    )) {
-      scored.set(row.memory_id, (scored.get(row.memory_id) ?? 0) + 2);
-    }
-  }
-
-  const ranked = [...scored.entries()]
-    .sort((a, b) => b[1] - a[1])
-    .slice(0, limit)
-    .map(([id]) => id);
+  const ranked = db
+    .searchKnowledge(query, ["memory"], boundedLimit, { memoryKind: kind })
+    .map((hit) => hit.sourceId);
   if (ranked.length === 0) return [];
 
-  const placeholders = ranked.map(() => "?").join(",");
-  const rows = db.all(`SELECT * FROM memories WHERE id IN (${placeholders})`, ranked);
-  const byId = new Map(hydrate(db, rows).map((memory) => [memory.id, memory]));
-  return ranked.map((id) => byId.get(id)).filter((memory): memory is Memory => Boolean(memory));
+  const byId = new Map(memoriesByIds(db, ranked).map((memory) => [memory.id, memory]));
+  return ranked
+    .map((id) => byId.get(id))
+    .filter((memory): memory is Memory => Boolean(memory))
+    .slice(0, boundedLimit);
 }
 
 /** Memories that apply to a file, or to any symbol inside it. */
