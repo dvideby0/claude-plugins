@@ -150,6 +150,13 @@ As of 2026-08-11, the first evaluation boundary exists:
   the desktop provider catalog. The next comparison is whether the proven
   product-specific LangGraph semantics can use the existing native/SCIP facts
   without inheriting Joern's packaging and full-graph export costs.
+- the first production FLOW-001 adapter now demonstrates that boundary for
+  explicit TypeScript/JavaScript HTTP route guards. Rust Tree-sitter supplies
+  bounded source structure, existing references resolve imported call targets,
+  and SDLC contributes only route/branch/await/response-effect meaning. It
+  exposes unsupported control as gaps and does not claim universal CFG or data
+  flow. A checked-in HTTP oracle measures the product graph directly; Joern
+  remains the broader-analysis comparator rather than a desktop dependency.
 
 This completes attestation of the repository source view, not full immutable
 provider-input provenance or PROV-001. Dependency/read-closure confinement,

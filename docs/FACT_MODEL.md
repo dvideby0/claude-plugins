@@ -130,3 +130,20 @@ This is still a measured import boundary, not persisted production provider
 facts. STORE-001 now supplies app-owned native SQLite with direct transactional
 writes; the next fact-model persistence step should store provider-run
 ownership there without flattening provenance or freshness into legacy tables.
+
+## Deterministic execution-path projection
+
+Schema v19 persists the first production framework-adapter graph in
+`execution_entries`, `execution_nodes`, `execution_edges`, and
+`execution_diagnostics`. These rows remain separate from the human/LLM-authored
+`flows` overlay. Each entry records its framework producer/version, `inferred`
+certainty, source evidence, file-owned replacement scope, and input content
+hash; query freshness compares that hash with the current indexed file.
+
+The native graph uses a private `next` edge for bounded path ordering. `next`
+is not silently promoted into the version-1 fact vocabulary. Evaluation and
+agent responses project meaningful operations into the existing `register`,
+`call`, `branch`, `catch`, `await`, `return`, `throw`, and `terminal-effect`
+relations, while keeping sequence edges as presentation/CFG detail. Unsupported
+control constructs become explicit gap nodes with diagnostics rather than
+fabricated fact edges.

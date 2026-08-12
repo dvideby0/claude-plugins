@@ -130,6 +130,18 @@ transitives. Those maintenance and capability gaps rule it out as the default
 production Python provider today; retaining a reproducible evaluator lets a
 future maintained replacement prove that it is at least as accurate.
 
+### First FLOW-001 production decision (2026-08-12)
+
+The measured Joern spike validates CPG control-flow concepts but still does not
+justify shipping its 2.17 GB, AMD64-only evaluated runtime or translating a
+full GraphSON graph for one desktop workflow. The first production flow slice
+therefore reuses the already bundled Rust Tree-sitter grammar and existing
+resolved-reference store, adding only a bounded SDLC-specific adapter for
+explicit HTTP route guards and response effects. This is adoption plus narrow
+product semantics, not a substitute for a general CPG: loops and switches are
+reported as gaps, data flow is unclaimed, and broader providers remain subject
+to the same golden corpus.
+
 ## Integration research
 
 [Codex plugin documentation](https://developers.openai.com/plugins/build/plugins) describes bundles containing a `.codex-plugin/plugin.json` manifest plus skills, apps/MCP registrations, hooks, and related resources. Its marketplace workflow supports local and Git-backed sources. [Codex MCP documentation](https://developers.openai.com/codex/mcp/) describes supported CLI configuration rather than requiring direct TOML editing.

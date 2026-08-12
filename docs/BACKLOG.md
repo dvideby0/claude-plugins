@@ -249,6 +249,23 @@ Acceptance criteria:
 - Expected paths in the golden corpus pass precision/recall thresholds set by EVAL-001.
 - Asserted relations can be enabled as a clearly labeled overlay in path queries.
 
+Progress (2026-08-12, HTTP vertical slice): a bounded Rust Tree-sitter
+framework adapter now recognizes explicit TypeScript/JavaScript HTTP route
+guards and persists file-owned execution entries, operations, control edges,
+diagnostics, producer identity, certainty, source evidence, and input hashes in
+schema v19. It retains `if` branches, caught-exception outcomes, awaited calls,
+returns/throws, and recognized HTTP response effects; unsupported loops and
+switches become explicit gaps. Native path enumeration is cycle- and
+budget-bounded. The existing MCP `flow` operation prefers this model when it is
+available, while preserving the older call graph as `mode: calls`, and the
+desktop now presents entry-to-effect paths as its primary Flow workspace. A
+checked-in HTTP fixture measures one entry, seven unique semantic relations,
+and three paths at 1.0 precision/recall. The real `GET /api/search` route in
+this repository produces the same three response paths with resolved imported
+targets. This is the first vertical slice, not FLOW-001 completion: two more
+real flows, switch/loop/early-return/uncaught-exception coverage, asserted
+overlays, and broader path evaluation remain open.
+
 ### UI-001: Question-centered code and flow workspace
 
 Turn the desktop from an operational viewer into a daily-use exploration surface.
