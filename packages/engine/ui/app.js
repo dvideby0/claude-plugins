@@ -37,6 +37,17 @@ const state = {
   graph: null,
   flow: null,
   map: null,
+  search: {
+    draftQuery: "",
+    draftKind: "all",
+    query: "",
+    kind: "all",
+    result: null,
+    loading: false,
+    request: 0,
+    workspaceKey: null,
+    stale: false,
+  },
   /** What the current view was rendered from, so polling does not clobber it. */
   renderedKey: null,
   onboarded: localStorage.getItem("sdlc.onboarded") === "1",
@@ -111,6 +122,7 @@ function parseHash() {
   const parts = raw.split("/").filter(Boolean);
 
   if (parts[0] === "welcome") return { name: "welcome" };
+  if (parts[0] === "search") return { name: "search" };
   if (parts[0] === "settings") return { name: "settings" };
   if (parts[0] === "projects" && parts[1]) {
     return { name: "project", id: parts[1], tab: parts[2] ?? "overview" };
@@ -150,6 +162,7 @@ function renderChrome(route) {
     const section = item.dataset.section;
     const active =
       (section === "projects" && (route.name === "projects" || route.name === "project")) ||
+      (section === "search" && route.name === "search") ||
       (section === "settings" && route.name === "settings");
     item.classList.toggle("active", active);
   }
@@ -371,6 +384,205 @@ function renderProjects() {
     event.stopPropagation();
     void removeWorkspace(element.dataset.id);
   });
+}
+
+// --- search ----------------------------------------------------------------
+
+const SEARCH_KINDS = [
+  ["all", "Everything"],
+  ["file", "Files"],
+  ["symbol", "Symbols"],
+  ["component", "Components"],
+  ["flow", "Flows"],
+  ["finding", "Findings"],
+  ["memory", "Memories"],
+  ["relation", "Relations"],
+  ["package", "Packages"],
+];
+
+function searchWorkspaceKey(workspaces = state.workspaces) {
+  return workspaces
+    .map((workspace) => `${workspace.id}:${workspace.generation}`)
+    .sort()
+    .join(",");
+}
+
+function renderSearchResults() {
+  const container = document.getElementById("search-results");
+  if (!container) return;
+  const search = state.search;
+  if (search.loading) {
+    container.innerHTML = `<div class="loading">Searching every indexed project…</div>`;
+    return;
+  }
+  if (search.error) {
+    container.innerHTML = `<div class="empty">${esc(search.error)}</div>`;
+    return;
+  }
+  if (!search.result) {
+    container.innerHTML = `<div class="empty big">
+      <p>Search the shared index.</p>
+      <p class="sub">Find paths, symbols, map components, flows, findings, relations, and recorded knowledge without opening each repository.</p>
+    </div>`;
+    return;
+  }
+
+  const result = search.result;
+  const unreadable = result.unreadable?.length
+    ? `<div class="notice">Could not read: ${result.unreadable.map(esc).join(", ")}.</div>`
+    : "";
+  if (!result.hits.length) {
+    container.innerHTML = `${unreadable}<div class="empty big">
+      <p>No indexed knowledge matched <b>${esc(result.query)}</b>.</p>
+      <p class="sub">This index currently covers identifiers, paths, map explanations, findings, relations, and memories—not arbitrary source-file text.</p>
+    </div>`;
+    return;
+  }
+
+  container.innerHTML = `${unreadable}
+    <div class="search-summary">
+      ${num(result.hits.length)} result${result.hits.length === 1 ? "" : "s"} across
+      ${num(Object.keys(result.totals).length)} of ${num(result.searched)} indexed project${result.searched === 1 ? "" : "s"}
+    </div>
+    <div class="search-results">
+      ${result.hits
+        .map((hit, index) => {
+          const detail = hit.detail;
+          const kind = detail.kind ?? result.kind;
+          const title = detail.title ?? detail.name ?? detail.package ?? detail.sourceId ?? "Result";
+          const singleLocation = ["file", "symbol", "finding"].includes(kind)
+            ? detail.path
+            : null;
+          const memoryAnchors =
+            kind === "memory" && Array.isArray(detail.anchors) ? detail.anchors : [];
+          const canOpen =
+            ["component", "flow"].includes(kind) ||
+            (["file", "symbol", "finding"].includes(kind) && Boolean(singleLocation));
+          const openLabel =
+            kind === "component"
+              ? "Open component →"
+              : kind === "flow"
+                ? "Open flow →"
+                : "Open indexed file →";
+          return `<${canOpen ? "button" : "article"}
+                    class="search-result ${canOpen ? "openable" : ""}"
+                    ${canOpen ? `data-action="open-search-hit" data-index="${index}"` : ""}>
+            <div class="search-result-head">
+              <span class="pill">${esc(kind)}</span>
+              ${detail.stale ? '<span class="pill search-stale">stale</span>' : ""}
+              <strong>${esc(title)}</strong>
+              <span class="search-workspace">${esc(hit.workspace)}</span>
+            </div>
+            ${singleLocation ? `<div class="search-path mono">${esc(singleLocation)}${detail.symbol ? `#${esc(detail.symbol)}` : ""}</div>` : ""}
+            ${
+              memoryAnchors.length
+                ? `<div class="search-anchors">${memoryAnchors
+                    .map(
+                      (anchor) =>
+                        `<span class="anchor ${anchor.stale ? "stale" : ""}">${esc(anchor.path)}${anchor.symbol ? `#${esc(anchor.symbol)}` : ""}${anchor.stale ? " ⚠" : ""}</span>`,
+                    )
+                    .join("")}</div>`
+                : ""
+            }
+            ${detail.stale ? '<div class="search-stale-note">Anchored code changed or was removed. Verify this memory before relying on it.</div>' : ""}
+            ${detail.excerpt ? `<div class="search-excerpt">${esc(detail.excerpt)}</div>` : ""}
+            ${canOpen ? `<span class="search-open">${openLabel}</span>` : ""}
+          </${canOpen ? "button" : "article"}>`;
+        })
+        .join("")}
+    </div>`;
+
+  on("open-search-hit", (element) => {
+    const hit = result.hits[Number(element.dataset.index)];
+    const workspace = state.workspaces.find((item) => item.root === hit?.root);
+    if (!workspace || !hit) return;
+    if (hit.detail.kind === "component") {
+      void showComponent(workspace, hit.detail.sourceId, { origin: element });
+    } else if (hit.detail.kind === "flow") {
+      void showMapFlow(workspace, hit.detail.sourceId, { origin: element });
+    } else if (hit.detail.path) {
+      void showFile(workspace, hit.detail.path, { forceDrawer: true, origin: element });
+    }
+  }, container);
+}
+
+async function runSearch() {
+  const query = state.search.query.trim();
+  if (!query) {
+    ++state.search.request;
+    state.search.loading = false;
+    state.search.result = null;
+    state.search.error = null;
+    state.search.workspaceKey = null;
+    state.search.stale = false;
+    renderSearchResults();
+    return;
+  }
+
+  const request = ++state.search.request;
+  const workspaceKey = searchWorkspaceKey();
+  state.search.loading = true;
+  state.search.error = null;
+  state.search.workspaceKey = workspaceKey;
+  state.search.stale = false;
+  renderSearchResults();
+  try {
+    const params = new URLSearchParams({ q: query, kind: state.search.kind });
+    const result = await api(`/api/search?${params}`);
+    if (request !== state.search.request || workspaceKey !== searchWorkspaceKey()) return;
+    state.search.result = result;
+  } catch (error) {
+    if (request !== state.search.request) return;
+    state.search.result = null;
+    state.search.error = error.message;
+  } finally {
+    if (request === state.search.request) {
+      state.search.loading = false;
+      renderSearchResults();
+    }
+  }
+}
+
+function renderSearch() {
+  ui.view.innerHTML = `
+    <div class="page search-page">
+      <div class="page-head">
+        <div>
+          <h1>Search</h1>
+          <p class="sub">One ranked view of deterministic facts and authored knowledge across every indexed project.</p>
+        </div>
+      </div>
+      <form class="search-form" id="search-form">
+        <input id="search-query" type="search" value="${esc(state.search.draftQuery)}"
+               placeholder="Path, symbol, component, flow, finding, or memory"
+               autocomplete="off" spellcheck="false" aria-label="Search query" />
+        <select id="search-kind" aria-label="Result kind">
+          ${SEARCH_KINDS.map(
+            ([value, label]) => `<option value="${value}" ${state.search.draftKind === value ? "selected" : ""}>${label}</option>`,
+          ).join("")}
+        </select>
+        <button class="primary" type="submit">Search</button>
+      </form>
+      <div id="search-results" aria-live="polite"></div>
+    </div>`;
+
+  const queryInput = document.getElementById("search-query");
+  const kindInput = document.getElementById("search-kind");
+  queryInput.addEventListener("input", () => {
+    state.search.draftQuery = queryInput.value;
+  });
+  kindInput.addEventListener("change", () => {
+    state.search.draftKind = kindInput.value;
+  });
+  document.getElementById("search-form").addEventListener("submit", (event) => {
+    event.preventDefault();
+    state.search.query = state.search.draftQuery;
+    state.search.kind = state.search.draftKind;
+    void runSearch();
+  });
+  renderSearchResults();
+  queryInput.focus({ preventScroll: true });
+  if (state.search.stale && state.search.query.trim()) void runSearch();
 }
 
 // --- project detail --------------------------------------------------------
@@ -2053,7 +2265,9 @@ function viewKey(route) {
   const workspaces = state.workspaces
     .map(
       (w) =>
-        `${w.id}:${w.generation}:${w.indexing ? 1 : 0}:${w.indexedFiles}:${w.openFindings}`,
+        route.name === "search"
+          ? `${w.id}:${w.generation}`
+          : `${w.id}:${w.generation}:${w.indexing ? 1 : 0}:${w.indexedFiles}:${w.openFindings}`,
     )
     .join(",");
   const agents = state.harnesses.map((h) => `${h.id}:${h.connected ? 1 : 0}`).join(",");
@@ -2077,7 +2291,9 @@ function render() {
 
   if (drawerWorkspace) {
     const current = state.workspaces.find((workspace) => workspace.id === drawerWorkspace.id);
-    if (route.id !== drawerWorkspace.id || current?.generation !== drawerWorkspace.generation) {
+    const remainsInContext =
+      route.name === "search" || (route.name === "project" && route.id === drawerWorkspace.id);
+    if (!remainsInContext || current?.generation !== drawerWorkspace.generation) {
       closeDrawer();
     }
   }
@@ -2093,6 +2309,7 @@ function render() {
 
   if (route.name === "welcome") renderWelcome();
   else if (route.name === "projects") renderProjects();
+  else if (route.name === "search") renderSearch();
   else if (route.name === "project") renderProject(route);
   else if (route.name === "settings") renderSettings();
 }
@@ -2136,6 +2353,18 @@ async function refresh(force = false) {
     state.harnesses = harnesses;
     state.providers = providers;
     if (shouldRefreshHarnesses) harnessRefreshAt = Date.now();
+    const nextSearchWorkspaceKey = searchWorkspaceKey(workspaces);
+    if (
+      state.search.workspaceKey !== null &&
+      state.search.workspaceKey !== nextSearchWorkspaceKey
+    ) {
+      ++state.search.request;
+      state.search.result = null;
+      state.search.loading = false;
+      state.search.error = null;
+      state.search.workspaceKey = null;
+      state.search.stale = true;
+    }
     state.workspaces = workspaces;
     if (force) state.renderedKey = null;
     render();

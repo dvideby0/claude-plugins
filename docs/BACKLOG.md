@@ -195,6 +195,18 @@ rather than a silent automatic rollback that could discard newer knowledge.
 Stable identity across repository relocation and the internal FTS5 retrieval
 surface also remain open.
 
+Progress (2026-08-12, FTS retrieval slice): schema v18 now uses SQLite's
+external-content FTS5 tables, Unicode tokenizer, prefix indexes, BM25 ranking,
+and snippets as a derived access path over relational facts and authored
+knowledge. SQLite triggers maintain searchable files, symbols, memories,
+findings, components, flows, and asserted relations in the same transaction as
+their authoritative rows, including lifecycle changes and child anchors. One
+bounded Rust query parser prevents callers from injecting raw FTS syntax. The
+existing memory recall, cross-repository search, HTTP search endpoint, and a new
+desktop global-search workspace share that interface; no new MCP tool was
+added. STORE-001 still needs stable identity across repository relocation and
+an explicit user-visible general-corruption restore workflow.
+
 ### INCR-001: Ownership and dependency-directed invalidation
 
 Implement a signature hierarchy and a dependency table for derived artifacts.
@@ -250,6 +262,11 @@ Acceptance criteria:
 - Large graphs default to focused neighborhoods and expansion, not an unreadable whole-repository canvas.
 - The workflow remains fully useful with semantic enrichment disabled.
 
+Progress (2026-08-12): the desktop now has a first global search workspace over
+the shared FTS5 index and can open file-backed results in the existing indexed
+file drawer. Precise range navigation, exact source-text indexing, synchronized
+source/graph/path selection, and the flow-centered workspace remain open.
+
 ### QUERY-001: One budgeted task-context query
 
 Add an internal query planner and expose one primary agent operation such as `get_task_context`. It should compose lexical search, graph neighborhoods, flow paths, source ranges, tests, changes, findings, and approved memories.
@@ -272,6 +289,12 @@ Acceptance criteria:
 - Ranking explains whether a result came from lexical match, graph proximity, flow membership, change relevance, or memory.
 - Search refresh is incremental.
 - Saved queries can be re-run against later index generations for desktop insights.
+
+Progress (2026-08-12): the STORE-001 slice establishes the shared incremental
+FTS5 index, identifier/path weighting, safe prefix queries, kind filters, and
+cross-workspace ranking. Structural search remains a separate existing mode.
+Exact source-text/phrase behavior, language filters, graph/change/flow ranking,
+ranking explanations, saved queries, and retrieval evaluation remain open.
 
 ### CONN-001: Idempotent Claude and Codex connector manager
 
