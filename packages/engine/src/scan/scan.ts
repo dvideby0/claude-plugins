@@ -9,12 +9,10 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { Db } from "../db/db.js";
 import { getDb } from "../db/db.js";
-import { parseFile } from "./parse.js";
 import { createResolver, parseTsAliases, type TsPathAlias } from "./resolve.js";
 import { collectGit } from "./git.js";
 import { TYPED_SPECIFIER } from "../graph/typed-contract.js";
-import { collectFiles } from "./source.js";
-import { isNoise } from "./walk.js";
+import { collectFiles, type ParsedSource } from "./source.js";
 import { canonicalWorkspaceRoot, workspaceIdentityKey } from "../lib/workspace-path.js";
 import { sourceSignature } from "./signature.js";
 
@@ -50,8 +48,8 @@ export interface ScanResult {
   references: number;
   languages: Record<string, number>;
   gitAvailable: boolean;
-  /** Which implementation walked and parsed: "native" or "typescript". */
-  engine: string;
+  /** The bundled Rust source engine. */
+  engine: "native";
   /** True when the index was rebuilt because it predated the current extractor. */
   upgraded: boolean;
 }
@@ -103,11 +101,9 @@ async function doScan(projectRoot: string, options: ScanOptions = {}): Promise<S
   const storedEngine =
     db.get<{ value: string }>("SELECT value FROM meta WHERE key = 'extraction_engine'")?.value ??
     "unknown";
-  // A fallback scan can produce the current symbol/import schema but cannot
-  // produce native imported-name references. When the native binary becomes
-  // available later, that capability transition must backfill unchanged files.
-  const stale =
-    storedVersion < EXTRACTION_VERSION || (engine === "native" && storedEngine !== "native");
+  // Stores created by the retired TypeScript fallback lack imported-name
+  // references. Rebuild them once through the sole production source engine.
+  const stale = storedVersion < EXTRACTION_VERSION || storedEngine !== "native";
   const full = options.full || stale;
   const aliases = await loadAliases(projectRoot);
 
@@ -136,12 +132,9 @@ async function doScan(projectRoot: string, options: ScanOptions = {}): Promise<S
   let filesChanged = 0;
   let filesParsed = 0;
 
-  // Parse before the transaction opens. The write pass below is synchronous
-  // on purpose: an `await` inside an open transaction lets unrelated writes
-  // join it — and a failure would roll them back too (see Db.transaction).
-  const parseable = (path: string, lang: string): boolean =>
-    !isNoise(path) && (lang === "typescript" || lang === "javascript" || lang === "python");
-  const parsed = new Map<string, Awaited<ReturnType<typeof parseFile>>>();
+  // Rust has already walked and parsed before the transaction opens. Select
+  // the changed parse results here so the write pass remains synchronous.
+  const parsed = new Map<string, ParsedSource>();
   for (const file of files) {
     // A reference is owned by its caller. If its target disappears, rebuild
     // that unchanged caller now so the unresolved row survives and can resolve
@@ -149,10 +142,8 @@ async function doScan(projectRoot: string, options: ScanOptions = {}): Promise<S
     // the call until a full scan or an unrelated caller edit.
     const changed =
       full || previous.get(file.path) !== file.contentSha || invalidatedSources.has(file.path);
-    if (!changed || !parseable(file.path, file.lang)) continue;
-    // The native core has already parsed everything; the TypeScript path
-    // parses here, so that only changed files pay for it.
-    parsed.set(file.path, file.parsed ?? (await parseFile(file.path, file.lang, file.content ?? "")));
+    if (!changed || !file.parsed) continue;
+    parsed.set(file.path, file.parsed);
   }
 
   db.transaction(() => {
@@ -160,8 +151,7 @@ async function doScan(projectRoot: string, options: ScanOptions = {}): Promise<S
       seen.add(file.path);
       languages[file.lang] = (languages[file.lang] ?? 0) + 1;
       const refreshed = parsed.has(file.path);
-      const referenceCoverage =
-        refreshed && engine === "native" && parseable(file.path, file.lang) ? "import" : "none";
+      const referenceCoverage = refreshed ? "import" : "none";
 
       db.run(
         `INSERT INTO files(path, lang, loc, bytes, content_sha, churn, is_test, parsed,
@@ -184,7 +174,7 @@ async function doScan(projectRoot: string, options: ScanOptions = {}): Promise<S
           file.contentSha,
           git.churn.get(file.path) ?? 0,
           file.isTest ? 1 : 0,
-          parseable(file.path, file.lang) ? 1 : 0,
+          file.parsed ? 1 : 0,
           referenceCoverage,
           runId,
           runId,

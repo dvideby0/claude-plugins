@@ -1,8 +1,9 @@
 //! Parallel repository walk.
 //!
-//! Deliberately mirrors the TypeScript walker it replaces — same ignore list,
-//! same language table, same 16-character sha256 prefix — so the two can be
-//! compared on the same repository and produce the same rows.
+//! This is the single repository-inventory policy for the application. The
+//! daemon asks this module about watcher paths as well as using it for scans,
+//! so a second implementation cannot silently drift from the trusted input
+//! boundary.
 
 use ignore::WalkBuilder;
 use sha2::{Digest, Sha256};
@@ -11,10 +12,34 @@ use std::path::Path;
 pub const MAX_FILE_BYTES: u64 = 2 * 1024 * 1024;
 
 const IGNORED_DIRS: &[&str] = &[
-    "node_modules", ".git", "dist", "build", "out", ".next", ".nuxt", ".svelte-kit",
-    "coverage", "__pycache__", ".venv", "venv", "env", ".mypy_cache", ".ruff_cache",
-    ".pytest_cache", ".tox", "target", "vendor", "site-packages", ".eggs", "htmlcov",
-    ".idea", ".vscode", "sdlc-audit", ".turbo", ".cache", ".parcel-cache",
+    "node_modules",
+    ".git",
+    "dist",
+    "build",
+    "out",
+    ".next",
+    ".nuxt",
+    ".svelte-kit",
+    "coverage",
+    "__pycache__",
+    ".venv",
+    "venv",
+    "env",
+    ".mypy_cache",
+    ".ruff_cache",
+    ".pytest_cache",
+    ".tox",
+    "target",
+    "vendor",
+    "site-packages",
+    ".eggs",
+    "htmlcov",
+    ".idea",
+    ".vscode",
+    "sdlc-audit",
+    ".turbo",
+    ".cache",
+    ".parcel-cache",
 ];
 
 pub struct Scanned {
@@ -42,8 +67,7 @@ pub fn classify(path: &str) -> &'static str {
     }
 }
 
-/// Mirrors the TypeScript regexes without pulling in a regex engine: these
-/// are all anchored substring checks in disguise.
+/// Test-file conventions supported by the repository inventory.
 pub fn is_test_path(path: &str) -> bool {
     let segments: Vec<&str> = path.split('/').collect();
     if segments
@@ -59,13 +83,18 @@ pub fn is_test_path(path: &str) -> bool {
     for marker in [".test.", ".spec."] {
         if let Some(index) = file.rfind(marker) {
             let suffix = &file[index + marker.len()..];
-            if matches!(suffix, "ts" | "tsx" | "js" | "jsx" | "mts" | "mjs" | "cts" | "cjs") {
+            if matches!(
+                suffix,
+                "ts" | "tsx" | "js" | "jsx" | "mts" | "mjs" | "cts" | "cjs"
+            ) {
                 return true;
             }
         }
     }
 
-    file == "conftest.py" || file.ends_with("_test.py") || file.starts_with("test_") && file.ends_with(".py")
+    file == "conftest.py"
+        || file.ends_with("_test.py")
+        || file.starts_with("test_") && file.ends_with(".py")
 }
 
 pub fn is_noise(path: &str) -> bool {
@@ -83,8 +112,25 @@ pub fn is_noise(path: &str) -> bool {
         || file.ends_with(".bundle.js")
 }
 
-fn skip_dir(name: &str) -> bool {
+pub fn skip_dir(name: &str) -> bool {
     IGNORED_DIRS.contains(&name) || (name.starts_with('.') && name != ".github")
+}
+
+pub fn is_watch_ignored_path(path: &str) -> bool {
+    let normalized = path.replace('\\', "/");
+    let segments: Vec<&str> = normalized
+        .split('/')
+        .filter(|segment| !segment.is_empty())
+        .collect();
+    segments.iter().enumerate().any(|(index, segment)| {
+        IGNORED_DIRS.contains(segment)
+            // A final dot-prefixed segment can be a valid file such as
+            // `.mcp.json`. Hidden directories are excluded from both source
+            // inventory and source refreshes, except for `.github`.
+            || (index + 1 < segments.len()
+                && segment.starts_with('.')
+                && *segment != ".github")
+    })
 }
 
 /// Walk the repository, reading and hashing every indexable file.
@@ -96,8 +142,8 @@ pub fn walk(root: &Path) -> Vec<Scanned> {
     builder
         .hidden(false) // our own rule below is more permissive (.github)
         // `.ignore` is a ripgrep convention, not part of SDLC's deterministic
-        // repository policy. The TypeScript fallback does not read it, so the
-        // native walker must not silently produce a different file set.
+        // repository policy. User-local ignore files must not silently change
+        // the source set represented by the application.
         .ignore(false)
         .git_ignore(false)
         .git_global(false)
@@ -147,9 +193,8 @@ pub fn walk(root: &Path) -> Vec<Scanned> {
             if bytes.contains(&0) {
                 return ignore::WalkState::Continue; // binary
             }
-            // Lossy, to match the TypeScript walker: Node's utf-8 decode
-            // substitutes U+FFFD and keeps the file, so rejecting it here
-            // made the two paths index different file sets.
+            // Decode lossily so one malformed byte does not make an otherwise
+            // indexable text file disappear from the repository inventory.
             let content = String::from_utf8_lossy(&bytes).into_owned();
 
             let digest = Sha256::digest(content.as_bytes());
@@ -188,7 +233,7 @@ pub fn walk(root: &Path) -> Vec<Scanned> {
 
 #[cfg(test)]
 mod tests {
-    use super::walk;
+    use super::{classify, is_noise, is_test_path, is_watch_ignored_path, walk};
     use std::fs;
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -198,18 +243,37 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .expect("clock before epoch")
             .as_nanos();
-        let root = std::env::temp_dir().join(format!(
-            "sdlc-walk-ignore-{}-{nonce}",
-            std::process::id()
-        ));
+        let root =
+            std::env::temp_dir().join(format!("sdlc-walk-ignore-{}-{nonce}", std::process::id()));
         fs::create_dir_all(&root).expect("create fixture");
+        fs::create_dir_all(root.join(".codex")).expect("create agent config directory");
+        fs::create_dir_all(root.join(".hidden")).expect("create hidden directory");
         fs::write(root.join(".ignore"), "ignored.ts\n").expect("write ignore file");
-        fs::write(root.join("ignored.ts"), "export const kept = true;\n")
-            .expect("write source");
+        fs::write(root.join("ignored.ts"), "export const kept = true;\n").expect("write source");
+        fs::write(root.join(".codex/config.toml"), "model = 'fixture'\n")
+            .expect("write agent config");
+        fs::write(root.join(".hidden/config.toml"), "secret = true\n")
+            .expect("write hidden config");
 
         let paths: Vec<String> = walk(&root).into_iter().map(|file| file.path).collect();
         assert!(paths.contains(&"ignored.ts".to_string()));
+        assert!(!paths.contains(&".codex/config.toml".to_string()));
+        assert!(!paths.contains(&".hidden/config.toml".to_string()));
 
         fs::remove_dir_all(root).expect("remove fixture");
+    }
+
+    #[test]
+    fn rust_policy_classifies_scans_and_watcher_paths() {
+        assert_eq!(classify("src/app.ts"), "typescript");
+        assert_eq!(classify(".mcp.json"), "config");
+        assert_eq!(classify(".DS_Store"), "other");
+        assert!(is_test_path("src/app.test.ts"));
+        assert!(is_noise("dist/app.min.js"));
+        assert!(is_watch_ignored_path("node_modules/pkg/index.ts"));
+        assert!(is_watch_ignored_path("src/.hidden/app.ts"));
+        assert!(!is_watch_ignored_path(".mcp.json"));
+        assert!(is_watch_ignored_path(".codex/config.toml"));
+        assert!(!is_watch_ignored_path(".github/workflows/ci.yml"));
     }
 }

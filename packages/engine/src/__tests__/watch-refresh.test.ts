@@ -104,10 +104,13 @@ describe("watch refresh queue", () => {
     expect(hasTypedConfigChange(["src/app.ts", "README.md"])).toBe(false);
   });
 
-  it("watches recognized dotfiles and configuration without watching noise", () => {
+  it("watches indexed dotfiles and configuration without watching hidden local state", () => {
     expect(isInterestingChange(".mcp.json")).toBe(true);
     expect(isInterestingChange(".eslintrc.json")).toBe(true);
-    expect(isInterestingChange(".codex/config.toml")).toBe(true);
+    expect(isInterestingChange(".claude/settings.local.json")).toBe(false);
+    expect(isInterestingChange(".cursor/mcp.json")).toBe(false);
+    expect(isInterestingChange(".codex/config.toml")).toBe(false);
+    expect(isInterestingChange(".opencode/config.json")).toBe(false);
     expect(isInterestingChange(".github/workflows/review.yml")).toBe(true);
     expect(isInterestingChange(".git/config")).toBe(false);
     expect(isInterestingChange(".DS_Store")).toBe(false);

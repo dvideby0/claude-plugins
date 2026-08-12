@@ -164,7 +164,7 @@ describe("evaluation scorer", () => {
     expect(loaded).toMatchObject({
       schemaVersion: 2,
       languages: ["python"],
-      providers: ["typescript-fallback", "native-tree-sitter", "scip-python"],
+      providers: ["native-tree-sitter", "scip-python"],
       entryToEffect: {
         entrypoints: [expect.objectContaining({ id: "subject-lookup" })],
       },
@@ -179,10 +179,10 @@ describe("evaluation scorer", () => {
         ...oracle,
         thresholds: {
           ...oracle.thresholds,
-          "typescript-fallback": oracle.thresholds["native-tree-sitter"],
+          "scip-python": oracle.thresholds["native-tree-sitter"],
         },
       }),
-    ).toThrow("Threshold configured for unselected provider typescript-fallback");
+    ).toThrow("Threshold configured for unselected provider scip-python");
   });
 
   it("rejects entry-to-effect paths that do not resolve to a terminal relation", () => {

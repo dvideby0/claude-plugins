@@ -10,7 +10,9 @@
 
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { createMcpServer } from "./mcp/server.js";
+import { requireNative } from "./scan/source.js";
 
+requireNative();
 const server = createMcpServer({ defaultRoot: process.cwd() });
 
 server.connect(new StdioServerTransport()).catch((error) => {

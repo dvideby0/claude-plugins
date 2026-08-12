@@ -11,7 +11,7 @@
  */
 
 import { watch, type FSWatcher } from "node:fs";
-import { classify, isIgnoredDirectorySegment, isNoise } from "../scan/walk.js";
+import { sourcePathPolicy } from "../scan/source.js";
 
 export interface WatcherOptions {
   /** Quiet period before re-indexing. */
@@ -30,10 +30,11 @@ export interface WatcherOptions {
 function interesting(relative: string, event: "rename" | "change" = "change"): boolean {
   if (!relative) return false;
   for (const segment of relative.split(/[\\/]/)) {
-    if (isIgnoredDirectorySegment(segment)) return false;
     // Editor swap and lock files, which change constantly and mean nothing.
     if (segment.startsWith(".#") || segment.endsWith("~")) return false;
   }
+  const policy = sourcePathPolicy(relative);
+  if (policy.ignored) return false;
   // Root dotfiles such as .mcp.json and .eslintrc.json are indexed inputs.
   // Classification and the ignored-segment list are the boundary; a leading
   // dot by itself is not evidence that a recognized config file is noise.
@@ -41,7 +42,7 @@ function interesting(relative: string, event: "rename" | "change" = "change"): b
   // `src/new`. Directories have no classifiable extension, and the old path no
   // longer exists to stat, so retain every non-noise rename event. The scan is
   // debounced and will cheaply determine whether indexed files really moved.
-  return (event === "rename" || classify(relative) !== "other") && !isNoise(relative);
+  return (event === "rename" || policy.language !== "other") && !policy.noise;
 }
 
 interface Watched {

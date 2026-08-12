@@ -13,7 +13,7 @@
  */
 
 import type { FindingInput, Severity } from "../findings/types.js";
-import type { ScannedFile } from "../scan/walk.js";
+import type { SourceTextFile } from "../scan/source.js";
 
 const BIDI_CODEPOINTS: Record<number, string> = {
   0x202a: "LEFT-TO-RIGHT EMBEDDING",
@@ -98,12 +98,12 @@ function stripControls(line: string): string {
   );
 }
 
-function severityFor(rule: UnicodeRule, file: ScannedFile): Severity {
+function severityFor(rule: UnicodeRule, file: SourceTextFile): Severity {
   if (rule.id === "bidi-control") return "critical";
   return file.lang === "docs" ? "medium" : "high";
 }
 
-export function scanUnicode(files: ScannedFile[]): FindingInput[] {
+export function scanUnicode(files: SourceTextFile[]): FindingInput[] {
   const findings: FindingInput[] = [];
 
   for (const file of files) {

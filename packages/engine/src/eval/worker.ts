@@ -247,10 +247,6 @@ async function officialScipTest(
   };
 }
 
-function expectedEngine(provider: EvaluationProvider): ScanResult["engine"] {
-  return provider === "typescript-fallback" ? "typescript" : "native";
-}
-
 /** Run one provider in an isolated process so its peak RSS is meaningful. */
 export async function runEvaluationWorker(
   provider: EvaluationProvider,
@@ -271,17 +267,14 @@ export async function runEvaluationWorker(
   let scipCounts: ProviderEvaluationReport["scipCounts"] = null;
   const providerFailures: string[] = [];
   let providerArtifactBytes: number | null = null;
-  let sourceEngine: ScanResult["engine"] = "typescript";
+  let sourceEngine: ScanResult["engine"] = "native";
 
   await cp(fixture, project, { recursive: true });
   try {
-    if (provider === "typescript-fallback" || provider === "native-tree-sitter") {
+    if (provider === "native-tree-sitter") {
       const { projectLegacyFacts } = await import("../facts/legacy.js");
       const cold = await timed(() => scan(project, { full: true, kind: "evaluation-cold" }));
       sourceEngine = cold.value.engine;
-      if (sourceEngine !== expectedEngine(provider)) {
-        throw new Error(`${provider} expected the ${expectedEngine(provider)} scanner, got ${sourceEngine}.`);
-      }
       const warm = await timed(() => scan(project, { kind: "evaluation-warm" }));
       await appendFile(resolveWorkspacePath(project, oracle.change.path), oracle.change.append);
       const changed = await timed(() => scan(project, { kind: "evaluation-one-file-change" }));
@@ -304,9 +297,6 @@ export async function runEvaluationWorker(
       ]);
       const scanned = await scan(project, { full: true, kind: "evaluation-compiler-setup" });
       sourceEngine = scanned.engine;
-      if (sourceEngine !== "native") {
-        throw new Error("The compiler prototype evaluation requires the native syntax baseline.");
-      }
       const db = await getDb(project);
       dbOpened = true;
       const cold = await timed(() => resolveTypes(db, project));
@@ -342,9 +332,6 @@ export async function runEvaluationWorker(
       ]);
       const scanned = await scan(project, { full: true, kind: "evaluation-scip-setup" });
       sourceEngine = scanned.engine;
-      if (sourceEngine !== "native") {
-        throw new Error("SCIP evaluation requires the native snapshot and projection runtime.");
-      }
       const db = await getDb(project);
       dbOpened = true;
       const sourceSignature = indexedSourceSignature(db);
@@ -420,9 +407,6 @@ export async function runEvaluationWorker(
       }
       const scanned = await scan(project, { full: true, kind: "evaluation-scip-python-setup" });
       sourceEngine = scanned.engine;
-      if (sourceEngine !== "native") {
-        throw new Error("SCIP-Python evaluation requires the native syntax baseline.");
-      }
       const db = await getDb(project);
       dbOpened = true;
       const sourceSignature = indexedSourceSignature(db);

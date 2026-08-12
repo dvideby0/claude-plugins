@@ -392,8 +392,7 @@ fn bindings_from_import(node: Node, bytes: &[u8], grammar: Grammar, out: &mut Ve
                         out.push(Binding {
                             local,
                             namespace_module: Some(python_from_namespace_module(
-                                &module,
-                                &exported,
+                                &module, &exported,
                             )),
                             exported,
                             module: module.clone(),
@@ -541,10 +540,7 @@ fn namespace_member(node: Node, binding: &Binding, bytes: &[u8]) -> Option<Strin
     chain.get(1).cloned()
 }
 
-fn binding_pattern_any(
-    node: Node,
-    predicate: &mut impl FnMut(Node) -> bool,
-) -> bool {
+fn binding_pattern_any(node: Node, predicate: &mut impl FnMut(Node) -> bool) -> bool {
     if matches!(
         node.kind(),
         "identifier" | "type_identifier" | "shorthand_property_identifier_pattern"
@@ -589,9 +585,7 @@ fn binding_pattern_any(
 
 fn pattern_binds(node: Node, name: &str, bytes: &[u8]) -> bool {
     binding_pattern_any(node, &mut |candidate| {
-        candidate
-            .utf8_text(bytes)
-            .is_ok_and(|value| value == name)
+        candidate.utf8_text(bytes).is_ok_and(|value| value == name)
     })
 }
 
@@ -854,9 +848,11 @@ fn python_shadowed(node: Node, binding: &Binding, bytes: &[u8]) -> bool {
 
 fn typescript_for_binding(node: Node, kind: &str, name: &str, bytes: &[u8]) -> bool {
     node.kind() == "for_in_statement"
-        && node
-            .child_by_field_name("kind")
-            .is_some_and(|declaration| declaration.utf8_text(bytes).is_ok_and(|value| value == kind))
+        && node.child_by_field_name("kind").is_some_and(|declaration| {
+            declaration
+                .utf8_text(bytes)
+                .is_ok_and(|value| value == kind)
+        })
         && field_binds(node, "left", name, bytes)
 }
 
@@ -925,8 +921,7 @@ fn typescript_inner_name_binds(scope: Node, name: &str, bytes: &[u8]) -> bool {
             | "class_declaration"
             | "abstract_class_declaration"
             | "class"
-    )
-        && field_binds(scope, "name", name, bytes)
+    ) && field_binds(scope, "name", name, bytes)
 }
 
 fn typescript_function_scope(node: Node) -> bool {
@@ -1037,10 +1032,8 @@ fn typescript_scope_binds(scope: Node, name: &str, bytes: &[u8]) -> bool {
     visit(scope, scope.id(), name, bytes)
 }
 
-type TypescriptScopeCache = std::collections::HashMap<
-    usize,
-    std::collections::HashMap<String, bool>,
->;
+type TypescriptScopeCache =
+    std::collections::HashMap<usize, std::collections::HashMap<String, bool>>;
 
 fn cached_typescript_scope_binds(
     scope: Node,
@@ -1185,14 +1178,12 @@ fn collect_refs(
                     if let Some(binding) = binding {
                         let shadowed = match grammar {
                             Grammar::Python => python_shadowed(node, binding, bytes),
-                            Grammar::Typescript | Grammar::Tsx => {
-                                typescript_shadowed(
-                                    node,
-                                    binding,
-                                    bytes,
-                                    &mut typescript_scope_cache,
-                                )
-                            }
+                            Grammar::Typescript | Grammar::Tsx => typescript_shadowed(
+                                node,
+                                binding,
+                                bytes,
+                                &mut typescript_scope_cache,
+                            ),
                         };
                         if !shadowed {
                             let line = node.start_position().row as u32 + 1;
@@ -1580,7 +1571,25 @@ mod tests {
             "typescript",
             "import start from './default';\nstart();",
         );
-        assert!(usage.refs.iter().any(|reference| reference.name == "default"));
+        assert!(usage
+            .refs
+            .iter()
+            .any(|reference| reference.name == "default"));
+    }
+
+    #[test]
+    fn reports_utf8_byte_columns() {
+        let mut engines = Engines::new();
+        let source = "/*😀*/ export function run() { return 1; }";
+        let parsed = parse(&mut engines, "unicode.ts", "typescript", source);
+        let symbol = parsed
+            .symbols
+            .iter()
+            .find(|candidate| candidate.name == "run")
+            .expect("run symbol");
+        let start = source.find("function").expect("function keyword");
+        assert_eq!(symbol.start_column, start as u32);
+        assert_eq!(symbol.end_column, source.len() as u32);
     }
 
     #[test]
@@ -1715,10 +1724,7 @@ mod tests {
              function abstracted() { abstract class foo {}; return foo; }\n\
              const expression = class foo { method() { return foo; } };",
         );
-        assert!(parsed
-            .refs
-            .iter()
-            .all(|reference| reference.name != "foo"));
+        assert!(parsed.refs.iter().all(|reference| reference.name != "foo"));
     }
 
     #[test]
@@ -1821,8 +1827,7 @@ mod tests {
             assert!(parsed
                 .refs
                 .iter()
-                .any(|reference| reference.name == "wave"
-                    && reference.module == expected_module));
+                .any(|reference| reference.name == "wave" && reference.module == expected_module));
         }
     }
 

@@ -3,7 +3,7 @@
  */
 
 import type { FindingInput, Severity } from "../findings/types.js";
-import type { ScannedFile } from "../scan/walk.js";
+import type { SourceTextFile } from "../scan/source.js";
 
 interface SecretRule {
   id: string;
@@ -62,7 +62,7 @@ const RULES: SecretRule[] = [
 const PLACEHOLDER =
   /(example|sample|dummy|changeme|placeholder|redacted|fake|xxx+|\*{3,}|<[^>]*>|\$\{|process\.env|os\.environ|getenv|\byour[_-]|\bmy[_-]|\btest[_-]|\bnone\b|\bnull\b|\bundefined\b)/i;
 
-export function scanSecrets(files: ScannedFile[]): FindingInput[] {
+export function scanSecrets(files: SourceTextFile[]): FindingInput[] {
   const findings: FindingInput[] = [];
 
   for (const file of files) {

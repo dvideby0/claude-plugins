@@ -108,15 +108,10 @@ async function runWorker(
   scipCli: string | null,
 ): Promise<ProviderEvaluationReport> {
   const worker = fileURLToPath(new URL("./worker.js", import.meta.url));
-  const env = {
-    ...process.env,
-    SDLC_NATIVE: provider === "typescript-fallback" ? "0" : "1",
-  };
   const result = await exec(
     process.execPath,
     [worker, provider, fixture, ...(provider.startsWith("scip-") && scipCli ? [scipCli] : [])],
     {
-      env,
       timeout: 20 * 60_000,
       maxBuffer: 8 * 1024 * 1024,
     },

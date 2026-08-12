@@ -8,7 +8,6 @@ import {
 } from "../facts/model.js";
 
 export const EVALUATION_PROVIDERS = [
-  "typescript-fallback",
   "native-tree-sitter",
   "native-plus-typescript-checker",
   "scip-typescript",

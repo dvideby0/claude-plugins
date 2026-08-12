@@ -23,6 +23,15 @@ replace current syntax/reference facts. Joern remains capability-detected and
 unbundled. A digest-pinned, opt-in container spike now measures its CPG against
 the LangGraph flow oracle; it is an evaluation path, not a production provider.
 
+Implementation update, 2026-08-11: the weaker TypeScript repository walker and
+WASM parser fallback were retired after the Rust core reached every supported
+desktop target and produced better reference facts. Rust now owns the single
+production source inventory, classification, hashing, and syntax boundary;
+watch refreshes and deterministic content analyzers call its Rust-owned path
+and inventory APIs. A
+missing platform binary is reported as a broken installation rather than
+silently changing fact coverage.
+
 ## Executive assessment
 
 The repository already validates the most important architectural choice: a reusable local engine, a daemon-served interface, a desktop supervisor, and thin tool integrations can be packaged as one system. The project is beyond a throwaway proof of concept. It has a meaningful schema, native parsing, a working MCP surface, a useful initial UI, packaging automation, and a healthy TypeScript test suite.
@@ -36,7 +45,7 @@ The other structural risk is storage. The engine currently writes a `sql.js` dat
 | Capability | Current maturity | Assessment |
 | --- | --- | --- |
 | App/engine/integration separation | Strong foundation | The package boundaries match the product direction. |
-| File and symbol indexing | Functional prototype | Fast native TS/JS/Python extraction with a TypeScript fallback. |
+| File and symbol indexing | Functional prototype | Required Rust TS/JS/Python extraction with Rust-owned inventory and watcher policy. |
 | Precise references | Partial | TypeScript enrichment improves results; official SCIP output can now be evaluated but is not yet imported from an immutable snapshot. |
 | Execution and data flow | Early | The current “flow” is a call graph with heuristic roots, not entry-to-effect program flow. |
 | Human-readable system map | Promising | Components and ordered flows exist, but they are authored overlays rather than evidence-derived semantic objects. |
@@ -46,7 +55,7 @@ The other structural risk is storage. The engine currently writes a `sql.js` dat
 | Desktop experience | Functional shell | Useful maps and operational views exist, but it is not yet a complete code-intelligence workspace. |
 | Claude/Codex installation | Partial | MCP connection exists; complete plugin/skill lifecycle and supported Codex configuration are missing. |
 | Packaging and CI | Promising | Desktop packaging, native build matrices, smoke scripts, and plugin validation are present. |
-| Quality measurement | Emerging | One command now scores a narrow fixture across fallback, native, compiler-prototype, and SCIP facts with official SCIP golden assertions; broader path/retrieval corpora and provider-child resource measurement remain absent. |
+| Quality measurement | Emerging | One command now scores narrow fixtures across native, compiler-prototype, and SCIP facts with official SCIP golden assertions; broader path/retrieval corpora and provider-child resource measurement remain absent. |
 
 ## What exists today
 
@@ -86,11 +95,12 @@ conflict-safe document-local symbols, and explicit ambiguity.
 
 ### Scanning and reference resolution
 
-The scanner hashes files, extracts symbols/imports/references, and supports full and changed-file updates. Changing the extractor version forces a refresh. The Rust path is materially faster than the TypeScript path on the current repository.
+The Rust scanner hashes files, extracts symbols/imports/references, and supports
+full and changed-file updates. Changing the extractor version forces a refresh.
+Its prebuilt module is required on every supported application target.
 
 Important limits:
 
-- The TypeScript fallback deliberately produces no identifier references.
 - Typed enrichment is TypeScript-specific.
 - Stable symbol identity includes source position, so unrelated line movement can create avoidable churn.
 - “Incremental” currently limits database replacement, but repository walking, hashing, and native parsing are not yet a fine-grained persistent incremental pipeline.
@@ -187,11 +197,12 @@ the Flow view remained the bounded call-graph prototype described above.
 
 The walkthrough also exposed an input-boundary defect: packaging output under
 `release/` entered the source inventory and appeared as an unexplained file in
-the newly drawn map. Native and fallback scanners intentionally share the same
-hard-coded exclusions, but neither currently applies the repository's ignored
-generated-file policy. Source inclusion/exclusion must become deterministic,
-explainable, and identical across full scans and watch refreshes before map
-coverage is a trustworthy product metric.
+the newly drawn map. Rust now owns both inventory exclusions and watcher path
+classification, with explicit watcher exceptions for hidden agent configuration
+that is audited separately rather than added to the source map. It still does
+not apply an explainable generated-file policy for every repository. Source
+inclusion and exclusion must become user-visible before map coverage is a
+trustworthy product metric.
 
 ### Tool integration
 
@@ -215,10 +226,12 @@ This discrepancy should be resolved before the data model expands. A bundled nat
 
 The audit ran the following checks successfully against the working tree:
 
-- `npm test`: 15 test files and 105 tests passed.
-- `npm run typecheck`: engine, bridge, protocol, and desktop passed.
-- `cargo test` in `packages/scan-core`: compiled and passed, but the crate currently contains zero Rust tests.
-- `node scripts/bench.mjs .`: 127 files discovered, 84 parsed, 548 symbols and 342 imports, with no agreement differences reported. The native path completed in about 14 ms versus 158 ms for the TypeScript path, approximately 11.5× faster in this single local run.
+- `npm test`: 35 engine test files and 291 tests passed.
+- `npm run build`: native core, engine, bridge, protocol, and desktop passed.
+- `cargo test` in `packages/scan-core`: 29 Rust tests passed.
+- The retired migration benchmark found 127 files, parsed 84, and reported 548
+  symbols and 342 imports with no agreement differences. The Rust path took
+  about 14 ms versus 158 ms for the former TypeScript path in that single run.
 
 These numbers are a useful health snapshot, not a durable benchmark. The benchmark needs fixed corpora, warm/cold separation, repeated samples, percentiles, correctness oracles, and memory/disk measurements before it can guide product claims.
 

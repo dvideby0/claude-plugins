@@ -14,25 +14,24 @@
     "ui"
   ],
   "scripts": {
+    "prebuild": "node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\"",
     "build": "tsc -p tsconfig.json",
     "start": "node dist/daemon/main.js",
     "stdio": "node dist/stdio.js",
     "eval": "node dist/eval/cli.js",
     "eval:joern": "node dist/eval/joern-cli.js",
     "typecheck": "tsc -p tsconfig.json --noEmit",
+    "pretest": "npm run build -w @sdlc/scan-core",
     "test": "vitest run"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.30.0",
     "@sdlc/protocol": "*",
+    "@sdlc/scan-core": "*",
     "@sourcegraph/scip-typescript": "^0.4.0",
-    "@vscode/tree-sitter-wasm": "^0.3.1",
     "sql.js": "^1.14.1",
     "typescript": "^5.8.3",
     "zod": "^3.25.7"
-  },
-  "optionalDependencies": {
-    "@sdlc/scan-core": "*"
   },
   "devDependencies": {
     "@sourcegraph/scip-python": "0.6.6",
