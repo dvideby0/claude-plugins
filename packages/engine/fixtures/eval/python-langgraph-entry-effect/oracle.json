@@ -94,6 +94,7 @@
     }
   },
   "entryToEffect": {
+    "measuredProviders": [],
     "thresholds": {
       "entrypoints": { "minimumPrecision": 1, "minimumRecall": 1 },
       "relations": { "minimumPrecision": 0.9, "minimumRecall": 0.8 },

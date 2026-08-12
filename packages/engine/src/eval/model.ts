@@ -79,6 +79,7 @@ const flowEvidenceSchema = z
 
 const entryToEffectSchema = z
   .object({
+    measuredProviders: z.array(evaluationProviderSchema),
     thresholds: flowThresholdSchema,
     entrypoints: z
       .array(
@@ -236,6 +237,23 @@ export const evaluationOracleSchema = z
       });
     }
     const thresholdProviders = new Set(Object.keys(oracle.thresholds));
+    const measuredFlowProviders = oracle.entryToEffect?.measuredProviders ?? [];
+    if (new Set(measuredFlowProviders).size !== measuredFlowProviders.length) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "Measured flow providers must be unique.",
+        path: ["entryToEffect", "measuredProviders"],
+      });
+    }
+    for (const provider of measuredFlowProviders) {
+      if (!providers.has(provider)) {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: `Flow provider ${provider} is not selected by the fixture.`,
+          path: ["entryToEffect", "measuredProviders"],
+        });
+      }
+    }
     for (const provider of providers) {
       if (!thresholdProviders.has(provider)) {
         context.addIssue({

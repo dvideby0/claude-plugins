@@ -40,6 +40,7 @@
     }
   },
   "entryToEffect": {
+    "measuredProviders": ["native-tree-sitter"],
     "thresholds": {
       "entrypoints": { "minimumPrecision": 1, "minimumRecall": 1 },
       "relations": { "minimumPrecision": 1, "minimumRecall": 1 },

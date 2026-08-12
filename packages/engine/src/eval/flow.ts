@@ -79,6 +79,7 @@ export interface FlowScores {
   paths: MetricScore<ComparableFlowPath>;
   entrypointMetadataMismatches: FlowEntrypointMetadataMismatch[];
   metadataMismatches: FlowMetadataMismatch[];
+  missingRelationEvidence: ExpectedFlowRelation[];
   pathMetadataMismatches: FlowPathMetadataMismatch[];
   explicitlyUnmeasured: string[];
 }
@@ -230,6 +231,7 @@ export function flowAcceptanceFailures(
   const relationEvidenceMismatches = scores.metadataMismatches.filter(
     (mismatch) => !relationEvidenceMatches(mismatch),
   );
+  const missingEvidenceAnchors = scores.missingRelationEvidence.length;
   return [
     ...metricThresholdFailures("entrypoints", scores.entrypoints, thresholds.entrypoints),
     ...metricThresholdFailures("relations", scores.relations, thresholds.relations),
@@ -237,8 +239,8 @@ export function flowAcceptanceFailures(
     ...(scores.entrypointMetadataMismatches.length > 0
       ? [`${scores.entrypointMetadataMismatches.length} entrypoint evidence anchor(s) do not match the oracle.`]
       : []),
-    ...(relationEvidenceMismatches.length > 0
-      ? [`${relationEvidenceMismatches.length} relation evidence anchor(s) do not match the oracle.`]
+    ...(relationEvidenceMismatches.length + missingEvidenceAnchors > 0
+      ? [`${relationEvidenceMismatches.length + missingEvidenceAnchors} relation evidence anchor(s) do not match the oracle.`]
       : []),
     ...diagnostics.map((diagnostic) => `Adapter diagnostic: ${diagnostic}`),
   ];
@@ -349,36 +351,54 @@ export function scoreFlowGraph(
     const key = flowRelationKey(relation);
     expectedByRelation.set(key, [...(expectedByRelation.get(key) ?? []), relation]);
   }
-  const metadataMismatches = candidate.relations.flatMap((actual) => {
-    const expectedRelations = expectedByRelation.get(flowRelationKey(actual));
-    const expected = expectedRelations?.find(
-      (candidate) =>
-        candidate.certainty === actual.certainty &&
-        candidate.evidence.path === actual.evidence.path &&
-        candidate.evidence.startLine === actual.evidence.startLine,
-    );
-    if (
-      !expectedRelations ||
-      expected
-    ) {
-      return [];
-    }
-    const representative = expectedRelations[0]!;
-    return [
-      {
+  const actualByRelation = new Map<string, ExpectedFlowRelation[]>();
+  for (const relation of candidateRelations) {
+    const key = flowRelationKey(relation);
+    actualByRelation.set(key, [...(actualByRelation.get(key) ?? []), relation]);
+  }
+  const metadataMismatches: FlowMetadataMismatch[] = [];
+  const missingRelationEvidence: ExpectedFlowRelation[] = [];
+  for (const [key, expectedRelations] of expectedByRelation) {
+    const actualRelations = actualByRelation.get(key);
+    // A wholly absent semantic relation is already measured by relation recall.
+    // Occurrence matching below is for repeated evidence anchors of a relation
+    // that the provider otherwise claims to have found.
+    if (!actualRelations?.length) continue;
+    const remaining = [...expectedRelations];
+    for (const actual of actualRelations) {
+      let match = remaining.findIndex(
+        (expected) =>
+          expected.certainty === actual.certainty &&
+          expected.evidence.path === actual.evidence.path &&
+          expected.evidence.startLine === actual.evidence.startLine,
+      );
+      if (match >= 0) {
+        remaining.splice(match, 1);
+        continue;
+      }
+      match = remaining.findIndex(
+        (expected) =>
+          expected.evidence.path === actual.evidence.path &&
+          expected.evidence.startLine === actual.evidence.startLine,
+      );
+      if (match < 0 && remaining.length > 0) match = 0;
+      if (match < 0) continue;
+      const expected = remaining.splice(match, 1)[0]!;
+      metadataMismatches.push({
         relation: {
-          id: representative.id,
-          kind: representative.kind,
-          source: representative.source,
-          target: representative.target,
+          id: expected.id,
+          kind: expected.kind,
+          source: expected.source,
+          target: expected.target,
         },
-        expectedCertainty: representative.certainty,
+        expectedCertainty: expected.certainty,
         actualCertainty: actual.certainty,
-        expectedEvidence: representative.evidence,
+        expectedEvidence: expected.evidence,
         actualEvidence: actual.evidence,
-      },
-    ];
-  });
+      });
+    }
+    missingRelationEvidence.push(...remaining);
+  }
   const expectedPathByKey = new Map(
     expectedPaths.map((path, index) => [pathKey(path), oracle.paths[index]!] as const),
   );
@@ -401,6 +421,7 @@ export function scoreFlowGraph(
     paths: scoreMetric(expectedPaths, actualPaths, pathKey),
     entrypointMetadataMismatches,
     metadataMismatches,
+    missingRelationEvidence,
     pathMetadataMismatches,
     explicitlyUnmeasured: [
       "branch-condition equivalence",

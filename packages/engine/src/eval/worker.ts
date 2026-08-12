@@ -520,38 +520,42 @@ export async function runEvaluationWorker(
     const scores = scoreFactBatch(batch, oracle);
     const failures = [...thresholdFailures(provider, scores, oracle), ...providerFailures];
     let flow: ProviderEvaluationReport["flow"] = null;
-    if (oracle.entryToEffect) {
+    if (oracle.entryToEffect?.measuredProviders.includes(provider)) {
       const db = await getDb(project);
       dbOpened = true;
       const executionIndex = db.executionFlow();
-      if (executionIndex.entries.length > 0) {
-        const candidates = executionIndex.entries.map((entry) =>
-          executionFlowCandidate(db.executionFlow(entry.id)),
-        );
-        const candidate: CandidateFlowGraph = {
-          entrypoints: candidates.flatMap((item) => item.entrypoints),
-          relations: candidates.flatMap((item) => item.relations),
-          paths: candidates.flatMap((item) => item.paths),
-          diagnostics: candidates.flatMap((item) => item.diagnostics),
-        };
-        const flowScores = scoreFlowGraph(candidate, oracle.entryToEffect);
-        failures.push(
-          ...flowAcceptanceFailures(
-            flowScores,
-            oracle.entryToEffect.thresholds,
-            candidate.diagnostics,
-          ),
-        );
-        flow = {
-          scores: flowScores,
-          candidate: {
-            entrypoints: candidate.entrypoints.length,
-            relations: candidate.relations.length,
-            paths: candidate.paths.length,
-          },
-          diagnostics: candidate.diagnostics,
-        };
-      }
+      const candidates = executionIndex.entries.map((entry) =>
+        executionFlowCandidate(db.executionFlow(entry.id)),
+      );
+      const candidate: CandidateFlowGraph = {
+        entrypoints: candidates.flatMap((item) => item.entrypoints),
+        relations: candidates.flatMap((item) => item.relations),
+        paths: candidates.flatMap((item) => item.paths),
+        diagnostics: [
+          ...executionIndex.diagnostics,
+          ...candidates.flatMap((item) => item.diagnostics),
+          ...(executionIndex.entries.length === 0 && executionIndex.note
+            ? [executionIndex.note]
+            : []),
+        ],
+      };
+      const flowScores = scoreFlowGraph(candidate, oracle.entryToEffect);
+      failures.push(
+        ...flowAcceptanceFailures(
+          flowScores,
+          oracle.entryToEffect.thresholds,
+          candidate.diagnostics,
+        ),
+      );
+      flow = {
+        scores: flowScores,
+        candidate: {
+          entrypoints: candidate.entrypoints.length,
+          relations: candidate.relations.length,
+          paths: candidate.paths.length,
+        },
+        diagnostics: candidate.diagnostics,
+      };
     }
     if (official?.status === "failed") {
       const detail = official.missingFiles.length
