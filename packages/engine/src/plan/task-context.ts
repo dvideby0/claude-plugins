@@ -27,6 +27,7 @@ const MAX_BUDGET_BYTES = 100_000;
 const DEFAULT_CANDIDATE_LIMIT = 64;
 const MAX_EXCERPT_BYTES = 6_000;
 const COMPACT_EXCERPT_BYTES = 1_200;
+const EVIDENCE_SLOT_BYTES = 2_000;
 
 export interface TaskContextOptions {
   task?: string;
@@ -66,7 +67,7 @@ export interface TaskContextBrief {
     sourcePacking: "rank-order-path-diverse-utf8-budget";
     evaluationStatus: "experimental";
   };
-  /** Standalone task briefing, including the selected source excerpts. */
+  /** Compact human-readable view of the selected source excerpts. */
   text: string;
   evidence: TaskEvidenceRef[];
   readFirst: string[];
@@ -130,52 +131,26 @@ function requestedBudget(value?: number): number {
 function numberedSource(content: string, startLine: number): string {
   return content
     .split("\n")
-    .map((line, index) => `    ${String(startLine + index).padStart(5)}  ${line}`)
+    .map((line, index) => `${startLine + index}|${line}`)
     .join("\n");
 }
 
-function targetLine(target: TaskTargetResolution): string {
-  if (target.status === "resolved") {
-    return `- ${target.query} → ${target.path ?? target.id ?? "resolved"}${
-      target.symbol ? `#${target.symbol}` : ""
-    }`;
-  }
-  if (target.status === "ambiguous") {
-    const choices = target.candidates?.slice(0, 4).join(", ") ?? "multiple matches";
-    const extra = Math.max(0, (target.candidates?.length ?? 0) - 4);
-    return `- ${target.query} → ambiguous: ${choices}${extra ? `, +${extra} more` : ""}`;
-  }
-  return `- ${target.query} → not found in the current index`;
-}
-
 function renderText(
-  plan: TaskContextPlan,
   selected: readonly MaterializedEvidence[],
+  uncertainties: readonly string[],
 ): string {
-  const sections = [
-    "# Task context",
-    `Task: ${plan.task || "Work against the explicit target(s)."}`,
-    `Intent: ${plan.intent}`,
-  ];
-  if (plan.targets.length > 0) {
-    sections.push("", "## Targets", ...plan.targets.map(targetLine));
-  }
+  const sections = ["# Selected source"];
   if (selected.length > 0) {
-    sections.push("", "## Ranked evidence");
     selected.forEach((item, index) => {
       const { candidate, source, excerpt } = item;
-      sections.push(
-        "",
-        `### ${index + 1}. ${candidate.title} [${candidate.kind}]`,
-        `Why: ${candidate.reasons.join("; ")}.`,
-        `Fact: ${candidate.id}.`,
-        `Provenance: ${candidate.provenance.source} · ${candidate.provenance.certainty}.`,
-      );
       if (source) {
         sections.push(
-          `Evidence: ${source.path}:${source.startLine}-${source.endLine}` +
-            `${source.symbol ? ` · ${source.symbol}` : ""} · ${source.freshness}.`,
+          "",
+          `## ${index + 1}. ${source.path}:${source.startLine}-${source.endLine}` +
+            `${source.symbol ? `#${source.symbol}` : ""}`,
         );
+      } else {
+        sections.push("", `## ${index + 1}. ${candidate.title} [${candidate.kind}]`);
       }
       if (candidate.detail) sections.push(candidate.detail);
       if (excerpt && source) {
@@ -185,10 +160,10 @@ function renderText(
       }
     });
   } else {
-    sections.push("", "No ranked evidence fit this request. Re-index or refine the task/targets.");
+    sections.push("", "No selected source. See omissions and uncertainty.");
   }
-  if (plan.uncertainties.length > 0) {
-    sections.push("", "## Uncertainty", ...plan.uncertainties.map((item) => `- ${item}`));
+  if (uncertainties.length > 0) {
+    sections.push("", "## Uncertainty", ...uncertainties.map((item) => `- ${item}`));
   }
   return sections.join("\n");
 }
@@ -260,7 +235,7 @@ function buildResponse(
       sourcePacking: "rank-order-path-diverse-utf8-budget",
       evaluationStatus: "experimental",
     },
-    text: renderText(plan, selected),
+    text: renderText(selected, plan.uncertainties),
     evidence: selected.map(evidenceRef),
     readFirst,
     budget: {
@@ -362,6 +337,13 @@ export async function buildTaskContext(
   }
   const budget = requestedBudget(options.budgetBytes);
   const plan = db.taskContext(task, targets, options.intent ?? "understand", DEFAULT_CANDIDATE_LIMIT);
+  // A byte ceiling is an upper bound, not a target to fill with metadata-only
+  // tail facts. Reserve enough response space per admitted fact for its
+  // structured navigation data and a useful compact excerpt.
+  const evidenceLimit = Math.min(
+    DEFAULT_CANDIDATE_LIMIT,
+    Math.max(1, Math.floor(budget / EVIDENCE_SLOT_BYTES)),
+  );
   const selected: MaterializedEvidence[] = [];
   const fullById = new Map<string, MaterializedEvidence>();
   const excerptedPaths = new Set<string>();
@@ -374,6 +356,7 @@ export async function buildTaskContext(
   }
 
   for (const candidate of plan.candidates) {
+    if (selected.length >= evidenceLimit) break;
     const full = await materialize(projectRoot, candidate);
     fullById.set(candidate.id, full);
     const compact =
@@ -427,36 +410,39 @@ export async function buildTaskContext(
     if (accepted.excerpt && accepted.source) excerptedPaths.add(accepted.source.path);
   }
 
-  // The diversity pass deliberately prefers one excerpt per path. If the
-  // response still has room after selecting facts, enrich repeated-path facts
-  // in original rank order so larger budgets do not sacrifice available code.
-  for (let index = 0; index < selected.length; index += 1) {
-    const current = selected[index]!;
-    if (current.excerpt || current.source?.error) continue;
-    const full = fullById.get(current.candidate.id);
-    if (!full?.excerpt) continue;
-    const compact =
-      utf8Bytes(full.excerpt) > COMPACT_EXCERPT_BYTES
-        ? {
-            ...full,
-            source: full.source ? { ...full.source, excerptTruncated: true } : undefined,
-            excerpt: truncateUtf8(full.excerpt, COMPACT_EXCERPT_BYTES),
-          }
-        : null;
-    for (const variant of [full, compact].filter(
-      (item): item is MaterializedEvidence => item !== null,
-    )) {
-      const trialItems = selected.with(index, variant);
-      const trial = buildResponse(
-        plan,
-        trialItems,
-        budget,
-        excerptOmissions(trialItems),
-        unavailableSources(trialItems),
-      );
-      if (responseBytes(trial) <= budget) {
-        selected[index] = variant;
-        break;
+  // The diversity pass deliberately prefers one excerpt per path. Restore
+  // repeated-path excerpts only when every planner candidate was admitted;
+  // otherwise free space is intentional headroom, not an invitation to repeat
+  // source while ranked facts remain omitted.
+  if (selected.length === plan.candidates.length) {
+    for (let index = 0; index < selected.length; index += 1) {
+      const current = selected[index]!;
+      if (current.excerpt || current.source?.error) continue;
+      const full = fullById.get(current.candidate.id);
+      if (!full?.excerpt) continue;
+      const compact =
+        utf8Bytes(full.excerpt) > COMPACT_EXCERPT_BYTES
+          ? {
+              ...full,
+              source: full.source ? { ...full.source, excerptTruncated: true } : undefined,
+              excerpt: truncateUtf8(full.excerpt, COMPACT_EXCERPT_BYTES),
+            }
+          : null;
+      for (const variant of [full, compact].filter(
+        (item): item is MaterializedEvidence => item !== null,
+      )) {
+        const trialItems = selected.with(index, variant);
+        const trial = buildResponse(
+          plan,
+          trialItems,
+          budget,
+          excerptOmissions(trialItems),
+          unavailableSources(trialItems),
+        );
+        if (responseBytes(trial) <= budget) {
+          selected[index] = variant;
+          break;
+        }
       }
     }
   }

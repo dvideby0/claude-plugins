@@ -94,14 +94,14 @@
         }
       ],
       "thresholds": {
-        "minimumSdlcRecallAtK": 0.166667,
-        "minimumSdlcEvidenceCoverage": 0.333333,
+        "minimumSdlcRecallAtK": 0.5,
+        "minimumSdlcEvidenceCoverage": 1,
         "maximumSdlcIrrelevantContextRate": 0,
-        "maximumSdlcPackedTokens": 1600,
-        "minimumRecallDeltaVsAider": -0.166666,
-        "minimumEvidenceCoverageDeltaVsAider": -0.666667,
+        "maximumSdlcPackedTokens": 1500,
+        "minimumRecallDeltaVsAider": 0.166667,
+        "minimumEvidenceCoverageDeltaVsAider": 0,
         "maximumIrrelevantContextRateDeltaVsAider": -0.7,
-        "maximumPackedTokenRatioVsAider": 1.65
+        "maximumPackedTokenRatioVsAider": 1.5
       }
     },
     {
@@ -132,14 +132,14 @@
         }
       ],
       "thresholds": {
-        "minimumSdlcRecallAtK": 0.5,
-        "minimumSdlcEvidenceCoverage": 0.666667,
+        "minimumSdlcRecallAtK": 0.75,
+        "minimumSdlcEvidenceCoverage": 1,
         "maximumSdlcIrrelevantContextRate": 0,
-        "maximumSdlcPackedTokens": 1600,
-        "minimumRecallDeltaVsAider": 0.25,
-        "minimumEvidenceCoverageDeltaVsAider": 0,
+        "maximumSdlcPackedTokens": 1500,
+        "minimumRecallDeltaVsAider": 0.5,
+        "minimumEvidenceCoverageDeltaVsAider": 0.333333,
         "maximumIrrelevantContextRateDeltaVsAider": -0.8,
-        "maximumPackedTokenRatioVsAider": 1.65
+        "maximumPackedTokenRatioVsAider": 1.5
       }
     }
   ]

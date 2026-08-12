@@ -235,12 +235,13 @@ contained source ranges and enforces an exact byte ceiling on the complete MCP
 response. It exposes ranking reasons, provenance, freshness, omissions,
 uncertainty, and recommended reads without adding another tool to the 33-tool
 catalog. The path is not yet proven. A checked-in corpus now compares it with
-actual digest-pinned Aider 0.86.2 output: the authored-memory debug task wins on
-recall and noise but misses the ledger declaration, while the review task
-misses its inventory declaration and covering test. Both stay inside the same
-1,600-token band but use roughly 1.6 times the map's actual tokens. Change
-relevance and broader corpora remain open, so the response labels itself
-experimental and no redundant public tools have been retired.
+actual digest-pinned Aider 0.86.2 output. The review task retrieves its checkout,
+inventory, and covering-test evidence at 0.5 recall@5; the authored-memory debug
+task retrieves its constraint and ledger declaration at 0.75 recall@4. Both
+return zero irrelevant paths, cover all reviewed evidence, stay below 1,500
+tokens, and use less than 1.5 times the map's actual tokens. Change relevance
+and broader corpora remain open, so the response labels itself experimental
+and no redundant public tools have been retired.
 
 ### Desktop application
 
@@ -342,7 +343,7 @@ These numbers are a useful health snapshot, not a durable benchmark. The benchma
 1. **The product promise still outruns flow coverage.** One measured HTTP slice now supports reliable entry-to-response explanations, but it cannot be generalized to unadapted frameworks or data flow.
 2. **There is no canonical fact/provenance/invalidation contract.** Adding more analyzers now could create incompatible edge types and expensive rebuild behavior.
 3. **Storage identity and general corruption recovery are incomplete.** Direct native persistence, rollback-safe migrations, and internal FTS retrieval remove the whole-export, schema-upgrade, and SQL-scan risks, but path-derived workspace ids and an explicit restore workflow still need product behavior and tests.
-4. **Retrieval quality is unmeasured.** More tools and embeddings could add complexity without reducing file reads or improving task outcomes.
+4. **Retrieval quality is only narrowly measured.** The first two fixed tasks beat their checked-in map baseline, but change relevance, broader corpora, and task outcomes remain unknown; more tools or embeddings would still be premature.
 5. **The desktop has not yet found its signature human workflow.** Operational views demonstrate capability but do not yet compete with dedicated code-intelligence products.
 6. **Integration lifecycle is incomplete.** MCP connectivity alone does not deliver the intended one-click Claude/Codex experience.
 7. **Dynamic behavior needs an honesty model.** Framework dispatch and runtime behavior must be supported through labeled adapters, runtime observations, and assertions rather than implicit certainty.
