@@ -74,6 +74,20 @@ SQLite ownership and persistence are Rust responsibilities. This choice does
 not justify custom migration, search, or graph engines: those should continue
 to use SQLite's proven facilities.
 
+Schema v17 applies that rule to upgrades: SQLite `user_version` provides the
+compatibility gate, `BEGIN IMMEDIATE` provides atomic DDL rollback,
+`quick_check` detects structural corruption, and SQLite's online backup API
+captures a consistent recovery image including committed WAL pages. Backups
+are written to a unique temporary database, normalized to a standalone DELETE-
+journal file, validated, permission-restricted, and atomically renamed before
+migration. Only the newest validated image for a target version is retained,
+which bounds deterministic retry failures without reusing a stale snapshot.
+SDLC adds only the ordered version policy and ledger around those primitives.
+It deliberately does not
+automatically replace a generally corrupted store from an older backup,
+because silently losing newer human knowledge is worse than presenting an
+explicit recovery choice.
+
 ### External enrichers, not mandatory dependencies
 
 SCIP indexes, CodeQL databases, language servers, compiler metadata, test coverage, and runtime traces can all enrich the common model when present. They should be adapters with explicit provenance and capability discovery. Core indexing and the desktop experience must remain useful without downloading a heavyweight external analysis suite.

@@ -13,7 +13,7 @@ napi = { version = "2", default-features = false, features = ["napi4"] }
 napi-derive = "2"
 ignore = "0.4"
 rayon = "1"
-rusqlite = { version = "0.40", features = ["bundled"] }
+rusqlite = { version = "0.40", features = ["backup", "bundled"] }
 serde_json = "1"
 sha2 = "0.10"
 scip = "0.9.0"

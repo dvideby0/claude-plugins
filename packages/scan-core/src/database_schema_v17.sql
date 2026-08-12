@@ -1,14 +1,19 @@
-export const SCHEMA_VERSION = 16;
-
-/**
- * The audit store. Files, symbols and edges are the deterministic picture of
- * the codebase; findings are long-lived entities keyed by a stable fingerprint
- * so they survive edits, get re-anchored, and can be marked fixed or accepted.
- */
-export const SCHEMA_SQL = `
+-- Immutable schema v17. Files, symbols and edges are the deterministic picture of
+-- the codebase; findings are long-lived entities keyed by a stable fingerprint
+-- so they survive edits, get re-anchored, and can be marked fixed or accepted.
 CREATE TABLE IF NOT EXISTS meta (
   key   TEXT PRIMARY KEY,
   value TEXT NOT NULL
+);
+
+-- SQLite's user_version is the canonical compatibility gate. This ledger is
+-- human-readable evidence of when SDLC crossed each version and which
+-- consistent pre-migration image can be used for explicit recovery.
+CREATE TABLE IF NOT EXISTS schema_migrations (
+  version       INTEGER PRIMARY KEY,
+  from_version  INTEGER NOT NULL,
+  applied_at    TEXT NOT NULL,
+  backup_path   TEXT
 );
 
 CREATE TABLE IF NOT EXISTS runs (
@@ -319,4 +324,3 @@ CREATE TABLE IF NOT EXISTS review_runs (
   duration_ms INTEGER,
   created_at  TEXT NOT NULL
 );
-`;

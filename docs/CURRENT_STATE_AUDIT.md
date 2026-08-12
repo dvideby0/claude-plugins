@@ -40,10 +40,12 @@ The largest mismatch is terminology and depth around “flow.” The current det
 
 The native-storage foundation now writes each workspace's SQLite database under
 the app-owned SDLC state directory and commits transactions directly through
-the existing Rust module. The remaining storage risk is lifecycle correctness:
-path-derived identity does not yet survive repository relocation, migrations do
-not yet have an explicit rollback/recovery protocol, and FTS5 is available but
-not yet wired into the internal retrieval interface.
+the existing Rust module. Schema upgrades now have a Rust-owned compatibility
+gate, integrity checks, transactional rollback, and validated recovery images.
+The remaining storage risk is lifecycle correctness: path-derived identity does
+not yet survive repository relocation, general corruption needs an explicit
+restore workflow, and FTS5 is available but not yet wired into the internal
+retrieval interface.
 
 ## Maturity by capability
 
@@ -67,7 +69,7 @@ not yet wired into the internal retrieval interface.
 ### Runtime shape
 
 - [`packages/engine`](../packages/engine) contains the scanner, relational store, graph/query logic, MCP server, HTTP daemon, and browser UI.
-- [`packages/scan-core`](../packages/scan-core) is a Rust/N-API Tree-sitter scanner for TypeScript, JavaScript, and Python.
+- [`packages/scan-core`](../packages/scan-core) owns the Rust/N-API Tree-sitter scanner and native SQLite lifecycle.
 - [`packages/mcp-bridge`](../packages/mcp-bridge) is the thin stdio-to-local-service bridge.
 - [`packages/protocol`](../packages/protocol) defines discovery, paths, and shared types.
 - [`apps/desktop`](../apps/desktop) is an Electron host that starts or adopts the daemon and displays its UI.
@@ -77,7 +79,8 @@ This is the right high-level boundary: one intelligence engine can serve the app
 
 ### Deterministic facts and authored knowledge
 
-The schema in [`packages/engine/src/db/schema.ts`](../packages/engine/src/db/schema.ts) already distinguishes several useful domains:
+The frozen Rust-owned [schema v17](../packages/scan-core/src/database_schema_v17.sql)
+already distinguishes several useful domains:
 
 - files, symbols, imports, and references;
 - audit runs, findings, suppressions, and tool executions;
@@ -233,9 +236,12 @@ An existing repository-local prototype database is copied once and retained as
 a backup.
 
 This provides the transaction and FTS5-capable foundation without adding a
-second graph database. STORE-001 is not complete: stable identity across moves,
-explicit migration rollback/recovery, backups, and the internal FTS query
-surface remain.
+second graph database. Schema v17 now moves compatibility checks, ordered
+migration, its frozen schema declaration, `quick_check`, atomic online backups, and
+rollback into the Rust SQLite owner; the TypeScript layer supplies only the
+workspace path and existing cache adapter. STORE-001 is not complete: stable
+identity across moves, an explicit user-visible restore workflow for a
+generally corrupted store, and the internal FTS query surface remain.
 
 ## Verification snapshot
 
@@ -254,7 +260,7 @@ These numbers are a useful health snapshot, not a durable benchmark. The benchma
 
 1. **The product promise outruns the flow model.** A call graph cannot yet support reliable entry-to-effect explanations.
 2. **There is no canonical fact/provenance/invalidation contract.** Adding more analyzers now could create incompatible edge types and expensive rebuild behavior.
-3. **Storage identity and recovery are incomplete.** Direct native persistence removes the whole-export bottleneck, but path-derived workspace ids, migration rollback, backup policy, corruption repair, and internal FTS retrieval still need product behavior and tests.
+3. **Storage identity and general corruption recovery are incomplete.** Direct native persistence and rollback-safe migrations remove the whole-export and schema-upgrade risks, but path-derived workspace ids, an explicit restore workflow, and internal FTS retrieval still need product behavior and tests.
 4. **Retrieval quality is unmeasured.** More tools and embeddings could add complexity without reducing file reads or improving task outcomes.
 5. **The desktop has not yet found its signature human workflow.** Operational views demonstrate capability but do not yet compete with dedicated code-intelligence products.
 6. **Integration lifecycle is incomplete.** MCP connectivity alone does not deliver the intended one-click Claude/Codex experience.

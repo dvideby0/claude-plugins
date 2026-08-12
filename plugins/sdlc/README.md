@@ -38,6 +38,12 @@ results, finding fingerprints survive line movement, accepted risks and false
 positives remain sticky, and memories can be attached to code with deterministic
 signatures so stale knowledge is visible after changes.
 
+Before a schema upgrade, the Rust SQLite owner retains the newest validated,
+standalone recovery image for that target version under the workspace store's
+`backups/` directory. Schema changes are transactional; an incompatible newer
+store is left untouched, and a failed migration rolls back instead of
+publishing a partially upgraded index.
+
 The desktop app renders the same store directly. MCP tools such as
 `audit_status`, `audit_scan`, `audit_run_tools`, `audit_plan`, `audit_review`,
 `audit_record_findings`, `audit_query`, `audit_suppress`, `audit_report`,

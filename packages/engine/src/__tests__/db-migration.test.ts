@@ -1,17 +1,39 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { access, mkdir, rename } from "node:fs/promises";
-import { join } from "node:path";
-import { NativeDatabase } from "@sdlc/scan-core";
-import { getDb, getExistingDb, resetDbCache } from "../db/db.js";
-import { SCHEMA_VERSION } from "../db/schema.js";
+import { access, mkdir, readFile, readdir, rename } from "node:fs/promises";
+import { basename, dirname, join } from "node:path";
+import { databaseSchemaVersion, NativeDatabase } from "@sdlc/scan-core";
+import {
+  databasePathForWorkspace,
+  getDb,
+  getExistingDb,
+  resetDbCache,
+} from "../db/db.js";
+import { canonicalWorkspaceRoot } from "../lib/workspace-path.js";
 import { cleanup, makeProject } from "./helpers.js";
 
+const SCHEMA_VERSION = databaseSchemaVersion();
 let root: string;
 afterEach(async () => {
   if (root) await cleanup(root);
 });
 
 describe("database migrations", () => {
+  it("runs the Rust-owned migration lifecycle off the Node event loop", async () => {
+    root = await makeProject({ "package.json": "{}" });
+    const dbPath = join(root, "async-migration.db");
+    const native = new NativeDatabase(dbPath, true);
+    try {
+      const migration = native.migrate(root, join(root, "backups"));
+      expect(migration).toBeInstanceOf(Promise);
+      await migration;
+      expect(JSON.parse(native.all("PRAGMA user_version", "[]"))).toEqual([
+        { user_version: SCHEMA_VERSION },
+      ]);
+    } finally {
+      native.close();
+    }
+  });
+
   it("does not cache a blank store while an existing index is unavailable", async () => {
     root = await makeProject({ "package.json": "{}" });
     const db = await getDb(root);
@@ -124,5 +146,151 @@ describe("database migrations", () => {
     ).toBeNull();
     expect(db.get<{ value: string }>("SELECT value FROM meta WHERE key = 'schema_version'")?.value)
       .toBe(String(SCHEMA_VERSION));
+    expect(db.count("PRAGMA user_version")).toBe(SCHEMA_VERSION);
+
+    const migration = db.get<{
+      from_version: number;
+      backup_path: string | null;
+    }>("SELECT from_version, backup_path FROM schema_migrations WHERE version = ?", [
+      SCHEMA_VERSION,
+    ]);
+    expect(migration).toMatchObject({ from_version: 0 });
+    expect(dirname(migration?.backup_path ?? "")).toBe(join(dirname(db.path), "backups"));
+    expect(basename(migration?.backup_path ?? "")).toMatch(
+      new RegExp(`^pre-v${SCHEMA_VERSION}-\\d+\\.db$`),
+    );
+    await expect(access(migration?.backup_path ?? "")).resolves.toBeUndefined();
+    expect(await readdir(dirname(migration?.backup_path ?? ""))).toEqual([
+      basename(migration?.backup_path ?? ""),
+    ]);
+
+    const backup = new NativeDatabase(migration?.backup_path ?? "", false);
+    try {
+      expect(JSON.parse(backup.all("PRAGMA journal_mode", "[]"))).toEqual([
+        { journal_mode: "delete" },
+      ]);
+      expect(JSON.parse(backup.all("PRAGMA quick_check", "[]"))).toEqual([
+        { quick_check: "ok" },
+      ]);
+      expect(JSON.parse(backup.all("SELECT path FROM files", "[]"))).toEqual([
+        { path: "src/app.ts" },
+      ]);
+      expect(JSON.parse(backup.all("PRAGMA user_version", "[]"))).toEqual([
+        { user_version: 0 },
+      ]);
+    } finally {
+      backup.close();
+    }
+  });
+
+  it("rolls back a failed migration and retains a consistent recovery image", async () => {
+    root = await makeProject({ "package.json": "{}" });
+    const legacyPath = join(root, "sdlc-audit", "audit.db");
+    await mkdir(dirname(legacyPath), { recursive: true });
+    const legacy = new NativeDatabase(legacyPath, true);
+    legacy.executeBatch(`
+      CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);
+      INSERT INTO meta(key, value) VALUES('schema_version', '16');
+      CREATE TABLE sentinel(value TEXT NOT NULL);
+      INSERT INTO sentinel(value) VALUES('preserved');
+      CREATE VIEW schema_migrations AS SELECT 999 AS version;
+      PRAGMA user_version = 16;
+    `);
+    legacy.close();
+
+    await expect(getDb(root)).rejects.toThrow(/pre-migration recovery image/);
+
+    const dbPath = databasePathForWorkspace(await canonicalWorkspaceRoot(root));
+    const backupDir = join(dirname(dbPath), "backups");
+    const backupNames = await readdir(backupDir);
+    expect(backupNames).toHaveLength(1);
+    expect(backupNames[0]).toMatch(new RegExp(`^pre-v${SCHEMA_VERSION}-\\d+\\.db$`));
+    const firstBackupName = backupNames[0] ?? "";
+    const backupPath = join(backupDir, firstBackupName);
+    const failed = new NativeDatabase(dbPath, false);
+    try {
+      expect(JSON.parse(failed.all("SELECT value FROM sentinel", "[]"))).toEqual([
+        { value: "preserved" },
+      ]);
+      expect(JSON.parse(failed.all("PRAGMA user_version", "[]"))).toEqual([
+        { user_version: 16 },
+      ]);
+      expect(
+        JSON.parse(
+          failed.all(
+            "SELECT type FROM sqlite_schema WHERE name = 'schema_migrations'",
+            "[]",
+          ),
+        ),
+      ).toEqual([{ type: "view" }]);
+    } finally {
+      failed.close();
+    }
+
+    const backup = new NativeDatabase(backupPath, false);
+    try {
+      expect(JSON.parse(backup.all("PRAGMA quick_check", "[]"))).toEqual([
+        { quick_check: "ok" },
+      ]);
+      expect(JSON.parse(backup.all("SELECT value FROM sentinel", "[]"))).toEqual([
+        { value: "preserved" },
+      ]);
+    } finally {
+      backup.close();
+    }
+
+    await expect(getDb(root)).rejects.toThrow(/pre-migration recovery image/);
+    const retriedBackupNames = await readdir(backupDir);
+    expect(retriedBackupNames).toHaveLength(1);
+    expect(retriedBackupNames[0]).toMatch(
+      new RegExp(`^pre-v${SCHEMA_VERSION}-\\d+\\.db$`),
+    );
+    expect(retriedBackupNames[0]).not.toBe(firstBackupName);
+  });
+
+  it("refuses a newer schema without configuring or backing up the store", async () => {
+    root = await makeProject({ "package.json": "{}" });
+    const legacyPath = join(root, "sdlc-audit", "audit.db");
+    await mkdir(dirname(legacyPath), { recursive: true });
+    const future = new NativeDatabase(legacyPath, true);
+    future.executeBatch(`
+      CREATE TABLE sentinel(value TEXT NOT NULL);
+      INSERT INTO sentinel(value) VALUES('future-data');
+      PRAGMA user_version = ${SCHEMA_VERSION + 1};
+    `);
+    future.close();
+    const original = await readFile(legacyPath);
+
+    await expect(getDb(root)).rejects.toThrow(
+      `supports v${SCHEMA_VERSION}`,
+    );
+
+    const dbPath = databasePathForWorkspace(await canonicalWorkspaceRoot(root));
+    expect(await readFile(dbPath)).toEqual(original);
+    await expect(access(join(dirname(dbPath), "backups"))).rejects.toMatchObject({
+      code: "ENOENT",
+    });
+  });
+
+  it("refuses an unrecorded current schema without configuring the store", async () => {
+    root = await makeProject({ "package.json": "{}" });
+    const legacyPath = join(root, "sdlc-audit", "audit.db");
+    await mkdir(dirname(legacyPath), { recursive: true });
+    const unrecorded = new NativeDatabase(legacyPath, true);
+    unrecorded.executeBatch(`
+      CREATE TABLE sentinel(value TEXT NOT NULL);
+      INSERT INTO sentinel(value) VALUES('unrecorded');
+      PRAGMA user_version = ${SCHEMA_VERSION};
+    `);
+    unrecorded.close();
+    const original = await readFile(legacyPath);
+
+    await expect(getDb(root)).rejects.toThrow("missing its migration ledger");
+
+    const dbPath = databasePathForWorkspace(await canonicalWorkspaceRoot(root));
+    expect(await readFile(dbPath)).toEqual(original);
+    await expect(access(join(dirname(dbPath), "backups"))).rejects.toMatchObject({
+      code: "ENOENT",
+    });
   });
 });

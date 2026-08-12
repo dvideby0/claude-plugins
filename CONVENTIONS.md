@@ -39,14 +39,17 @@ is how someone deletes live code.
 new column never appears on an existing store — and an index over that column
 then fails at open time with `no such column`.
 
-Add the column in **both** places: `SCHEMA_SQL` (for new stores) and
-`Db.ADDED_COLUMNS` (for existing ones). `Db.migrate()` checks the live table
-with `PRAGMA table_info` rather than a recorded version, so a store that was
-half-upgraded still converges.
+The Rust SQLite owner is authoritative. The v17 bootstrap in
+`packages/scan-core/src/database_schema_v17.sql` is immutable. For a schema
+change, increment `DATABASE_SCHEMA_VERSION` and add one explicit ordered delta
+to `apply_migration`; fresh stores replay the same frozen steps as upgrades.
+Never make an older migration reference a mutable current-schema declaration.
 
-Only additive migrations are supported, on purpose. Anything destructive should
-be an explicit, reviewed change, not something that happens when a daemon
-starts.
+Every upgrade runs under `BEGIN IMMEDIATE`, records SQLite `user_version` plus
+the migration ledger, and retains the latest validated standalone backup for
+that target version before changing the store. A destructive migration needs
+its own preservation and rollback test; do not hide it inside the legacy
+v1-v16 convergence path.
 
 ## Repository inventory has one implementation
 

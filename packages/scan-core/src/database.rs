@@ -5,12 +5,40 @@
 //! adapter while SQLite, transactions, journaling, and persistence live in
 //! the same N-API binary the desktop app already ships.
 
+use napi::bindgen_prelude::{AsyncTask, Env, Task};
 use napi::{Error, Result, Status};
 use napi_derive::napi;
 use rusqlite::types::{Value, ValueRef};
-use rusqlite::{params_from_iter, Connection, OpenFlags};
+use rusqlite::{params, params_from_iter, Connection, OpenFlags, OptionalExtension, MAIN_DB};
 use serde_json::{Map, Number};
-use std::sync::{Mutex, MutexGuard};
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, MutexGuard};
+use std::time::{SystemTime, UNIX_EPOCH};
+
+const DATABASE_SCHEMA_VERSION: u32 = 17;
+const FIRST_VERSIONED_SCHEMA: u32 = 17;
+const SCHEMA_V17_SQL: &str = include_str!("database_schema_v17.sql");
+
+const ADDED_COLUMNS: &[(&str, &str, &str)] = &[
+    ("refs", "src_symbol", "TEXT"),
+    ("refs", "src_column", "INTEGER NOT NULL DEFAULT 0"),
+    ("refs", "src_end_column", "INTEGER"),
+    ("refs", "src_symbol_id", "TEXT"),
+    ("refs", "dst_line", "INTEGER"),
+    ("refs", "dst_column", "INTEGER"),
+    ("refs", "dst_end_line", "INTEGER"),
+    ("refs", "dst_end_column", "INTEGER"),
+    ("refs", "dst_symbol_id", "TEXT"),
+    ("symbols", "default_export", "INTEGER NOT NULL DEFAULT 0"),
+    ("symbols", "start_column", "INTEGER NOT NULL DEFAULT 0"),
+    ("symbols", "end_column", "INTEGER NOT NULL DEFAULT 0"),
+    ("files", "ref_coverage", "TEXT NOT NULL DEFAULT 'none'"),
+    ("files", "ref_generation", "TEXT"),
+    ("files", "ref_source_signature", "TEXT"),
+    ("components", "member_digest", "TEXT"),
+    ("flow_steps", "content_sha", "TEXT"),
+];
 
 fn invalid_argument(message: impl Into<String>) -> Error {
     Error::new(Status::InvalidArg, message.into())
@@ -18,6 +46,435 @@ fn invalid_argument(message: impl Into<String>) -> Error {
 
 fn database_error(context: &str, error: rusqlite::Error) -> Error {
     Error::new(Status::GenericFailure, format!("{context}: {error}"))
+}
+
+fn storage_error(context: &str, error: impl std::fmt::Display) -> Error {
+    Error::new(Status::GenericFailure, format!("{context}: {error}"))
+}
+
+fn configure_connection(connection: &Connection) -> Result<()> {
+    connection
+        .execute_batch(
+            "PRAGMA foreign_keys = ON;
+             PRAGMA journal_mode = WAL;
+             PRAGMA synchronous = NORMAL;
+             PRAGMA busy_timeout = 5000;",
+        )
+        .map_err(|error| database_error("Cannot configure SQLite store", error))
+}
+
+fn table_exists(connection: &Connection, table: &str) -> Result<bool> {
+    connection
+        .query_row(
+            "SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = ?1",
+            [table],
+            |_| Ok(()),
+        )
+        .optional()
+        .map(|row| row.is_some())
+        .map_err(|error| database_error("Cannot inspect SQLite schema", error))
+}
+
+fn has_column(connection: &Connection, table: &str, column: &str) -> Result<bool> {
+    // All callers pass compile-time table names from ADDED_COLUMNS.
+    let mut statement = connection
+        .prepare(&format!("PRAGMA table_info({table})"))
+        .map_err(|error| database_error("Cannot inspect SQLite columns", error))?;
+    let mut rows = statement
+        .query([])
+        .map_err(|error| database_error("Cannot inspect SQLite columns", error))?;
+    while let Some(row) = rows
+        .next()
+        .map_err(|error| database_error("Cannot inspect SQLite columns", error))?
+    {
+        let name: String = row
+            .get(1)
+            .map_err(|error| database_error("Cannot read SQLite column metadata", error))?;
+        if name == column {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+fn stored_schema_version(connection: &Connection) -> Result<u32> {
+    let user_version: i64 = connection
+        .query_row("PRAGMA user_version", [], |row| row.get(0))
+        .map_err(|error| database_error("Cannot read SQLite user_version", error))?;
+    let meta_version = if table_exists(connection, "meta")? {
+        connection
+            .query_row(
+                "SELECT value FROM meta WHERE key = 'schema_version'",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .map_err(|error| database_error("Cannot read prototype schema version", error))?
+            .map(|value| {
+                value.parse::<u32>().map_err(|_| {
+                    invalid_argument(format!(
+                        "SQLite workspace store has invalid schema_version {value}"
+                    ))
+                })
+            })
+            .transpose()?
+            .unwrap_or(0)
+    } else {
+        0
+    };
+    let user_version = u32::try_from(user_version).map_err(|_| {
+        invalid_argument(format!(
+            "SQLite workspace store has invalid user_version {user_version}"
+        ))
+    })?;
+    if user_version > 0 && meta_version > 0 && user_version != meta_version {
+        return Err(invalid_argument(format!(
+            "SQLite workspace store has conflicting schema versions (user_version {user_version}, meta {meta_version}) and was left untouched"
+        )));
+    }
+    Ok(if user_version > 0 {
+        user_version
+    } else {
+        meta_version
+    })
+}
+
+fn assert_integrity(connection: &Connection, context: &str) -> Result<()> {
+    let mut statement = connection
+        .prepare("PRAGMA quick_check")
+        .map_err(|error| database_error("Cannot start SQLite integrity check", error))?;
+    let failures: Vec<String> = statement
+        .query_map([], |row| row.get::<_, String>(0))
+        .map_err(|error| database_error("Cannot run SQLite integrity check", error))?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(|error| database_error("Cannot read SQLite integrity result", error))?
+        .into_iter()
+        .filter(|result| result != "ok")
+        .take(5)
+        .collect();
+    if failures.is_empty() {
+        return Ok(());
+    }
+    Err(Error::new(
+        Status::GenericFailure,
+        format!(
+            "SQLite integrity check failed {context}: {}. The store was left untouched.",
+            failures.join("; ")
+        ),
+    ))
+}
+
+fn has_user_state(connection: &Connection) -> Result<bool> {
+    connection
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_schema
+             WHERE type IN ('table', 'view') AND name NOT LIKE 'sqlite_%'",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .map(|count| count > 0)
+        .map_err(|error| database_error("Cannot inspect SQLite store contents", error))
+}
+
+fn assert_migration_recorded(connection: &Connection, version: u32) -> Result<()> {
+    if !table_exists(connection, "schema_migrations")? {
+        return Err(invalid_argument(format!(
+            "SQLite schema v{version} is missing its migration ledger"
+        )));
+    }
+    let recorded = connection
+        .query_row(
+            "SELECT COUNT(*) FROM schema_migrations WHERE version = ?1",
+            [version],
+            |row| row.get::<_, i64>(0),
+        )
+        .map_err(|error| database_error("Cannot verify SQLite migration ledger", error))?;
+    if recorded == 1 {
+        return Ok(());
+    }
+    Err(invalid_argument(format!(
+        "SQLite schema v{version} is missing its migration ledger entry"
+    )))
+}
+
+#[cfg(unix)]
+fn set_private_permissions(path: &Path, mode: u32) -> std::io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    fs::set_permissions(path, fs::Permissions::from_mode(mode))
+}
+
+#[cfg(not(unix))]
+fn set_private_permissions(_path: &Path, _mode: u32) -> std::io::Result<()> {
+    Ok(())
+}
+
+fn sqlite_sidecar_path(path: &Path, suffix: &str) -> PathBuf {
+    let mut sidecar = path.as_os_str().to_os_string();
+    sidecar.push(suffix);
+    PathBuf::from(sidecar)
+}
+
+fn remove_file_if_present(path: &Path, context: &str) -> Result<()> {
+    match fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(storage_error(context, error)),
+    }
+}
+
+fn remove_sqlite_sidecars(path: &Path) -> Result<()> {
+    for suffix in ["-wal", "-shm", "-journal"] {
+        remove_file_if_present(
+            &sqlite_sidecar_path(path, suffix),
+            "Cannot remove SQLite recovery sidecar",
+        )?;
+    }
+    Ok(())
+}
+
+fn cleanup_database_artifacts(path: &Path) {
+    let _ = remove_file_if_present(path, "Cannot remove SQLite recovery artifact");
+    let _ = remove_sqlite_sidecars(path);
+}
+
+fn cleanup_stale_migration_artifacts(directory: &Path) -> Result<()> {
+    let entries = fs::read_dir(directory)
+        .map_err(|error| storage_error("Cannot inspect SQLite recovery directory", error))?;
+    for entry in entries {
+        let entry =
+            entry.map_err(|error| storage_error("Cannot inspect SQLite recovery entry", error))?;
+        let path = entry.path();
+        let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+            continue;
+        };
+        let is_temporary = name.starts_with("pre-v")
+            && name.contains(".db.")
+            && [".tmp", ".tmp-wal", ".tmp-shm", ".tmp-journal"]
+                .iter()
+                .any(|suffix| name.ends_with(suffix));
+        if is_temporary {
+            remove_file_if_present(&path, "Cannot remove stale SQLite recovery artifact")?;
+        }
+    }
+    Ok(())
+}
+
+fn normalize_backup(path: &Path) -> Result<()> {
+    let backup = Connection::open_with_flags(
+        path,
+        OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )
+    .map_err(|error| database_error("Cannot normalize SQLite recovery backup", error))?;
+    backup
+        .pragma_update(None, "journal_mode", "DELETE")
+        .map_err(|error| database_error("Cannot make SQLite recovery backup standalone", error))?;
+    let journal_mode: String = backup
+        .query_row("PRAGMA journal_mode", [], |row| row.get(0))
+        .map_err(|error| database_error("Cannot verify SQLite recovery journal mode", error))?;
+    drop(backup);
+    remove_sqlite_sidecars(path)?;
+    if journal_mode.eq_ignore_ascii_case("delete") {
+        return Ok(());
+    }
+    Err(Error::new(
+        Status::GenericFailure,
+        format!(
+            "SQLite recovery backup remained in {journal_mode} journal mode instead of becoming a standalone file"
+        ),
+    ))
+}
+
+fn validate_backup(path: &Path) -> Result<()> {
+    let backup = Connection::open_with_flags(
+        path,
+        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )
+    .map_err(|error| database_error("Cannot open SQLite recovery backup", error))?;
+    let journal_mode: String = backup
+        .query_row("PRAGMA journal_mode", [], |row| row.get(0))
+        .map_err(|error| database_error("Cannot read SQLite recovery journal mode", error))?;
+    if !journal_mode.eq_ignore_ascii_case("delete") {
+        return Err(Error::new(
+            Status::GenericFailure,
+            format!("SQLite recovery backup is not standalone: journal mode is {journal_mode}"),
+        ));
+    }
+    assert_integrity(&backup, "for recovery backup")
+}
+
+fn create_migration_backup(connection: &Connection, destination: &Path) -> Result<()> {
+    if destination.exists() {
+        return Err(invalid_argument(format!(
+            "Refusing to replace existing SQLite recovery backup: {}",
+            destination.display()
+        )));
+    }
+
+    let parent = destination.parent().ok_or_else(|| {
+        invalid_argument(format!(
+            "SQLite recovery backup has no parent: {}",
+            destination.display()
+        ))
+    })?;
+    fs::create_dir_all(parent)
+        .map_err(|error| storage_error("Cannot create SQLite recovery directory", error))?;
+    set_private_permissions(parent, 0o700)
+        .map_err(|error| storage_error("Cannot protect SQLite recovery directory", error))?;
+    cleanup_stale_migration_artifacts(parent)?;
+
+    let destination_name = destination.file_name().ok_or_else(|| {
+        invalid_argument(format!(
+            "SQLite recovery backup has no file name: {}",
+            destination.display()
+        ))
+    })?;
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|error| storage_error("Cannot timestamp SQLite recovery backup", error))?
+        .as_nanos();
+    let mut temporary_name = destination_name.to_os_string();
+    temporary_name.push(format!(".{}.{nonce}.tmp", std::process::id()));
+    let temporary = parent.join(temporary_name);
+    let result = (|| -> Result<()> {
+        connection
+            .backup(MAIN_DB, &temporary, None)
+            .map_err(|error| database_error("Cannot create SQLite recovery backup", error))?;
+        normalize_backup(&temporary)?;
+        validate_backup(&temporary)?;
+        set_private_permissions(&temporary, 0o600)
+            .map_err(|error| storage_error("Cannot protect SQLite recovery backup", error))?;
+        fs::rename(&temporary, destination)
+            .map_err(|error| storage_error("Cannot publish SQLite recovery backup", error))?;
+        Ok(())
+    })();
+    if result.is_err() {
+        cleanup_database_artifacts(&temporary);
+    }
+    result
+}
+
+fn migration_backup_path(directory: &Path, target_version: u32) -> Result<PathBuf> {
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|error| storage_error("Cannot timestamp SQLite recovery backup", error))?
+        .as_nanos();
+    Ok(directory.join(format!("pre-v{target_version}-{nonce}.db")))
+}
+
+fn retain_latest_migration_backup(
+    directory: &Path,
+    target_version: u32,
+    latest: &Path,
+) -> Result<()> {
+    let prefix = format!("pre-v{target_version}-");
+    let entries = fs::read_dir(directory)
+        .map_err(|error| storage_error("Cannot inspect SQLite recovery directory", error))?;
+    for entry in entries {
+        let entry =
+            entry.map_err(|error| storage_error("Cannot inspect SQLite recovery entry", error))?;
+        let path = entry.path();
+        if path == latest {
+            continue;
+        }
+        let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+            continue;
+        };
+        if !name.starts_with(&prefix) || !name.ends_with(".db") {
+            continue;
+        }
+        remove_file_if_present(&path, "Cannot retire superseded SQLite recovery backup")?;
+        // Sidecars are not recovery images; failure to remove one must not
+        // discard the newer validated image that replaced its main database.
+        let _ = remove_sqlite_sidecars(&path);
+    }
+    Ok(())
+}
+
+fn migrate_legacy_schema(connection: &Connection) -> Result<()> {
+    for (table, column, column_type) in ADDED_COLUMNS {
+        if !table_exists(connection, table)? || has_column(connection, table, column)? {
+            continue;
+        }
+        connection
+            .execute(
+                &format!("ALTER TABLE {table} ADD COLUMN {column} {column_type}"),
+                [],
+            )
+            .map_err(|error| database_error("Cannot add legacy SQLite column", error))?;
+    }
+
+    if !table_exists(connection, "refs")? {
+        return Ok(());
+    }
+    let mut statement = connection
+        .prepare("PRAGMA table_info(refs)")
+        .map_err(|error| database_error("Cannot inspect legacy refs table", error))?;
+    let mut key_columns: Vec<(i64, String)> = statement
+        .query_map([], |row| Ok((row.get(5)?, row.get(1)?)))
+        .map_err(|error| database_error("Cannot inspect legacy refs key", error))?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(|error| database_error("Cannot read legacy refs key", error))?
+        .into_iter()
+        .filter(|(position, _)| *position > 0)
+        .collect();
+    key_columns.sort_by_key(|(position, _)| *position);
+    if key_columns.iter().any(|(_, column)| column == "src_column") {
+        return Ok(());
+    }
+
+    connection
+        .execute_batch(
+            "DROP TABLE IF EXISTS refs_v12;
+             CREATE TABLE refs_v12 (
+               src_path TEXT NOT NULL,
+               src_line INTEGER NOT NULL,
+               src_column INTEGER NOT NULL DEFAULT 0,
+               src_end_column INTEGER,
+               name TEXT NOT NULL,
+               specifier TEXT NOT NULL,
+               dst_path TEXT,
+               src_symbol TEXT,
+               src_symbol_id TEXT,
+               dst_line INTEGER,
+               dst_column INTEGER,
+               dst_end_line INTEGER,
+               dst_end_column INTEGER,
+               dst_symbol_id TEXT,
+               PRIMARY KEY (src_path, src_line, src_column, name, specifier)
+             );
+             INSERT OR REPLACE INTO refs_v12(
+               src_path, src_line, src_column, src_end_column, name, specifier, dst_path,
+               src_symbol, src_symbol_id, dst_line, dst_column, dst_end_line, dst_end_column,
+               dst_symbol_id
+             )
+             SELECT src_path, src_line, src_column, src_end_column, name, specifier, dst_path,
+                    src_symbol, src_symbol_id, dst_line, dst_column, dst_end_line, dst_end_column,
+                    dst_symbol_id
+               FROM refs;
+             DROP TABLE refs;
+             ALTER TABLE refs_v12 RENAME TO refs;",
+        )
+        .map_err(|error| database_error("Cannot rebuild legacy refs table", error))
+}
+
+fn apply_migration(connection: &Connection, version: u32) -> Result<()> {
+    match version {
+        17 => {
+            migrate_legacy_schema(connection)?;
+            connection
+                .execute_batch(SCHEMA_V17_SQL)
+                .map_err(|error| database_error("Cannot install SQLite schema v17", error))
+        }
+        _ => Err(invalid_argument(format!(
+            "No SQLite migration is registered for schema v{version}"
+        ))),
+    }
+}
+
+/** Current Rust-owned workspace-store schema version. */
+#[napi]
+pub fn database_schema_version() -> u32 {
+    DATABASE_SCHEMA_VERSION
 }
 
 fn parse_params(params_json: &str) -> Result<Vec<Value>> {
@@ -71,7 +528,7 @@ fn row_value(value: ValueRef<'_>) -> Result<serde_json::Value> {
 /// One directly persisted SQLite connection, owned by the engine process.
 #[napi]
 pub struct NativeDatabase {
-    connection: Mutex<Option<Connection>>,
+    connection: Arc<Mutex<Option<Connection>>>,
 }
 
 impl NativeDatabase {
@@ -82,6 +539,135 @@ impl NativeDatabase {
                 "Native SQLite connection lock was poisoned".to_string(),
             )
         })
+    }
+}
+
+fn migrate_connection(
+    connection: &mut Connection,
+    project_root: &str,
+    backup_dir: &str,
+) -> Result<()> {
+    let target_version = DATABASE_SCHEMA_VERSION;
+    let from_version = stored_schema_version(connection)?;
+    if from_version > target_version {
+        return Err(invalid_argument(format!(
+            "SQLite workspace store uses schema v{from_version}, but this SDLC build supports v{target_version}. Upgrade SDLC instead of opening the store with an older build"
+        )));
+    }
+    assert_integrity(connection, "before schema migration")?;
+    if from_version >= FIRST_VERSIONED_SCHEMA {
+        assert_migration_recorded(connection, from_version)?;
+    }
+
+    let needs_migration = from_version < target_version;
+    let recovery_path = if needs_migration && has_user_state(connection)? {
+        let directory = Path::new(backup_dir);
+        let path = migration_backup_path(directory, target_version)?;
+        create_migration_backup(connection, &path)?;
+        if let Err(error) = retain_latest_migration_backup(directory, target_version, &path) {
+            cleanup_database_artifacts(&path);
+            return Err(error);
+        }
+        Some(path)
+    } else {
+        None
+    };
+    let migration = (|| -> Result<()> {
+        configure_connection(connection)?;
+        let transaction = connection
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .map_err(|error| database_error("Cannot start SQLite schema migration", error))?;
+        let mut version = from_version;
+        while version < target_version {
+            let next_version = if version < FIRST_VERSIONED_SCHEMA {
+                FIRST_VERSIONED_SCHEMA
+            } else {
+                version + 1
+            };
+            apply_migration(&transaction, next_version)?;
+            transaction
+                .execute(
+                    "INSERT INTO schema_migrations(version, from_version, applied_at, backup_path)
+                     VALUES(?1, ?2, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), ?3)",
+                    params![
+                        next_version,
+                        version,
+                        recovery_path
+                            .as_ref()
+                            .map(|path| path.to_string_lossy().into_owned())
+                    ],
+                )
+                .map_err(|error| database_error("Cannot record SQLite migration", error))?;
+            version = next_version;
+        }
+        transaction
+            .execute(
+                "INSERT OR REPLACE INTO meta(key, value) VALUES('schema_version', ?1)",
+                [target_version.to_string()],
+            )
+            .map_err(|error| database_error("Cannot record SQLite schema version", error))?;
+        transaction
+            .execute(
+                "INSERT OR REPLACE INTO meta(key, value) VALUES('project_root', ?1)",
+                [project_root],
+            )
+            .map_err(|error| database_error("Cannot record SQLite workspace root", error))?;
+        transaction
+            .execute_batch(&format!("PRAGMA user_version = {target_version}"))
+            .map_err(|error| database_error("Cannot publish SQLite schema version", error))?;
+        if needs_migration {
+            assert_integrity(&transaction, "after schema migration")?;
+        }
+        transaction
+            .commit()
+            .map_err(|error| database_error("Cannot commit SQLite schema migration", error))
+    })();
+
+    migration.map_err(|error| {
+        let recovery = recovery_path
+            .as_ref()
+            .map(|path| {
+                format!(
+                    " Its pre-migration recovery image is {}.",
+                    path.display()
+                )
+            })
+            .unwrap_or_default();
+        Error::new(
+            Status::GenericFailure,
+            format!(
+                "{error} SQLite schema changes did not commit and the workspace store was not replaced.{recovery}"
+            ),
+        )
+    })
+}
+
+pub struct MigrationTask {
+    connection: Arc<Mutex<Option<Connection>>>,
+    project_root: String,
+    backup_dir: String,
+}
+
+#[napi]
+impl Task for MigrationTask {
+    type Output = ();
+    type JsValue = ();
+
+    fn compute(&mut self) -> Result<Self::Output> {
+        let mut connection = self.connection.lock().map_err(|_| {
+            Error::new(
+                Status::GenericFailure,
+                "Native SQLite connection lock was poisoned".to_string(),
+            )
+        })?;
+        let connection = connection.as_mut().ok_or_else(|| {
+            Error::new(Status::GenericFailure, "SQLite store is closed".to_string())
+        })?;
+        migrate_connection(connection, &self.project_root, &self.backup_dir)
+    }
+
+    fn resolve(&mut self, _env: Env, _output: Self::Output) -> Result<Self::JsValue> {
+        Ok(())
     }
 }
 
@@ -96,18 +682,26 @@ impl NativeDatabase {
 
         let connection = Connection::open_with_flags(&path, flags)
             .map_err(|error| database_error(&format!("Cannot open SQLite store {path}"), error))?;
-        connection
-            .execute_batch(
-                "PRAGMA foreign_keys = ON;
-                 PRAGMA journal_mode = WAL;
-                 PRAGMA synchronous = NORMAL;
-                 PRAGMA busy_timeout = 5000;",
-            )
-            .map_err(|error| database_error("Cannot configure SQLite store", error))?;
 
         Ok(Self {
-            connection: Mutex::new(Some(connection)),
+            connection: Arc::new(Mutex::new(Some(connection))),
         })
+    }
+
+    /// Validate, back up, and migrate a workspace store as one Rust-owned
+    /// storage lifecycle. The final schema and ordered steps are compiled into
+    /// this native owner; TypeScript never controls migration semantics.
+    #[napi(ts_return_type = "Promise<void>")]
+    pub fn migrate(
+        &self,
+        project_root: String,
+        backup_dir: String,
+    ) -> Result<AsyncTask<MigrationTask>> {
+        Ok(AsyncTask::new(MigrationTask {
+            connection: Arc::clone(&self.connection),
+            project_root,
+            backup_dir,
+        }))
     }
 
     #[napi]
@@ -202,8 +796,15 @@ mod tests {
     #[test]
     fn persists_transactions_and_supports_fts5() {
         let path = temp_database();
+        let backup_dir = format!("{path}.recovery");
+        let backup_path = format!("{backup_dir}/backup.db");
         {
             let database = NativeDatabase::new(path.clone(), true).expect("database opens");
+            {
+                let connection = database.connection().expect("connection locks");
+                configure_connection(connection.as_ref().expect("connection is open"))
+                    .expect("database configures");
+            }
             database
                 .execute_batch(
                     "CREATE TABLE facts(id INTEGER PRIMARY KEY, value TEXT NOT NULL);
@@ -222,6 +823,33 @@ mod tests {
                 )
                 .expect("FTS query works");
             assert!(rows.contains("deterministic code intelligence"));
+            fs::create_dir_all(&backup_dir).expect("recovery directory is created");
+            let stale = format!("{backup_dir}/pre-v17-1.db.123.456.tmp");
+            fs::write(&stale, b"abandoned backup").expect("stale backup is created");
+            fs::write(format!("{stale}-wal"), b"abandoned WAL")
+                .expect("stale backup sidecar is created");
+            {
+                let connection = database.connection().expect("connection locks");
+                create_migration_backup(
+                    connection.as_ref().expect("connection is open"),
+                    Path::new(&backup_path),
+                )
+                .expect("online backup succeeds");
+            }
+            let recovery_entries: Vec<PathBuf> = fs::read_dir(&backup_dir)
+                .expect("recovery directory is readable")
+                .map(|entry| entry.expect("recovery entry is readable").path())
+                .collect();
+            assert_eq!(recovery_entries, [PathBuf::from(&backup_path)]);
+            let recovery = Connection::open_with_flags(
+                &backup_path,
+                OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+            )
+            .expect("backup opens read-only");
+            let journal_mode: String = recovery
+                .query_row("PRAGMA journal_mode", [], |row| row.get(0))
+                .expect("backup journal mode is readable");
+            assert_eq!(journal_mode, "delete");
         }
         let reopened = NativeDatabase::new(path.clone(), false).expect("database reopens");
         let rows = reopened
@@ -232,8 +860,18 @@ mod tests {
             .expect("persisted row can be read");
         assert_eq!(rows, r#"[{"count":1}]"#);
         drop(reopened);
+        let backup = NativeDatabase::new(backup_path.clone(), false).expect("backup reopens");
+        let backup_rows = backup
+            .all("SELECT value FROM facts".to_string(), "[]".to_string())
+            .expect("backup contains committed WAL data");
+        assert!(backup_rows.contains("deterministic code intelligence"));
+        drop(backup);
         let _ = fs::remove_file(&path);
         let _ = fs::remove_file(format!("{path}-wal"));
         let _ = fs::remove_file(format!("{path}-shm"));
+        let _ = fs::remove_file(&backup_path);
+        let _ = fs::remove_file(format!("{backup_path}-wal"));
+        let _ = fs::remove_file(format!("{backup_path}-shm"));
+        let _ = fs::remove_dir(&backup_dir);
     }
 }

@@ -164,10 +164,16 @@ Everything the engine owns lives in `~/.sdlc/`:
 | `workspaces.json` | Repositories the engine has been asked to index |
 | `daemon.log` | What the engine did |
 | `stores/<workspace-id>/audit.db` | Native SQLite code-intelligence store |
+| `stores/<workspace-id>/backups/pre-v<version>-<timestamp>.db` | Latest standalone recovery image retained for each target schema version |
 
 On first open, an older repository-local `sdlc-audit/audit.db` is copied into
 app-owned storage and retained in place as a recoverable legacy backup. New
 stores and all subsequent writes stay outside the source repository.
+Schema compatibility, integrity checks, migration transactions, and online
+backups are owned by the Rust SQLite runtime. A newer store is rejected without
+changing its journal mode, and a failed migration rolls back while retaining
+its pre-migration image. Retrying the same target version replaces its older
+recovery image only after the new snapshot is complete and validated.
 
 ## Security
 
