@@ -296,6 +296,7 @@ export interface NativeCore {
     exclusions: SourceExclusion[];
     exclusionSummary: ExclusionCount[];
     diagnostic?: string;
+    gitignoreApplied: boolean;
     walkMs: number;
     parseMs: number;
   }>;
@@ -398,8 +399,13 @@ export interface CollectResult {
   /** Recorded decisions to keep paths out, so absence is never unexplained. */
   exclusions: SourceExclusion[];
   exclusionSummary: ExclusionCount[];
-  /** Set when the walk relaxed a rule rather than report an empty repository. */
+  /** Anything the caller should be told about the input policy. */
   diagnostic: string | null;
+  /**
+   * False only when the gitignore matcher was abandoned entirely. A malformed
+   * rule leaves the rest applied, which is a warning, not a relaxation.
+   */
+  gitignoreApplied: boolean;
   engine: "native";
   walkMs: number;
   parseMs: number;
@@ -414,6 +420,7 @@ export async function collectFiles(projectRoot: string): Promise<CollectResult> 
     exclusions: result.exclusions,
     exclusionSummary: result.exclusionSummary,
     diagnostic: result.diagnostic ?? null,
+    gitignoreApplied: result.gitignoreApplied,
     files: result.files.map((file) => ({
       path: file.path,
       lang: file.lang as SourceLanguage,

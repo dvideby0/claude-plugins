@@ -201,6 +201,9 @@ pub struct NativeScan {
     /// Set when the walk had to relax a rule rather than report an empty
     /// repository, so the workspace can say what did not happen.
     pub diagnostic: Option<String>,
+    /// False only when the gitignore matcher was abandoned entirely. Watch
+    /// decisions must match the inventory the scan actually produced.
+    pub gitignore_applied: bool,
     pub walk_ms: u32,
     pub parse_ms: u32,
 }
@@ -394,6 +397,7 @@ fn scan_sync(root: &str) -> NativeScan {
             })
             .collect(),
         diagnostic: outcome.diagnostic,
+        gitignore_applied: outcome.gitignore_applied,
         walk_ms,
         parse_ms,
     }

@@ -51,9 +51,14 @@ pub struct WalkOutcome {
     pub files: Vec<Scanned>,
     pub excluded: Vec<Excluded>,
     pub summary: Vec<ReasonCount>,
-    /// Set when a catch-all `.gitignore` was dropped rather than shipping an
-    /// empty inventory.
+    /// Anything the caller should be told about the policy: a rule that could
+    /// not be read, or a matcher that had to be dropped.
     pub diagnostic: Option<String>,
+    /// False only when the gitignore matcher was abandoned for this walk. A
+    /// malformed rule still leaves the rest applied, which is a different
+    /// thing — and the watcher has to make the same distinction or it stops
+    /// refreshing files the scan actually indexed.
+    pub gitignore_applied: bool,
 }
 
 #[derive(Default)]
@@ -140,6 +145,7 @@ pub fn walk(root: &Path, policy: &InputPolicy) -> WalkOutcome {
     );
     let relaxed = policy.without_gitignore(diagnostic.clone());
     let mut retried = walk_with(root, &relaxed);
+    retried.gitignore_applied = false;
     // Keep any earlier complaint about the file itself: "some rules could not
     // be read" and "the rules matched everything" are separate problems.
     retried.diagnostic = Some(match &policy.gitignore_diagnostic {
@@ -298,6 +304,7 @@ fn walk_with(root: &Path, policy: &InputPolicy) -> WalkOutcome {
         excluded,
         summary,
         diagnostic: policy.gitignore_diagnostic.clone(),
+        gitignore_applied: policy.has_gitignore(),
     }
 }
 

@@ -112,7 +112,7 @@ async function doScan(projectRoot: string, options: ScanOptions = {}): Promise<S
   const storedVersion = Number(
     db.get<{ value: string }>("SELECT value FROM meta WHERE key = 'extraction_version'")?.value ?? 0,
   );
-  const { files, engine, exclusions, exclusionSummary, diagnostic } =
+  const { files, engine, exclusions, exclusionSummary, diagnostic, gitignoreApplied } =
     await collectFiles(projectRoot);
   const storedEngine =
     db.get<{ value: string }>("SELECT value FROM meta WHERE key = 'extraction_engine'")?.value ??
@@ -479,8 +479,9 @@ async function doScan(projectRoot: string, options: ScanOptions = {}): Promise<S
     sourceSignature(files),
   ]);
   // Watch decisions must match the inventory this scan actually produced, not
-  // the strict policy it had to abandon.
-  setInputPolicyRelaxed(projectRoot, diagnostic !== null);
+  // the strict policy it had to abandon. A malformed rule still leaves the
+  // rest applied, so only an abandoned matcher relaxes the watcher too.
+  setInputPolicyRelaxed(projectRoot, !gitignoreApplied);
 
   db.run(
     "UPDATE runs SET finished_at = ?, files_total = ?, files_changed = ? WHERE id = ?",

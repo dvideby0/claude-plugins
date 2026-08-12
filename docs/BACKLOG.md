@@ -277,6 +277,23 @@ it. The evaluation harness's existing comment-append probe now reports
 `filesReparsed: 1, filesMeaningChanged: 0, executionEntriesStale: 0`. Parse time
 rose from 100.0 ms to 111.0 ms on this repository.
 
+A review pass then closed seventeen correctness gaps in that model. The syntax
+signature hashes node kinds and boundaries, not only leaves, because a leaf
+stream cannot tell a Python statement moved out of a block from one left inside
+it. An interface, enum or class body counts as contract rather than
+implementation. Export visibility is folded into the interface signature, since
+`export function f` and `function f` produce identical declaration nodes.
+Comments that are instructions — `@ts-nocheck`, triple-slash references,
+`@__PURE__`, bundler and linter directives — are hashed while prose is not.
+Method keys are scoped to their enclosing declaration. `brief` and the asserted
+overlay compare meaning too, so no two readers disagree about the same
+artifact. Findings move with a renamed file and are re-keyed by the next
+analyzer run instead of being closed as fixed by a scan that ran none. The
+size cap is enforced before the read, a relaxed gitignore policy is shared with
+the watcher, a malformed one is reported rather than discarded, truncated
+component dependencies report as partial, and Git renames are read from
+NUL-delimited porcelain so quoted paths still match the inventory.
+
 Open: a Python docstring is a string expression, not a comment, so editing one
 still moves the syntax signature. The relation-set signature is recorded but not
 yet used to skip whole-repository edge re-resolution. Prompt, model and

@@ -261,6 +261,11 @@ export interface NativeScan {
    * repository, so the workspace can say what did not happen.
    */
   diagnostic?: string
+  /**
+   * False only when the gitignore matcher was abandoned entirely. Watch
+   * decisions must match the inventory the scan actually produced.
+   */
+  gitignoreApplied: boolean
   walkMs: number
   parseMs: number
 }
