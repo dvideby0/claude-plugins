@@ -77,6 +77,7 @@ export interface ExecutionNodeView {
   target: { path: string | null; symbol: string; external: string };
   evidence: { path: string; startLine: number; endLine: number };
   certainty: string;
+  resolution: "resolved" | "unresolved" | "external" | "not-applicable";
   terminal: boolean;
   detail: string;
 }
@@ -126,7 +127,7 @@ export interface ExecutionAssertedOverlayView {
 }
 
 export interface ExecutionFlowView {
-  schemaVersion: 2;
+  schemaVersion: 3;
   model: "entry-to-effect";
   note?: string | null;
   entries: ExecutionEntrySummary[];

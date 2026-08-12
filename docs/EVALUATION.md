@@ -72,6 +72,15 @@ cannot satisfy multiple reviewed anchors. Branch-condition equivalence, runtime
 feasibility, and data-value propagation remain explicitly unmeasured. These are
 fixture results, not a broad TypeScript CFG claim.
 
+A separate checked-in dogfood regression scans this repository's real daemon
+source rather than a copied fixture. It fixes expected branch/response paths,
+evidence, provenance, and target-resolution states for `GET /api/search`,
+`ANY /api/watch`, and `POST /api/workspaces`. Unresolved local or member calls
+are expected gaps and make only the paths that traverse them incomplete. This
+is a product regression gate, not an additional precision/recall result: the
+provider-neutral JSON report continues to claim measured path quality only for
+the oracle-backed fixture above.
+
 The separate opt-in Joern spike does score that reviewed flow truth. It uses
 Joern's official Python frontend and official GraphSON exporter, then applies a
 narrow LangGraph adapter. CPG-resolved calls, framework-inferred dispatch, the

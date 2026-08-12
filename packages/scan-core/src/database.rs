@@ -844,6 +844,24 @@ fn execution_entry_value(entry: &ExecutionEntryRow) -> serde_json::Value {
     })
 }
 
+fn execution_node_has_unresolved_target(node: &ExecutionNodeRow) -> bool {
+    matches!(node.kind.as_str(), "call" | "await")
+        && node.target_path.as_deref().unwrap_or("").is_empty()
+        && node.external.is_empty()
+}
+
+fn execution_node_resolution(node: &ExecutionNodeRow) -> &'static str {
+    if execution_node_has_unresolved_target(node) {
+        "unresolved"
+    } else if matches!(node.kind.as_str(), "call" | "await") {
+        "resolved"
+    } else if !node.external.is_empty() {
+        "external"
+    } else {
+        "not-applicable"
+    }
+}
+
 fn execution_node_value(node: &ExecutionNodeRow) -> serde_json::Value {
     serde_json::json!({
         "id": node.id,
@@ -863,6 +881,7 @@ fn execution_node_value(node: &ExecutionNodeRow) -> serde_json::Value {
             "endLine": node.end_line,
         },
         "certainty": node.certainty,
+        "resolution": execution_node_resolution(node),
         "terminal": node.terminal,
         "detail": node.detail,
     })
@@ -1121,7 +1140,11 @@ fn walk_execution_paths(
     if node.terminal {
         let complete = node_ids
             .iter()
-            .all(|id| nodes.get(id).is_some_and(|visited| visited.kind != "gap"));
+            .all(|id| {
+                nodes.get(id).is_some_and(|visited| {
+                    visited.kind != "gap" && !execution_node_has_unresolved_target(visited)
+                })
+            });
         paths.push(ExecutionPath {
             node_ids: node_ids.clone(),
             edge_ordinals: edge_ordinals.clone(),
@@ -1222,7 +1245,11 @@ fn execution_flow_json(
                     (SELECT COUNT(*) FROM execution_nodes n
                      WHERE n.entry_id = e.id AND n.kind = 'terminal-effect') AS terminal_effects,
                     (SELECT COUNT(*) FROM execution_nodes n
-                     WHERE n.entry_id = e.id AND n.kind = 'gap') AS gaps
+                     WHERE n.entry_id = e.id
+                       AND (n.kind = 'gap'
+                         OR (n.kind IN ('call', 'await')
+                           AND COALESCE(n.target_path, '') = ''
+                           AND n.external = ''))) AS gaps
              FROM execution_entries e
              LEFT JOIN files f ON f.path = e.path
              ORDER BY e.kind, e.method, e.route, e.path, e.start_line",
@@ -1273,7 +1300,7 @@ fn execution_flow_json(
 
     let Some(entry_id) = selected_entry_id else {
         return serde_json::to_string(&serde_json::json!({
-            "schemaVersion": 2,
+            "schemaVersion": 3,
             "model": "entry-to-effect",
             "note": if entries.is_empty() {
                 Some("No deterministic execution entries are indexed. Re-index after installing an adapter that recognizes this repository's entrypoints.")
@@ -1288,7 +1315,7 @@ fn execution_flow_json(
     };
     let Some(entry) = entries.iter().find(|entry| entry.id == entry_id) else {
         return serde_json::to_string(&serde_json::json!({
-            "schemaVersion": 2,
+            "schemaVersion": 3,
             "model": "entry-to-effect",
             "note": "The requested execution entry is not present in the current index.",
             "entries": entry_values,
@@ -1358,6 +1385,15 @@ fn execution_flow_json(
         .map_err(|error| database_error("Cannot query execution diagnostics", error))?
         .collect::<rusqlite::Result<Vec<_>>>()
         .map_err(|error| database_error("Cannot read execution diagnostics", error))?;
+    for node in node_rows
+        .iter()
+        .filter(|node| execution_node_has_unresolved_target(node))
+    {
+        diagnostics.push(format!(
+            "{}:{} cannot resolve the target of {}; paths through it are incomplete.",
+            node.path, node.start_line, node.label
+        ));
+    }
 
     let nodes = node_rows
         .iter()
@@ -1428,7 +1464,7 @@ fn execution_flow_json(
         .collect::<Vec<_>>();
 
     serde_json::to_string(&serde_json::json!({
-        "schemaVersion": 2,
+        "schemaVersion": 3,
         "model": "entry-to-effect",
         "entries": entry_values,
         "diagnostics": inventory_diagnostics,

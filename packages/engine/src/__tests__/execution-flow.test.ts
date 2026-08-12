@@ -73,7 +73,7 @@ withNative("deterministic execution flow", () => {
       symbol: "handleApi",
       freshness: "current",
       terminalEffects: 3,
-      gaps: 0,
+      gaps: 1,
       producer: {
         id: "sdlc-http-route-adapter",
         version: "7",
@@ -90,7 +90,11 @@ withNative("deterministic execution flow", () => {
       "http:response:400",
       "http:response:400",
     ]);
-    expect(view.selected?.paths.every((path) => path.complete)).toBe(true);
+    expect(
+      view.selected?.paths
+        .filter((path) => !path.complete)
+        .map((path) => path.terminalEffect),
+    ).toEqual(["http:response:200"]);
     expect(view.selected?.paths.some((path) => path.conditions.includes("try block throws"))).toBe(
       true,
     );
@@ -103,10 +107,18 @@ withNative("deterministic execution flow", () => {
         expect.objectContaining({
           kind: "await",
           target: expect.objectContaining({ path: "src/search.ts", symbol: "crossQuery" }),
+          resolution: "resolved",
+        }),
+        expect.objectContaining({
+          kind: "await",
+          label: "Await Promise.resolve",
+          resolution: "unresolved",
         }),
       ]),
     );
-    expect(view.selected?.diagnostics).toEqual([]);
+    expect(view.selected?.diagnostics).toEqual([
+      expect.stringContaining("cannot resolve the target of Await Promise.resolve"),
+    ]);
   });
 
   it("replaces file-owned execution facts without leaving retired routes", async () => {
@@ -331,7 +343,7 @@ export function route(path: string, res: unknown): void {
 
     const deterministic = db.executionFlow(entry.id);
     const withAssertions = db.executionFlow(entry.id, 24, true);
-    expect(deterministic.schemaVersion).toBe(2);
+    expect(deterministic.schemaVersion).toBe(3);
     expect(deterministic.selected?.assertedOverlay).toMatchObject({
       enabled: false,
       relations: [],

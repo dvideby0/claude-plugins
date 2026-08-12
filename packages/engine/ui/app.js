@@ -2046,7 +2046,7 @@ async function paneExecutionFlow(workspace, pane, index) {
         <div class="execution-summary">
           <div><strong>${num(selected.paths.length)}</strong><span>recognized paths</span></div>
           <div><strong>${num(entry.terminalEffects)}</strong><span>terminal effects</span></div>
-          <div><strong>${num(entry.gaps)}</strong><span>explicit gaps</span></div>
+          <div><strong>${num(entry.gaps)}</strong><span>gaps / unresolved</span></div>
         </div>
         ${renderAssertedOverlay(assertedOverlay)}
         ${
@@ -2079,8 +2079,8 @@ async function paneExecutionFlow(workspace, pane, index) {
                       if (!node) return "";
                       return `<li>
                         ${stepIndex ? '<span class="execution-arrow">→</span>' : ""}
-                        <button data-execution-node="${esc(node.id)}" class="execution-step kind-${esc(node.kind)}">
-                          <span class="execution-step-kind">${esc(node.kind.replaceAll("-", " "))}</span>
+                        <button data-execution-node="${esc(node.id)}" class="execution-step kind-${esc(node.kind)} ${node.resolution === "unresolved" ? "resolution-unresolved" : ""}">
+                          <span class="execution-step-kind">${esc(node.kind.replaceAll("-", " "))}${node.resolution === "unresolved" ? " · unresolved target" : ""}</span>
                           <strong>${esc(node.label)}</strong>
                           <small>${esc(node.evidence.path.split("/").slice(-2).join("/"))}:${num(node.evidence.startLine)}</small>
                         </button>
@@ -2091,7 +2091,7 @@ async function paneExecutionFlow(workspace, pane, index) {
                 <footer>
                   ${
                     path.terminalEffect
-                      ? `<span class="execution-effect">Effect · ${esc(path.terminalEffect)}</span>`
+                      ? `<span class="${path.complete ? "execution-effect" : "execution-gap"}">Effect · ${esc(path.terminalEffect)}${path.complete ? "" : " · incomplete"}</span>`
                       : `<span class="execution-gap">${path.complete ? "Handler exit" : "Incomplete path"}</span>`
                   }
                 </footer>
@@ -2144,6 +2144,7 @@ function showExecutionNode(workspace, node, entry, inspector, origin) {
     <div class="insp-section execution-inspector-facts">
       <div><span>certainty</span><strong>${esc(node.certainty)}</strong></div>
       <div><span>producer</span><strong>${esc(entry.producer.id)} v${esc(entry.producer.version)}</strong></div>
+      ${node.resolution !== "not-applicable" ? `<div><span>target resolution</span><strong>${esc(node.resolution)}</strong></div>` : ""}
       ${target.external ? `<div><span>external effect</span><strong>${esc(target.external)}</strong></div>` : ""}
       ${target.symbol ? `<div><span>target symbol</span><strong>${esc(target.symbol)}</strong></div>` : ""}
     </div>
