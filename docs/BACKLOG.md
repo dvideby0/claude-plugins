@@ -136,13 +136,21 @@ Progress (2026-08-11, Python slice): oracle schema version 2 now declares
 languages and applicable providers, enforces matching per-provider thresholds,
 and can hold reviewed entrypoint/relation/path truth without pretending it is
 already scored. A small Agent Arena-inspired LangGraph fixture records one
-manifest entrypoint, twelve framework/effect relations, and three expected paths.
+manifest entrypoint, thirteen framework/effect relations, and four expected paths.
 The native scanner measures 9/9 selected symbols and 8/9 references;
 evaluation-only SCIP-Python 0.6.6 measures 9/9 for both and passes upstream
-`scip test`, but emits no flow relationships. This supports a bounded Joern/CPG
-spike next; it does not justify promoting the older SCIP-Python/Pyright fork as
-a production provider. The corpus is now two deliberately small scenarios.
-Entry-to-effect and retrieval scoring remain open acceptance criteria.
+`scip test`, but emits no flow relationships.
+
+Progress (2026-08-11, Joern slice): an opt-in, digest-pinned, network-disabled
+Joern container evaluation now consumes the official Python CPG and official
+GraphSON export. A narrow LangGraph adapter scores 12/13 relations at 1.0
+precision/0.923077 recall and 3/4 exact relation-sequence paths at 1.0
+precision/0.75 recall. The missing relation/path is deliberately the
+human-asserted result-store boundary. The 2.17 GB extracted AMD64-only slim
+image and full-GraphSON translation fail packaging criteria, so Joern remains
+evaluation-only rather than becoming a bundled provider. Broader flow fixtures,
+condition/feasibility scoring, external child memory, unified corpus execution,
+and retrieval scoring remain open acceptance criteria.
 
 ### STORE-001: Move workspace state under app ownership
 

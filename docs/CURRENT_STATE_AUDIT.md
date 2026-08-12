@@ -19,9 +19,9 @@ per-input manifest, verifies the input view after execution, and marks retained
 output stale when the indexed source generation changes. Dependency and
 out-of-tree compiler reads are not yet attested, so output remains partial and
 unverified rather than exact. The output remains an evaluation and does not
-replace current syntax/reference facts. Joern is
-capability-detected only and still requires the planned bounded control/data-flow
-evaluation.
+replace current syntax/reference facts. Joern remains capability-detected and
+unbundled. A digest-pinned, opt-in container spike now measures its CPG against
+the LangGraph flow oracle; it is an evaluation path, not a production provider.
 
 ## Executive assessment
 
@@ -119,7 +119,11 @@ inspection/projection boundary. It improves the selected reference result from
 the native scanner's 8/9 to 9/9, but contributes no framework or entry-to-effect
 relations and is not exposed as a production app provider. Oracle schema version
 2 now scopes providers per fixture and records reviewed flow truth while
-reporting path quality as explicitly unmeasured.
+the normal corpus still reports path quality as explicitly unmeasured. The
+opt-in Joern spike recovers 12/13 reviewed relations and 3/4 exact
+relation-sequence paths with no false positives after adding a narrow LangGraph
+adapter. Its 2.17 GB extracted AMD64-only slim image and bounded full-GraphSON
+translation fail desktop packaging criteria, so it remains evaluation-only.
 
 ### Graph, flow, and gap handling
 

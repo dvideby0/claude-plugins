@@ -1,6 +1,7 @@
 # Code-intelligence evaluation
 
-Status: first executable EVAL-001 slice, 2026-08-11.
+Status: executable symbol/reference corpus plus bounded Joern flow spike,
+2026-08-11.
 
 ## Purpose
 
@@ -57,12 +58,24 @@ terminal effects, conditions, and complete entry-to-effect paths. The report
 publishes their counts and labels their scoring `unmeasured`; merely checking
 flow truth into the repository does not grant a provider path credit.
 
+The separate opt-in Joern spike does score that reviewed flow truth. It uses
+Joern's official Python frontend and official GraphSON exporter, then applies a
+narrow LangGraph adapter. CPG-resolved calls, framework-inferred dispatch, the
+deterministically parsed deployment manifest, and human-authored terminal-
+effect knowledge remain visibly different producers/certainty classes.
+Flow precision/recall floors live beside the reviewed truth in the checked-in
+oracle. The command exits nonzero when those floors, source-evidence checks, or
+adapter-completeness checks fail; desktop packaging failures remain an explicit
+adoption decision rather than making the measurement command itself fail.
+
 ## Current Python result
 
 The small Python fixture is LangGraph-shaped and inspired by Agent Arena; it is
 not a claim that the full Agent Arena repository has been indexed. It records
-one manifest entrypoint, twelve framework/effect relations, and three expected
-entry-to-effect paths. On the selected nine-symbol/nine-reference domain:
+one manifest entrypoint, thirteen framework/effect relations, and four expected
+entry-to-effect paths. The additional reviewed relation/path records successful
+LangGraph completion separately from the asserted application persistence
+effect. On the selected nine-symbol/nine-reference domain:
 
 - the fallback scanner finds 9/9 symbols and no resolved references;
 - the native scanner finds 9/9 symbols and 8/9 references, missing the
@@ -79,21 +92,61 @@ filesystem sandbox. Its precise-reference benefit is real, but its Pyright fork
 and older transitive dependencies make it a weaker long-term production choice
 than an actively maintained compiler/CPG path.
 
+## Bounded Joern result
+
+Joern remains opt-in and is not run by the ordinary build, test, or evaluation
+commands. Pull the exact reviewed image explicitly, then run the spike:
+
+```bash
+docker pull ghcr.io/joernio/joern-slim@sha256:29eb685a95dc1db5a729043d8b5fc8f888f7c03ec6f1a8810736df62161f4b98
+npm run --silent eval:joern -- --json
+```
+
+The evaluator refuses mutable image tags. It copies the fixture to an app-owned
+temporary input, mounts it read-only, disables networking, drops Linux
+capabilities, enables no-new-privileges, bounds CPU/memory/PIDs/output, and
+removes its CPG and GraphSON artifacts afterward. Joern never receives the
+working repository as writable input.
+
+On the 2026-08-11 Apple Silicon development run, the pinned Apache-2.0 slim
+image produced a 135,253-byte CPG and a 3,783,570-byte GraphSON export with 724
+vertices and 4,301 edges. Under x86 emulation, parse took 8.03 seconds, export
+3.17 seconds, and SDLC translation/scoring 26 milliseconds. These are one-run
+spike measurements, not stable performance claims.
+
+Joern plus the narrow adapter found the one entrypoint, 12/13 reviewed
+relations (precision 1.0, recall 0.923077), and 3/4 exact relation-sequence
+paths (precision 1.0, recall 0.75). The only missing relation and path depend on
+the reviewed `persist_result -> result-store` assertion; the function body does
+not contain a deterministic storage operation, so the evaluator correctly does
+not invent one. Nine framework relations retain `inferred` certainty even
+though they match reviewed truth marked `exact`.
+
+This clears the predeclared flow-coverage floor, but does **not** justify
+bundling Joern. The tested image occupies 2,167,932,743 extracted bytes, is
+AMD64-only while the test host is ARM64, and the tested slim image failed even
+Joern's documented minimal batch-script pattern. The spike therefore requires
+a bounded full GraphSON export that is roughly 28 times the fixture CPG size.
+Joern stays an evaluation/reference provider while SDLC tests whether the same
+product-specific LangGraph semantics can sit on the already adopted native and
+SCIP facts.
+
 ## What remains unmeasured
 
 The JSON report explicitly labels gaps instead of encoding unavailable
 measurements as zeros:
 
-- entry-to-effect path precision and recall;
+- entry-to-effect path precision and recall outside the one opt-in
+  Python/LangGraph Joern scenario;
 - retrieval recall at K, evidence coverage, token packing, and irrelevant
   context rate;
 - warm and one-file-change SCIP indexing;
 - peak RSS of the external SCIP child process.
 
-Additional fixtures must expand the oracle before any Joern/CPG adoption or
-FLOW-001 precision claim. Conditions, callbacks, exceptions, async transitions,
-HTTP registration, events, terminal effects, overloads, and unresolved dynamic
-behavior still need independently reviewed cases.
+Additional fixtures must expand the oracle before any Joern/CPG production
+adoption or broad FLOW-001 precision claim. Conditions, callbacks, exceptions,
+async transitions, HTTP registration, events, terminal effects, overloads, and
+unresolved dynamic behavior still need independently reviewed cases.
 
 ## Adding a fixture
 

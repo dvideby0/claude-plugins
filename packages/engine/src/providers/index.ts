@@ -165,8 +165,8 @@ export async function detectProviders(refresh = false): Promise<ProviderStatus[]
       capabilities: ["ast", "control-flow", "data-flow", "call-graph"],
       trust: "unverified",
       detail: joern
-        ? `Detected at ${joern}; evaluation adapter not enabled yet.`
-        : "Optional heavyweight provider. Install Joern to enable the planned evaluation.",
+        ? `Detected at ${joern}; production use remains disabled after the bounded evaluation.`
+        : "Optional heavyweight provider. An opt-in digest-pinned Docker evaluation command exists; production use is disabled.",
     },
   ];
   detectionCache = { expiresAt: Date.now() + DETECTION_TTL_MS, providers };

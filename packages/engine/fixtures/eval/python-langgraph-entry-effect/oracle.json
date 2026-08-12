@@ -98,6 +98,11 @@
     }
   },
   "entryToEffect": {
+    "thresholds": {
+      "entrypoints": { "minimumPrecision": 1, "minimumRecall": 1 },
+      "relations": { "minimumPrecision": 0.9, "minimumRecall": 0.8 },
+      "paths": { "minimumPrecision": 0.9, "minimumRecall": 0.5 }
+    },
     "entrypoints": [
       {
         "id": "subject-lookup",
@@ -202,6 +207,14 @@
         "evidence": { "path": "arena/nodes.py", "startLine": 28 }
       },
       {
+        "id": "finalize-end",
+        "kind": "terminal-effect",
+        "source": { "path": "arena/nodes.py", "symbol": "finalize" },
+        "target": { "external": "langgraph:END" },
+        "certainty": "exact",
+        "evidence": { "path": "arena/graph.py", "startLine": 27 }
+      },
+      {
         "id": "persist-write",
         "kind": "terminal-effect",
         "source": { "path": "arena/effects.py", "symbol": "persist_result" },
@@ -215,6 +228,25 @@
       }
     ],
     "paths": [
+      {
+        "id": "successful-completion",
+        "entrypoint": "subject-lookup",
+        "relations": [
+          "manifest-entry",
+          "start-classify",
+          "classify-route",
+          "classify-research",
+          "research-search",
+          "research-consolidate",
+          "consolidate-route",
+          "consolidate-finalize",
+          "finalize-persist",
+          "finalize-end"
+        ],
+        "terminalRelation": "finalize-end",
+        "conditions": ["classification succeeds", "research yields at least one source"],
+        "certainty": "asserted"
+      },
       {
         "id": "successful-result",
         "entrypoint": "subject-lookup",

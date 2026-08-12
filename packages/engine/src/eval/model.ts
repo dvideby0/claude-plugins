@@ -38,6 +38,14 @@ const providerThresholdSchema = z
   })
   .strict();
 
+const flowThresholdSchema = z
+  .object({
+    entrypoints: metricThresholdSchema,
+    relations: metricThresholdSchema,
+    paths: metricThresholdSchema,
+  })
+  .strict();
+
 const scipExpectationSchema = z
   .object({
     documents: z.number().int().nonnegative(),
@@ -72,6 +80,7 @@ const flowEvidenceSchema = z
 
 const entryToEffectSchema = z
   .object({
+    thresholds: flowThresholdSchema,
     entrypoints: z
       .array(
         z
@@ -269,6 +278,12 @@ export const evaluationOracleSchema = z
 
 export type EvaluationOracle = z.infer<typeof evaluationOracleSchema>;
 export type ScipOracle = NonNullable<NonNullable<EvaluationOracle["scip"]>[EvaluationProvider]>;
+export type EntryToEffectOracle = NonNullable<EvaluationOracle["entryToEffect"]>;
+export type FlowThreshold = EntryToEffectOracle["thresholds"];
+export type FlowEntity = EntryToEffectOracle["relations"][number]["source"];
+export type ExpectedFlowEntrypoint = EntryToEffectOracle["entrypoints"][number];
+export type ExpectedFlowRelation = EntryToEffectOracle["relations"][number];
+export type ExpectedFlowPath = EntryToEffectOracle["paths"][number];
 export type MetricThreshold = z.infer<typeof metricThresholdSchema>;
 export type ProviderThreshold = z.infer<typeof providerThresholdSchema>;
 export type ExpectedSymbol = EvaluationOracle["symbols"][number];
@@ -314,7 +329,11 @@ function ratio(numerator: number, denominator: number): number | null {
   return Number((numerator / denominator).toFixed(6));
 }
 
-function score<T>(expectedValues: T[], actualValues: T[], key: (value: T) => string): MetricScore<T> {
+export function scoreMetric<T>(
+  expectedValues: T[],
+  actualValues: T[],
+  key: (value: T) => string,
+): MetricScore<T> {
   const expected = unique(expectedValues, key);
   const actual = unique(actualValues, key);
   const missing = [...expected]
@@ -390,12 +409,12 @@ export function scoreFactBatch(batch: FactBatch, oracle: EvaluationOracle): Fact
   });
 
   return {
-    symbols: score(oracle.symbols, symbols, symbolKey),
-    references: score(oracle.references, references, referenceKey),
+    symbols: scoreMetric(oracle.symbols, symbols, symbolKey),
+    references: scoreMetric(oracle.references, references, referenceKey),
   };
 }
 
-function metricFailures(
+export function metricThresholdFailures(
   label: string,
   score: MetricScore<unknown>,
   threshold: MetricThreshold,
@@ -439,7 +458,7 @@ export function thresholdFailures(
   const threshold = oracle.thresholds[provider];
   if (!threshold) return [`No checked-in threshold exists for provider ${provider}.`];
   return [
-    ...metricFailures("symbols", scores.symbols, threshold.symbols),
-    ...metricFailures("references", scores.references, threshold.references),
+    ...metricThresholdFailures("symbols", scores.symbols, threshold.symbols),
+    ...metricThresholdFailures("references", scores.references, threshold.references),
   ];
 }

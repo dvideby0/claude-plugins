@@ -58,9 +58,12 @@ project/package resolution and the SCIP protocol rather than reproducing either
 inside SDLC. EVAL-001 also uses the official pinned `scip test` binary and its
 human-readable golden assertion format for occurrence validation; SDLC only
 scores the provider-neutral relations that the upstream tool does not compare
-across providers. Joern remains an optional evaluation dependency: its CPG/CFG/PDG
-exports are promising, but the JVM/JDK footprint and graph translation cost
-must earn their place against the golden corpus before bundling.
+across providers. Joern remains an optional evaluation dependency. The first
+bounded Python/LangGraph spike confirms that its CPG resolves the relevant
+application calls and supports a narrow framework adapter, but the 2.17 GB
+extracted AMD64-only slim image and full-GraphSON translation cost do not earn a
+place in the desktop bundle. The result is evidence for the CPG model and the
+product-specific adapter boundary, not for adopting Joern's runtime wholesale.
 
 The MIT-licensed
 [`@sourcegraph/scip-python`](https://www.npmjs.com/package/@sourcegraph/scip-python)
