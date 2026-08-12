@@ -11,6 +11,7 @@ use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::path::{Component, Path};
 
 const INTENTS: &[&str] = &["implement", "debug", "refactor", "review", "understand"];
 const MAX_TASK_BYTES: usize = 512;
@@ -19,6 +20,15 @@ const MAX_TARGETS: usize = 8;
 const MULTI_SIGNAL_BOOST: i64 = 30;
 const MAX_MULTI_SIGNAL_BOOST: i64 = 90;
 const REPEATED_PATH_PENALTY: i64 = 120;
+const MAX_CHANGE_INPUTS: usize = 256;
+const MAX_CHANGE_SEEDS: usize = 24;
+const MAX_CHANGE_PATH_BYTES: usize = 4_096;
+const EXPLICIT_FILE_SCORE: i64 = 2_000;
+const EXPLICIT_SYMBOL_SCORE: i64 = 2_040;
+const CHANGE_FILE_SCORE: i64 = 1_180;
+const CHANGE_SYMBOL_SCORE: i64 = 1_140;
+const UNRELATED_CHANGE_FILE_SCORE: i64 = 860;
+const UNRELATED_CHANGE_SYMBOL_SCORE: i64 = 820;
 
 #[derive(Clone, Debug)]
 struct FileMeta {
@@ -54,6 +64,45 @@ struct Candidate {
 #[derive(Default)]
 struct RetrievalOmissions {
     candidates: usize,
+}
+
+#[derive(Clone, Debug)]
+struct ChangeSeed {
+    path: String,
+    previous_path: Option<String>,
+    status: String,
+    index_status: String,
+    worktree_status: String,
+    worktree_path_present: Option<bool>,
+}
+
+#[derive(Clone, Debug)]
+struct ChangeEvidence {
+    change: ChangeSeed,
+    index_state: &'static str,
+}
+
+#[derive(Clone, Debug)]
+struct ChangeInput {
+    state: String,
+    source: Option<String>,
+    changes: Vec<ChangeSeed>,
+    detected_paths: usize,
+    truncated: bool,
+    diagnostic: Option<String>,
+}
+
+impl Default for ChangeInput {
+    fn default() -> Self {
+        Self {
+            state: "not-requested".to_string(),
+            source: None,
+            changes: Vec::new(),
+            detected_paths: 0,
+            truncated: false,
+            diagnostic: None,
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -137,6 +186,17 @@ impl CandidateSet {
             return;
         }
         self.values.insert(candidate.id.clone(), candidate);
+    }
+
+    fn mark_path_stale(&mut self, path: &str, why: &str) {
+        for candidate in self
+            .values
+            .values_mut()
+            .filter(|candidate| candidate.path.as_deref() == Some(path))
+        {
+            candidate.freshness_override = Some("stale".to_string());
+            candidate.reasons.insert(why.to_string());
+        }
     }
 
     fn ranked(mut self, intent: &str, limit: usize) -> (Vec<Candidate>, usize) {
@@ -259,6 +319,174 @@ fn positive_line(value: Option<i64>) -> Option<u32> {
         .filter(|line| *line > 0)
 }
 
+fn normalized_change_path(value: &str) -> Option<String> {
+    let value = value.replace('\\', "/");
+    let path = Path::new(&value);
+    if value.is_empty()
+        || value.len() > MAX_CHANGE_PATH_BYTES
+        || path.is_absolute()
+        || path
+            .components()
+            .any(|component| matches!(component, Component::ParentDir | Component::Prefix(_)))
+    {
+        return None;
+    }
+    let normalized = value.trim_start_matches("./");
+    (!normalized.is_empty()).then(|| normalized.to_string())
+}
+
+fn parse_change_input(changes_json: Option<&str>) -> Result<ChangeInput> {
+    let Some(changes_json) = changes_json else {
+        return Ok(ChangeInput::default());
+    };
+    let value: Value = serde_json::from_str(changes_json)
+        .map_err(|error| invalid_argument(format!("Invalid task-context changes: {error}")))?;
+    let state = value
+        .get("state")
+        .and_then(Value::as_str)
+        .unwrap_or("unavailable");
+    if ![
+        "available",
+        "not-repository",
+        "unavailable",
+        "not-requested",
+    ]
+    .contains(&state)
+    {
+        return Err(invalid_argument(format!(
+            "Unknown task-context change state {state}"
+        )));
+    }
+    let raw_changes = value
+        .get("changes")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let raw_change_count = raw_changes.len();
+    let mut rejected_paths = 0_usize;
+    let mut changes = BTreeMap::<String, ChangeSeed>::new();
+    for raw in raw_changes.into_iter().take(MAX_CHANGE_INPUTS) {
+        let Some(path) = raw
+            .get("path")
+            .and_then(Value::as_str)
+            .and_then(normalized_change_path)
+        else {
+            rejected_paths += 1;
+            continue;
+        };
+        let previous_path = match raw.get("previousPath").and_then(Value::as_str) {
+            Some(previous) => match normalized_change_path(previous) {
+                Some(previous) => Some(previous),
+                None => {
+                    rejected_paths += 1;
+                    None
+                }
+            },
+            None => None,
+        };
+        let status = bounded_text(
+            raw.get("status")
+                .and_then(Value::as_str)
+                .unwrap_or("changed"),
+            80,
+        );
+        let index_status = bounded_text(
+            raw.get("indexStatus").and_then(Value::as_str).unwrap_or(""),
+            8,
+        );
+        let worktree_status = bounded_text(
+            raw.get("worktreeStatus")
+                .and_then(Value::as_str)
+                .unwrap_or(""),
+            8,
+        );
+        let worktree_path_present = raw.get("worktreePathPresent").and_then(Value::as_bool);
+        changes.insert(
+            path.clone(),
+            ChangeSeed {
+                path,
+                previous_path,
+                status,
+                index_status,
+                worktree_status,
+                worktree_path_present,
+            },
+        );
+    }
+    let detected_paths = value
+        .get("detectedPaths")
+        .and_then(Value::as_u64)
+        .and_then(|count| usize::try_from(count).ok())
+        .unwrap_or(raw_change_count)
+        .max(raw_change_count)
+        .max(changes.len());
+    let input_truncated = value
+        .get("truncated")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+        || raw_change_count > MAX_CHANGE_INPUTS
+        || rejected_paths > 0;
+    let mut diagnostic = value
+        .get("diagnostic")
+        .and_then(Value::as_str)
+        .map(|diagnostic| bounded_text(diagnostic, 400));
+    if rejected_paths > 0 && diagnostic.is_none() {
+        diagnostic = Some(format!(
+            "{rejected_paths} changed path value(s) were outside the bounded contained-path envelope."
+        ));
+    }
+    Ok(ChangeInput {
+        state: state.to_string(),
+        source: value
+            .get("source")
+            .and_then(Value::as_str)
+            .map(|source| bounded_text(source, 80)),
+        changes: changes.into_values().collect(),
+        detected_paths,
+        truncated: input_truncated,
+        diagnostic,
+    })
+}
+
+fn change_context_value(input: &ChangeInput, considered: &[ChangeEvidence]) -> Value {
+    let mut context = serde_json::Map::new();
+    context.insert("state".to_string(), json!(input.state));
+    context.insert("source".to_string(), json!(input.source));
+    context.insert("detectedPaths".to_string(), json!(input.detected_paths));
+    if !considered.is_empty() {
+        context.insert(
+            "changes".to_string(),
+            Value::Array(
+                considered
+                    .iter()
+                    .map(|evidence| {
+                        let change = &evidence.change;
+                        let mut value = serde_json::Map::new();
+                        value.insert("path".to_string(), json!(change.path));
+                        value.insert("status".to_string(), json!(change.status));
+                        value.insert("indexState".to_string(), json!(evidence.index_state));
+                        if let Some(previous_path) = change.previous_path.as_ref() {
+                            value.insert("previousPath".to_string(), json!(previous_path));
+                        }
+                        Value::Object(value)
+                    })
+                    .collect(),
+            ),
+        );
+    }
+    let omitted_paths = input.detected_paths.saturating_sub(considered.len());
+    if omitted_paths > 0 {
+        context.insert("omittedPaths".to_string(), json!(omitted_paths));
+    }
+    if input.truncated {
+        context.insert("truncated".to_string(), Value::Bool(true));
+    }
+    if let Some(diagnostic) = input.diagnostic.as_ref() {
+        context.insert("diagnostic".to_string(), json!(diagnostic));
+    }
+    Value::Object(context)
+}
+
 fn file_meta(connection: &Connection, path: &str) -> Result<Option<FileMeta>> {
     connection
         .query_row(
@@ -278,6 +506,27 @@ fn file_meta(connection: &Connection, path: &str) -> Result<Option<FileMeta>> {
         )
         .optional()
         .map_err(|error| database_error("Cannot read task-context file evidence", error))
+}
+
+fn historical_file_meta(connection: &Connection, path: &str) -> Result<Option<FileMeta>> {
+    connection
+        .query_row(
+            "SELECT path, lang, loc, is_test, content_sha, ref_coverage
+             FROM files WHERE path = ?1",
+            [path],
+            |row| {
+                Ok(FileMeta {
+                    path: row.get(0)?,
+                    lang: row.get(1)?,
+                    loc: u32::try_from(row.get::<_, i64>(2)?).unwrap_or(u32::MAX),
+                    is_test: row.get::<_, i64>(3)? != 0,
+                    content_sha: row.get(4)?,
+                    ref_coverage: row.get(5)?,
+                })
+            },
+        )
+        .optional()
+        .map_err(|error| database_error("Cannot read historical task-context file evidence", error))
 }
 
 fn reason(value: &str) -> BTreeSet<String> {
@@ -305,6 +554,39 @@ fn file_candidate(file: &FileMeta, score: i64, why: &str) -> Candidate {
         score,
         reasons: reason(why),
         is_test: file.is_test,
+        source_backed: true,
+    }
+}
+
+fn historical_change_candidate(
+    file: &FileMeta,
+    change: &ChangeSeed,
+    provenance: &str,
+    score: i64,
+) -> Candidate {
+    Candidate {
+        id: format!("change:{}", change.path),
+        kind: "change".to_string(),
+        title: format!("{} [{}]", change.path, change.status),
+        detail: format!(
+            "{} working-tree path · previously indexed {} source · {} lines",
+            change.status, file.lang, file.loc
+        ),
+        path: Some(change.path.clone()),
+        symbol: None,
+        start_line: Some(1),
+        end_line: Some(file.loc.clamp(1, 40)),
+        evidence_sha: Some(file.content_sha.clone()),
+        indexed_sha: Some(file.content_sha.clone()),
+        provenance: provenance.to_string(),
+        certainty: "deterministic".to_string(),
+        freshness_override: Some("stale".to_string()),
+        score,
+        reasons: reason("historical index evidence for changed path"),
+        is_test: file.is_test,
+        // Materialization intentionally attempts the old path. A deletion is
+        // then returned as navigable historical evidence with an explicit
+        // unavailable-source error instead of disappearing from the brief.
         source_backed: true,
     }
 }
@@ -984,7 +1266,13 @@ fn resolve_targets(
             let path = paths[0].clone();
             seed_paths.insert(path.clone());
             explicit_targets.files.insert(path.clone());
-            add_file(connection, candidates, &path, 1_100, "explicit target")?;
+            add_file(
+                connection,
+                candidates,
+                &path,
+                EXPLICIT_FILE_SCORE,
+                "explicit target",
+            )?;
             resolutions.push(json!({
                 "query": raw,
                 "status": "resolved",
@@ -1018,7 +1306,13 @@ fn resolve_targets(
             seed_anchor_symbols
                 .entry(path.clone())
                 .or_insert_with(|| name.clone());
-            add_symbol(connection, candidates, &id, 1_140, "explicit target")?;
+            add_symbol(
+                connection,
+                candidates,
+                &id,
+                EXPLICIT_SYMBOL_SCORE,
+                "explicit target",
+            )?;
             resolutions.push(json!({
                 "query": raw,
                 "status": "resolved",
@@ -1228,15 +1522,29 @@ fn add_lexical_candidates(
 }
 
 fn lexical_task_query(task: &str, intent: &str) -> String {
-    task.split_whitespace()
+    let tokens = task
+        .split_whitespace()
         .filter(|token| {
             token
                 .trim_matches(|character: char| !character.is_alphanumeric())
                 .to_lowercase()
                 != intent
         })
-        .collect::<Vec<_>>()
-        .join(" ")
+        .collect::<Vec<_>>();
+    let generic_change_request = tokens.iter().all(|token| {
+        matches!(
+            token
+                .trim_matches(|character: char| !character.is_alphanumeric())
+                .to_lowercase()
+                .as_str(),
+            "the" | "current" | "working" | "tree" | "change" | "changes"
+        )
+    });
+    if generic_change_request {
+        String::new()
+    } else {
+        tokens.join(" ")
+    }
 }
 
 fn collect_strings(
@@ -1272,6 +1580,163 @@ fn collect_strings(
         .unwrap_or(usize::MAX)
         .saturating_sub(rows.len());
     Ok(rows)
+}
+
+fn add_change_candidates(
+    connection: &Connection,
+    candidates: &mut CandidateSet,
+    omissions: &mut RetrievalOmissions,
+    seed_paths: &mut BTreeSet<String>,
+    historical_seed_paths: &mut BTreeSet<String>,
+    input: &ChangeInput,
+) -> Result<Vec<ChangeEvidence>> {
+    if input.state != "available" || input.changes.is_empty() {
+        return Ok(Vec::new());
+    }
+    struct ClassifiedChange {
+        change: ChangeSeed,
+        current: Option<FileMeta>,
+        historical: Option<FileMeta>,
+    }
+
+    let lexical_paths = seed_paths.clone();
+    let mut changes = Vec::with_capacity(input.changes.len());
+    for change in &input.changes {
+        // The watcher updates the inventory asynchronously. Porcelain's index
+        // deletion does not prove the worktree path is gone (`git rm --cached`
+        // can leave an ignored live file), so prefer the detector's bounded
+        // filesystem observation. Older callers without that field retain the
+        // conservative status fallback below.
+        // A staged deletion followed by an untracked recreation produces two
+        // porcelain records for one live path (`D.` plus `?`). The merged
+        // worktree `?` is positive evidence that the path exists even though
+        // the index still records a deletion.
+        let recreated_live_path = change.worktree_status.contains('?')
+            || change
+                .status
+                .split(" + ")
+                .any(|status| status == "untracked");
+        let removes_live_path = change.worktree_path_present.map_or_else(
+            || {
+                !recreated_live_path
+                    && (change.index_status.contains('D')
+                        || change.worktree_status.contains('D')
+                        || change.status.contains("deleted"))
+            },
+            |present| !present,
+        );
+        let current = if removes_live_path {
+            None
+        } else {
+            file_meta(connection, &change.path)?
+        };
+        let historical = if current.is_none() {
+            if let Some(previous_path) = change.previous_path.as_deref() {
+                historical_file_meta(connection, previous_path)?
+                    .or(historical_file_meta(connection, &change.path)?)
+            } else {
+                historical_file_meta(connection, &change.path)?
+            }
+        } else {
+            None
+        };
+        changes.push(ClassifiedChange {
+            change: change.clone(),
+            current,
+            historical,
+        });
+    }
+    changes.sort_by(|left, right| {
+        let state_rank = |change: &ClassifiedChange| {
+            if change.current.is_some() {
+                0
+            } else if change.historical.is_some() {
+                1
+            } else {
+                2
+            }
+        };
+        state_rank(left)
+            .cmp(&state_rank(right))
+            .then_with(|| {
+                (!lexical_paths.contains(&left.change.path))
+                    .cmp(&(!lexical_paths.contains(&right.change.path)))
+            })
+            .then_with(|| left.change.path.cmp(&right.change.path))
+    });
+    let selected = changes
+        .into_iter()
+        .take(MAX_CHANGE_SEEDS)
+        .collect::<Vec<_>>();
+    let mut considered = Vec::with_capacity(selected.len());
+    for classified in selected {
+        let change = classified.change;
+        // Change state is a primary signal for a generic change-review task.
+        // When lexical retrieval found concrete task paths, unrelated dirty
+        // files remain useful context but must not crowd those paths out of a
+        // small brief.
+        let task_aligned = lexical_paths.is_empty()
+            || lexical_paths.contains(&change.path)
+            || change
+                .previous_path
+                .as_ref()
+                .is_some_and(|path| lexical_paths.contains(path));
+        let change_file_score = if task_aligned {
+            CHANGE_FILE_SCORE
+        } else {
+            UNRELATED_CHANGE_FILE_SCORE
+        };
+        let change_symbol_score = if task_aligned {
+            CHANGE_SYMBOL_SCORE
+        } else {
+            UNRELATED_CHANGE_SYMBOL_SCORE
+        };
+        let index_state = if let Some(file) = classified.current {
+            candidates.insert(file_candidate(
+                &file,
+                change_file_score,
+                "changed in working tree",
+            ));
+            for symbol_id in collect_strings(
+                connection,
+                "SELECT id FROM symbols WHERE path = ?1 ORDER BY start_line, id",
+                &change.path,
+                30,
+                omissions,
+                "Cannot find declarations in changed task path",
+            )? {
+                add_symbol(
+                    connection,
+                    candidates,
+                    &symbol_id,
+                    change_symbol_score,
+                    "declared in changed working-tree path",
+                )?;
+            }
+            seed_paths.insert(change.path.clone());
+            "current"
+        } else if let Some(file) = classified.historical {
+            candidates.insert(historical_change_candidate(
+                &file,
+                &change,
+                input
+                    .source
+                    .as_deref()
+                    .unwrap_or("working-tree-change-input"),
+                change_file_score,
+            ));
+            seed_paths.insert(file.path.clone());
+            historical_seed_paths.insert(file.path.clone());
+            "historical"
+        } else {
+            "absent"
+        };
+        considered.push(ChangeEvidence {
+            change,
+            index_state,
+        });
+    }
+    Ok(considered)
 }
 
 fn add_covering_tests(
@@ -1702,12 +2167,15 @@ pub(crate) fn task_context_json(
     targets_json: &str,
     intent: Option<&str>,
     limit: u32,
+    changes_json: Option<&str>,
 ) -> Result<String> {
     let (task, targets, intent) = parse_inputs(task, targets_json, intent)?;
+    let change_input = parse_change_input(changes_json)?;
     let limit = limit.clamp(1, 100) as usize;
     let mut candidates = CandidateSet::default();
     let mut retrieval_omissions = RetrievalOmissions::default();
     let mut seed_paths = BTreeSet::new();
+    let mut historical_seed_paths = BTreeSet::new();
     let mut seed_symbols = BTreeSet::new();
     // First writer wins: explicit targets are resolved before lexical hits, so
     // a same-file memory match cannot replace the symbol the caller named.
@@ -1731,6 +2199,14 @@ pub(crate) fn task_context_json(
         &mut seed_symbols,
         &mut seed_anchor_symbols,
         &mut retrieval_omissions,
+    )?;
+    let considered_changes = add_change_candidates(
+        connection,
+        &mut candidates,
+        &mut retrieval_omissions,
+        &mut seed_paths,
+        &mut historical_seed_paths,
+        &change_input,
     )?;
     for path in &seed_paths {
         let preferred_symbol = seed_anchor_symbols.get(path).map(String::as_str);
@@ -1758,6 +2234,12 @@ pub(crate) fn task_context_json(
             &mut retrieval_omissions,
             symbol,
         )?;
+    }
+    for path in historical_seed_paths {
+        candidates.mark_path_stale(
+            &path,
+            "working-tree path changed before the source inventory refreshed",
+        );
     }
 
     let mut uncertainties = Vec::new();
@@ -1790,6 +2272,28 @@ pub(crate) fn task_context_json(
                 .to_string(),
         );
     }
+    match change_input.state.as_str() {
+        "not-repository" => uncertainties.push(
+            "Working-tree change relevance is unavailable because this project is not a Git work tree."
+                .to_string(),
+        ),
+        "unavailable" => uncertainties.push(
+            "Working-tree change relevance is unavailable; lexical and graph retrieval remain active."
+                .to_string(),
+        ),
+        _ => {}
+    }
+    if change_input.truncated
+        || change_input.detected_paths > considered_changes.len()
+        || considered_changes
+            .iter()
+            .any(|change| change.index_state != "current")
+    {
+        uncertainties.push(
+            "Working-tree change expansion was bounded or included historical/unindexed paths; inspect changeContext before treating it as complete."
+                .to_string(),
+        );
+    }
 
     let (ranked, ranked_omissions) = candidates.ranked(&intent, limit);
     let omitted_candidates = ranked_omissions.saturating_add(retrieval_omissions.candidates);
@@ -1798,13 +2302,14 @@ pub(crate) fn task_context_json(
         .map(Candidate::into_value)
         .collect::<Vec<_>>();
     serde_json::to_string(&json!({
-        "schemaVersion": 1,
+        "schemaVersion": 2,
         "task": task,
         "intent": intent,
         "targets": resolutions,
+        "changeContext": change_context_value(&change_input, &considered_changes),
         "strategy": {
-            "retrieval": "fts5-plus-one-hop",
-            "ranking": "deterministic-intent-multisignal-path-diverse",
+            "retrieval": "fts5-graph-git",
+            "ranking": "deterministic-change-aware",
             "maxCandidates": limit,
         },
         "candidates": candidate_values,
@@ -1896,6 +2401,10 @@ mod tests {
             "review routing"
         );
         assert_eq!(lexical_task_query("review", "review"), "");
+        assert_eq!(
+            lexical_task_query("review the current working tree change", "review"),
+            ""
+        );
     }
 
     #[test]
@@ -1911,6 +2420,29 @@ mod tests {
                 "debug".to_string()
             )
         );
+    }
+
+    #[test]
+    fn long_or_invalid_change_paths_degrade_without_aborting_the_plan() {
+        let long_path = format!("src/{}/file.ts", "nested/".repeat(90));
+        let input = parse_change_input(Some(
+            &json!({
+                "state": "available",
+                "source": "test",
+                "changes": [
+                    { "path": long_path, "status": "modified" },
+                    { "path": "../outside.ts", "status": "modified" }
+                ],
+                "detectedPaths": 2,
+                "truncated": false
+            })
+            .to_string(),
+        ))
+        .expect("change input remains usable");
+        assert_eq!(input.changes.len(), 1);
+        assert!(input.changes[0].path.len() > MAX_TARGET_BYTES);
+        assert!(input.truncated);
+        assert_eq!(input.detected_paths, 2);
     }
 
     #[test]

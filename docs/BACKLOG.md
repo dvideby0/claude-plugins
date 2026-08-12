@@ -162,9 +162,12 @@ reimplementing its ranking. Both sides stay inside a shared 1,600-token band.
 The idempotency scenario beats the map on recall, reviewed evidence coverage,
 and noise; the review scenario now retrieves its checkout, inventory, and test
 evidence while also beating the map on recall and noise. Both responses use
-less than 1.5 times the map's actual tokens. Tightened regression floors pass,
-but promotion remains explicitly blocked on change relevance and a broader
-corpus.
+less than 1.5 times the map's actual tokens. A third generic review scenario
+now mutates one file after a clean fixture commit and measures exact change
+detection plus graph expansion without giving the query a filename or symbol.
+It reaches 1.0 recall and coverage with zero irrelevant paths. Tightened
+regression floors pass, but promotion remains explicitly blocked on a broader
+corpus and downstream task outcomes.
 
 ### STORE-001: Move workspace state under app ownership
 
@@ -363,9 +366,9 @@ response to the requested byte ceiling. The former TypeScript-only brief
 ranking implementation was removed, while its single-target call remains
 compatible. Focused tests cover task-only and legacy MCP calls, the unchanged
 33-tool catalog, ambiguity, stale evidence, source/fact navigation, and exact
-budget accounting. This path reports itself as experimental: change relevance,
-broader corpus coverage, and task outcomes remain open before QUERY-001 can be
-called proven or redundant public tools can be retired.
+budget accounting. This path reports itself as experimental: broader corpus
+coverage and task outcomes remain open before QUERY-001 can be called proven
+or redundant public tools can be retired.
 
 Progress (2026-08-12, measured retrieval ranking): QUERY-001 now retrieves all
 reviewed evidence in both first-corpus tasks. Review recall@5 is 0.5 with the
@@ -376,8 +379,27 @@ The Rust ranker removes the selected intent from lexical subject terms, rewards
 independent corroborating signals, and applies a bounded repeated-path penalty.
 The thin source boundary reserves useful space per admitted fact and no longer
 duplicates ranking/provenance prose in its excerpt view. Tightened regression
-floors preserve the result. QUERY-001 remains experimental; the next proof work
-is change relevance and a broader corpus rather than retiring MCP tools.
+floors preserve the result.
+
+Progress (2026-08-12, change-aware retrieval): a bounded async Rust adapter now
+consumes Git's stable porcelain v2 status instead of implementing a diff engine.
+It distinguishes clean, non-repository, and unavailable states, resolves nested
+workspace roots, rejects escaping/non-UTF-8 paths, and bounds Git status to 30
+seconds, 2 MiB, and 256 normalized changes. It also clears inherited repository
+selectors and merges multiple porcelain records for one path without discarding
+staged state. The task planner preserves explicit targets ahead of unrelated
+dirty files, prioritizes indexed changes before its 24-path graph-expansion cap,
+and treats pre-refresh deletes and renames as stale historical evidence. It
+distinguishes current, historical, absent, and omitted change context. The thin
+TypeScript source packer compacts reported
+change metadata to the caller's byte ceiling while reserving room for useful
+evidence. A clean-baseline fixture
+then changes `src/api.ts` and asks only to review the current change: the brief
+ranks `postCheckout` first, retrieves downstream `submitCheckout`, scores 1.0
+recall and coverage with zero irrelevant paths, and stays below 1.5 times the
+pinned map's tokens. QUERY-001 remains experimental; the next proof work is a
+broader multi-project/language corpus and downstream task outcomes rather than
+retiring MCP tools.
 
 ### SEARCH-001: Lexical, structural, and graph-ranked retrieval
 

@@ -65,12 +65,12 @@ authoritative relational rows.
 | Execution and data flow | Early vertical slice | One measured HTTP adapter produces real entry-to-response paths; the general view remains a heuristic call graph and data flow is not modeled. |
 | Human-readable system map | Promising | Components and ordered flows exist, but they are authored overlays rather than evidence-derived semantic objects. |
 | Incremental recomputation | Basic | Content hashes avoid some database rewrites, but invalidation is file-level and native scans still revisit the repository. |
-| Search and context retrieval | Measured experimental vertical slice | The primary brief has Rust-owned lexical/one-hop task ranking, bounded source evidence, exact response budgets, and a pinned Aider comparison; mixed first-corpus quality, change ranking, broader coverage, and token compaction keep it experimental. |
+| Search and context retrieval | Measured experimental vertical slice | The primary brief has Rust-owned lexical/graph/change ranking, bounded source evidence, exact response budgets, and a pinned Aider comparison; broader coverage and task outcomes keep it experimental. |
 | Memories and notes | Basic | Anchored durable notes exist; search, evidence, validation, editing, and fine-grained staleness need work. |
 | Desktop experience | Functional shell | Useful maps and operational views exist, but it is not yet a complete code-intelligence workspace. |
 | Claude/Codex installation | Partial | MCP connection exists; complete plugin/skill lifecycle and supported Codex configuration are missing. |
 | Packaging and CI | Promising | Desktop packaging, native build matrices, smoke scripts, and plugin validation are present. |
-| Quality measurement | Emerging | One command now scores narrow provider and retrieval fixtures with official SCIP golden assertions and a real pinned Aider map; broader corpora, change/task outcomes, and provider-child resource measurement remain absent. |
+| Quality measurement | Emerging | One command now scores narrow provider and retrieval fixtures with official SCIP golden assertions, a real pinned Aider map, and one deterministic working-tree-change scenario; broader corpora, task outcomes, and provider-child resource measurement remain absent. |
 
 ## What exists today
 
@@ -343,7 +343,7 @@ These numbers are a useful health snapshot, not a durable benchmark. The benchma
 1. **The product promise still outruns flow coverage.** One measured HTTP slice now supports reliable entry-to-response explanations, but it cannot be generalized to unadapted frameworks or data flow.
 2. **There is no canonical fact/provenance/invalidation contract.** Adding more analyzers now could create incompatible edge types and expensive rebuild behavior.
 3. **Storage identity and general corruption recovery are incomplete.** Direct native persistence, rollback-safe migrations, and internal FTS retrieval remove the whole-export, schema-upgrade, and SQL-scan risks, but path-derived workspace ids and an explicit restore workflow still need product behavior and tests.
-4. **Retrieval quality is only narrowly measured.** The first two fixed tasks beat their checked-in map baseline, but change relevance, broader corpora, and task outcomes remain unknown; more tools or embeddings would still be premature.
+4. **Retrieval quality is only narrowly measured.** The first two fixed tasks and one deterministic working-tree-change task beat their checked-in map baseline, but broader corpora and task outcomes remain unknown; more tools or embeddings would still be premature.
 5. **The desktop has not yet found its signature human workflow.** Operational views demonstrate capability but do not yet compete with dedicated code-intelligence products.
 6. **Integration lifecycle is incomplete.** MCP connectivity alone does not deliver the intended one-click Claude/Codex experience.
 7. **Dynamic behavior needs an honesty model.** Framework dispatch and runtime behavior must be supported through labeled adapters, runtime observations, and assertions rather than implicit certainty.

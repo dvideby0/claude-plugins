@@ -23,6 +23,7 @@ use rayon::prelude::*;
 use std::path::Path;
 
 mod database;
+mod git_changes;
 mod http_flow;
 mod parse;
 mod provider;
@@ -36,6 +37,26 @@ pub use provider::{
     NativeScipRange, NativeScipRelationship, NativeScipSourceDocument, NativeScipSummary,
     NativeScipSymbol, NativeSnapshotEntry, NativeSnapshotManifest, NativeStagedSnapshot,
 };
+
+#[napi(object)]
+pub struct NativeGitChange {
+    pub path: String,
+    pub previous_path: Option<String>,
+    pub status: String,
+    pub index_status: String,
+    pub worktree_status: String,
+    pub worktree_path_present: Option<bool>,
+}
+
+#[napi(object)]
+pub struct NativeGitChangeSet {
+    pub state: String,
+    pub source: String,
+    pub changes: Vec<NativeGitChange>,
+    pub detected_paths: u32,
+    pub truncated: bool,
+    pub diagnostic: Option<String>,
+}
 
 #[napi(object)]
 pub struct NativeSymbol {
@@ -322,6 +343,39 @@ impl Task for ScanTask {
 pub fn scan_repo(root: String) -> Result<AsyncTask<ScanTask>> {
     require_dir(&root)?;
     Ok(AsyncTask::new(ScanTask { root }))
+}
+
+pub struct GitChangesTask {
+    root: String,
+    isolated_config: bool,
+}
+
+#[napi]
+impl Task for GitChangesTask {
+    type Output = NativeGitChangeSet;
+    type JsValue = NativeGitChangeSet;
+
+    fn compute(&mut self) -> Result<Self::Output> {
+        Ok(git_changes::detect(&self.root, self.isolated_config))
+    }
+
+    fn resolve(&mut self, _env: Env, output: Self::Output) -> Result<Self::JsValue> {
+        Ok(output)
+    }
+}
+
+/// Read staged, unstaged, renamed, and untracked paths through Git porcelain.
+/// Failure is returned as explicit degraded state so retrieval still works.
+#[napi(ts_return_type = "Promise<NativeGitChangeSet>")]
+pub fn git_changes(
+    root: String,
+    isolated_config: Option<bool>,
+) -> Result<AsyncTask<GitChangesTask>> {
+    require_dir(&root)?;
+    Ok(AsyncTask::new(GitChangesTask {
+        root,
+        isolated_config: isolated_config.unwrap_or(false),
+    }))
 }
 
 /// Classify a watcher path through the Rust-owned repository policy.

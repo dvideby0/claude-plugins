@@ -105,6 +105,11 @@ planner is scored against that real artifact at a fixed budget. Aider remains
 an evaluation dependency rather than a bundled Python runtime while the first
 corpus shows mixed quality and materially higher token use.
 
+Change-aware QUERY-001 retrieval likewise delegates repository state to Git's
+stable porcelain v2 status contract. A bounded Rust adapter normalizes that
+output into app-owned evidence; SDLC owns the subsequent fusion and ranking,
+not a competing diff or worktree implementation.
+
 ### External enrichers, not mandatory dependencies
 
 SCIP indexes, CodeQL databases, language servers, compiler metadata, test coverage, and runtime traces can all enrich the common model when present. They should be adapters with explicit provenance and capability discovery. Core indexing and the desktop experience must remain useful without downloading a heavyweight external analysis suite.

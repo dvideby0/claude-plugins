@@ -128,37 +128,58 @@ than an actively maintained compiler/CPG path.
 ## Current retrieval result
 
 The first retrieval corpus is a small TypeScript checkout domain with 18 source
-files, two config files, one reviewed authored constraint, and two task-only
-queries in a shared 1,600-token comparison band. Aider is generated with that
-map target; SDLC's 6,000-byte ceiling produces fewer than 1,600 measured tokens
-for both scenarios. The comparison artifact is the actual output of Aider's maintained
+files, two config files, one reviewed authored constraint, two task-only
+queries, and one generic working-tree-review query in a shared 1,600-token
+comparison band. Aider is generated with that map target; SDLC's 6,000-byte
+ceiling produces fewer than 1,600 measured tokens for all three scenarios. The
+comparison artifact is the actual output of Aider's maintained
 [repository map](https://aider.chat/docs/repomap.html), not an SDLC imitation.
 It occupies 4,063 bytes and 982 `o200k_base` tokens.
 
-For `review submitCheckout inventory reservation`, SDLC now scores 0.5 path
+For `review submitCheckout inventory reservation`, SDLC scores 0.5 path
 recall@5 and covers all three required facts; Aider scores 0.333333 and 3/3.
 SDLC returns the checkout declaration, inventory declaration, and covering test
 with no irrelevant path, while Aider exposes fourteen irrelevant paths among
-twenty (0.7). SDLC's complete response uses 5,182 bytes and 1,450 tokens,
-1.476578 times the baseline token count.
+twenty (0.7). SDLC's complete response uses 5,188 bytes and 1,452 tokens,
+1.478615 times the baseline token count.
 
-For `debug checkout idempotency requirement`, SDLC now scores 0.75 path
+For `debug checkout idempotency requirement`, SDLC scores 0.75 path
 recall@4, covers all three required facts, and returns no irrelevant path.
 Aider scores 0.25, 2/3, and 0.8 respectively. SDLC retrieves the covering test,
 authored constraint, anchored checkout declaration, and `recordCheckout`
 declaration through three ranked evidence units. The map retrieves the two code
-declarations but cannot contain the constraint. SDLC uses 5,084 bytes and 1,434
-tokens, 1.460285 times the Aider artifact.
+declarations but cannot contain the constraint. SDLC uses 5,090 bytes and 1,436
+tokens, 1.462322 times the Aider artifact.
+
+For the generic `review current working tree change` task, the evaluator first
+commits a clean fixture baseline and then modifies `src/api.ts` without putting
+that path or its symbols in the query. SDLC reports the exact changed path,
+ranks its `postCheckout` declaration first, and includes the downstream
+`submitCheckout` graph neighbor in its first three paths. It scores 1.0 recall,
+1.0 reviewed-evidence coverage, and zero irrelevant paths in 4,901 bytes and
+1,393 tokens. The static Aider map scores 0.5 recall and 0.9 irrelevant paths;
+SDLC uses 1.418534 times its tokens.
 
 These measurements clear tightened checked-in regression floors, but they do
 not promote QUERY-001. Intent words no longer become redundant lexical terms,
 the Rust ranker rewards corroborated evidence and penalizes repeated paths, and
 the source boundary reserves 2,000 bytes per admitted fact while avoiding
-duplicated prose already present in structured metadata. The corpus explicitly
-blocks promotion until change relevance and a broader multi-project/language
-sample are measured. The source packer avoids spending a tight budget on
-overlapping excerpts from one path, then restores those excerpts in rank order
-when a larger budget has room.
+duplicated prose already present in structured metadata. Working-tree changes
+come from Git's stable porcelain output through a bounded Rust adapter rather
+than an SDLC-specific diff implementation; changed declarations then enter the
+same evidence and graph-ranking model. Git status has explicit time/output/path
+bounds, indexed changes win bounded graph-expansion slots, deleted paths retain
+historical index evidence, and response packing can omit change metadata rather
+than exceed its byte ceiling. Fixture Git commands and change discovery ignore
+inherited repository selectors, global excludes, system configuration, and hook
+templates so the checked-in measurement cannot be redirected by the caller's
+environment. Explicit targets also remain ahead of unrelated dirty paths, while
+deletes and renames detected before watcher refresh retain stale historical
+evidence instead of being reported as current. The corpus still blocks promotion until
+a broader multi-project/language sample and downstream task outcomes are
+measured. The source packer avoids spending a tight budget on overlapping
+excerpts from one path, then restores those excerpts in rank order when a
+larger budget has room.
 
 To run only one retrieval fixture while retaining the provider corpus:
 
@@ -214,8 +235,8 @@ measurements as zeros:
 
 - entry-to-effect path precision and recall outside the one opt-in
   Python/LangGraph Joern scenario and the measured TypeScript HTTP adapter;
-- retrieval change relevance, downstream task/answer quality, and quality
-  outside the first TypeScript checkout fixture;
+- downstream retrieval task/answer quality and retrieval quality outside the
+  first TypeScript checkout fixture;
 - warm and one-file-change SCIP indexing;
 - peak RSS of the external SCIP child process.
 
@@ -258,3 +279,7 @@ uvx --python 3.12 --from aider-chat==0.86.2 aider \
 Remove only Aider's CLI preamble, normalize line endings to LF and trailing
 whitespace, then record both source-tree and artifact digests in the oracle.
 Normal CI consumes that artifact and does not install Aider's Python runtime.
+An optional `workingTreeChange` scenario names one fixture-relative file and
+text to append after the clean baseline commit. The runner restores the file
+afterward and requires the brief to attest that exact path, so a query cannot
+receive change-relevance credit from filename hints or a stale worktree.

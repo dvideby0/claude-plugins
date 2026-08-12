@@ -1,11 +1,13 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { Buffer } from "node:buffer";
-import { writeFile } from "node:fs/promises";
+import { appendFile, mkdir, rename, unlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { getDb } from "../db/db.js";
 import { resolveTypes } from "../graph/typed.js";
+import { exec } from "../lib/exec.js";
+import { isolatedFixtureGitEnvironment } from "../lib/git-environment.js";
 import { remember } from "../memory/store.js";
 import { createMcpServer } from "../mcp/server.js";
 import { buildTaskContext } from "../plan/task-context.js";
@@ -17,7 +19,344 @@ afterEach(async () => {
   if (root) await cleanup(root);
 });
 
+async function runGit(project: string, args: string[]): Promise<void> {
+  const result = await exec("git", args, {
+    cwd: project,
+    timeout: 20_000,
+    maxBuffer: 1_000_000,
+    env: isolatedFixtureGitEnvironment(project),
+  });
+  if (result.exitCode !== 0 || result.spawnFailed || result.timedOut || result.truncated) {
+    throw new Error(`git ${args.join(" ")} failed: ${result.stderr || result.stdout}`);
+  }
+}
+
+async function initializeGit(project: string): Promise<void> {
+  await runGit(project, ["init", "--quiet", "--template="]);
+  await runGit(project, ["add", "."]);
+  await runGit(project, [
+    "-c",
+    "user.name=SDLC Test",
+    "-c",
+    "user.email=sdlc-test@example.invalid",
+    "commit",
+    "--quiet",
+    "--no-gpg-sign",
+    "-m",
+    "baseline",
+  ]);
+}
+
 describe("budgeted task context", () => {
+  it("uses Git working-tree changes as ranked graph seeds without a task keyword", async () => {
+    root = await makeProject({
+      "src/checkout.ts": [
+        "import { reserveInventory } from './inventory.js';",
+        "export async function checkout() { return reserveInventory(); }",
+        "",
+      ].join("\n"),
+      "src/inventory.ts": "export function reserveInventory() { return 'reserved'; }\n",
+      "src/profile.ts": "export function loadProfile() { return 'profile'; }\n",
+    });
+    await initializeGit(root);
+    await writeFile(
+      join(root, "src/inventory.ts"),
+      "export function reserveInventory() { return 'reserved-with-stock-check'; }\n",
+    );
+    await scan(root, { kind: "change-relevance-test" });
+
+    const brief = await buildTaskContext(await getDb(root), root, {
+      task: "review the current working tree change",
+      intent: "review",
+      budgetBytes: 20_000,
+    });
+
+    expect(brief.changeContext).not.toBe("clean");
+    if (typeof brief.changeContext === "string") throw new Error("Expected a detected change.");
+    expect(brief.changeContext).toMatchObject({
+      state: "available",
+      detectedPaths: 1,
+      changes: [{ path: "src/inventory.ts", status: "modified" }],
+    });
+    expect(brief.changeContext.omittedPaths ?? 0).toBe(0);
+    expect(brief.readFirst[0]).toBe("src/inventory.ts");
+    expect(
+      brief.evidence.some(
+        (item) =>
+          item.source?.path === "src/inventory.ts" &&
+          item.reasons.some((reason) => reason.includes("changed")),
+      ),
+    ).toBe(true);
+    expect(brief.evidence.some((item) => item.source?.path === "src/checkout.ts")).toBe(true);
+    expect(brief.evidence.some((item) => item.source?.path === "src/profile.ts")).toBe(false);
+  });
+
+  it("keeps an explicit target ahead of unrelated dirty files at the minimum budget", async () => {
+    root = await makeProject({
+      "src/target.ts": "export const requestedTarget = true;\n",
+      "src/a.ts": "export const a = 1;\n",
+      "src/b.ts": "export const b = 1;\n",
+      "src/c.ts": "export const c = 1;\n",
+    });
+    await initializeGit(root);
+    await scan(root, { kind: "explicit-target-baseline" });
+    await writeFile(join(root, "src/a.ts"), "export const a = 2;\n");
+    await writeFile(join(root, "src/b.ts"), "export const b = 2;\n");
+    await writeFile(join(root, "src/c.ts"), "export const c = 2;\n");
+    await scan(root, { kind: "explicit-target-dirty" });
+
+    const brief = await buildTaskContext(await getDb(root), root, {
+      targets: ["src/target.ts"],
+      intent: "understand",
+      budgetBytes: 6_000,
+      isolatedGitConfig: true,
+    });
+
+    expect(brief.targets[0]).toMatchObject({ status: "resolved", path: "src/target.ts" });
+    expect(brief.evidence[0]?.source?.path).toBe("src/target.ts");
+    expect(brief.readFirst).toContain("src/target.ts");
+  });
+
+  it("keeps a strong task match ahead of unrelated dirty files at the minimum budget", async () => {
+    const files: Record<string, string> = {
+      "src/checkout.ts": "export function checkoutInventory() { return 'ok'; }\n",
+    };
+    for (let index = 0; index < 5; index += 1) {
+      files[`src/unrelated${index}.ts`] = `export const unrelated${index} = 1;\n`;
+    }
+    root = await makeProject(files);
+    await initializeGit(root);
+    await scan(root, { kind: "task-match-baseline" });
+    for (let index = 0; index < 5; index += 1) {
+      await writeFile(
+        join(root, `src/unrelated${index}.ts`),
+        `export const unrelated${index} = 2;\n`,
+      );
+    }
+    await scan(root, { kind: "task-match-dirty" });
+
+    const brief = await buildTaskContext(await getDb(root), root, {
+      task: "understand checkout inventory",
+      intent: "understand",
+      budgetBytes: 6_000,
+      isolatedGitConfig: true,
+    });
+
+    expect(brief.evidence.some((item) => item.source?.path === "src/checkout.ts")).toBe(true);
+    expect(brief.readFirst).toContain("src/checkout.ts");
+  });
+
+  it("marks a deletion historical before the watcher refreshes the index", async () => {
+    root = await makeProject({
+      "src/checkout.ts": "import { reserve } from './inventory.js';\nexport const checkout = reserve;\n",
+      "src/inventory.ts": "export function reserve() { return true; }\n",
+    });
+    await initializeGit(root);
+    await scan(root, { kind: "pre-refresh-deletion-baseline" });
+    await unlink(join(root, "src/inventory.ts"));
+
+    const brief = await buildTaskContext(await getDb(root), root, {
+      task: "review the current working tree change",
+      intent: "review",
+      budgetBytes: 20_000,
+      isolatedGitConfig: true,
+    });
+
+    expect(brief.changeContext).not.toBe("clean");
+    if (typeof brief.changeContext === "string") throw new Error("Expected a deletion.");
+    expect(brief.changeContext.changes).toContainEqual(
+      expect.objectContaining({
+        path: "src/inventory.ts",
+        status: "deleted",
+        indexState: "historical",
+      }),
+    );
+    const inventoryEvidence = brief.evidence.filter(
+      (item) => item.source?.path === "src/inventory.ts",
+    );
+    expect(inventoryEvidence.some((item) => item.kind === "change")).toBe(true);
+    expect(inventoryEvidence.every((item) => item.provenance.freshness === "stale")).toBe(true);
+  });
+
+  it("treats a staged deletion recreated as an untracked file as current after scanning", async () => {
+    root = await makeProject({
+      "src/inventory.ts": "export const inventory = 1;\n",
+    });
+    await initializeGit(root);
+    await scan(root, { kind: "recreated-file-baseline" });
+    await runGit(root, ["rm", "--quiet", "src/inventory.ts"]);
+    await mkdir(join(root, "src"), { recursive: true });
+    await writeFile(join(root, "src/inventory.ts"), "export const inventory = 2;\n");
+    await scan(root, { kind: "recreated-file-current" });
+
+    const brief = await buildTaskContext(await getDb(root), root, {
+      task: "review the current working tree change",
+      intent: "review",
+      budgetBytes: 12_000,
+      isolatedGitConfig: true,
+    });
+
+    expect(brief.changeContext).not.toBe("clean");
+    if (typeof brief.changeContext === "string") throw new Error("Expected a recreated file.");
+    expect(brief.changeContext.changes).toContainEqual(
+      expect.objectContaining({
+        path: "src/inventory.ts",
+        status: "staged-deleted + untracked",
+        indexState: "current",
+      }),
+    );
+    const inventoryEvidence = brief.evidence.filter(
+      (item) => item.source?.path === "src/inventory.ts",
+    );
+    expect(inventoryEvidence.length).toBeGreaterThan(0);
+    expect(inventoryEvidence.every((item) => item.provenance.freshness === "current")).toBe(true);
+  });
+
+  it("keeps an ignored file live when it is removed only from the Git index", async () => {
+    root = await makeProject({
+      "src/inventory.ts": "export const inventory = 1;\n",
+    });
+    await initializeGit(root);
+    await scan(root, { kind: "cached-removal-baseline" });
+    await writeFile(join(root, ".gitignore"), "src/inventory.ts\n");
+    await runGit(root, ["add", ".gitignore"]);
+    await runGit(root, ["rm", "--cached", "--quiet", "src/inventory.ts"]);
+
+    const brief = await buildTaskContext(await getDb(root), root, {
+      task: "review the current working tree change",
+      intent: "review",
+      budgetBytes: 12_000,
+      isolatedGitConfig: true,
+    });
+
+    expect(brief.changeContext).not.toBe("clean");
+    if (typeof brief.changeContext === "string") throw new Error("Expected a cached removal.");
+    expect(brief.changeContext.changes).toContainEqual(
+      expect.objectContaining({
+        path: "src/inventory.ts",
+        status: "staged-deleted",
+        indexState: "current",
+      }),
+    );
+    const inventoryEvidence = brief.evidence.filter(
+      (item) => item.source?.path === "src/inventory.ts",
+    );
+    expect(inventoryEvidence.length).toBeGreaterThan(0);
+    expect(inventoryEvidence.every((item) => item.provenance.freshness === "current")).toBe(true);
+  });
+
+  it("uses a staged rename's previous path as stale graph evidence before refresh", async () => {
+    root = await makeProject({
+      "src/checkout.ts": "import { reserve } from './inventory.js';\nexport const checkout = reserve;\n",
+      "src/inventory.ts": "export function reserve() { return true; }\n",
+    });
+    await initializeGit(root);
+    await scan(root, { kind: "pre-refresh-rename-baseline" });
+    await rename(join(root, "src/inventory.ts"), join(root, "src/stock.ts"));
+    await runGit(root, ["add", "-A"]);
+
+    const brief = await buildTaskContext(await getDb(root), root, {
+      task: "review the current working tree change",
+      intent: "review",
+      budgetBytes: 20_000,
+      isolatedGitConfig: true,
+    });
+
+    expect(brief.changeContext).not.toBe("clean");
+    if (typeof brief.changeContext === "string") throw new Error("Expected a rename.");
+    expect(brief.changeContext.changes).toContainEqual(
+      expect.objectContaining({
+        path: "src/stock.ts",
+        previousPath: "src/inventory.ts",
+        status: "staged-renamed",
+        indexState: "historical",
+      }),
+    );
+    expect(
+      brief.evidence.some(
+        (item) =>
+          item.kind === "change" &&
+          item.source?.path === "src/stock.ts" &&
+          item.provenance.freshness === "stale",
+      ),
+    ).toBe(true);
+    const priorPathEvidence = brief.evidence.filter(
+      (item) => item.source?.path === "src/inventory.ts",
+    );
+    expect(priorPathEvidence.length).toBeGreaterThan(0);
+    expect(priorPathEvidence.every((item) => item.provenance.freshness === "stale")).toBe(true);
+  });
+
+  it("preserves historical evidence for a deleted working-tree path", async () => {
+    root = await makeProject({
+      "src/checkout.ts": "import { reserve } from './inventory.js';\nexport const checkout = reserve;\n",
+      "src/inventory.ts": "export function reserve() { return true; }\n",
+    });
+    await initializeGit(root);
+    await scan(root, { kind: "change-deletion-baseline" });
+    await unlink(join(root, "src/inventory.ts"));
+    await scan(root, { kind: "change-deletion" });
+
+    const brief = await buildTaskContext(await getDb(root), root, {
+      task: "review the current working tree change",
+      intent: "review",
+      budgetBytes: 12_000,
+    });
+
+    expect(brief.changeContext).not.toBe("clean");
+    if (typeof brief.changeContext === "string") throw new Error("Expected a detected deletion.");
+    expect(brief.changeContext.changes).toContainEqual(
+      expect.objectContaining({
+        path: "src/inventory.ts",
+        status: "deleted",
+        indexState: "historical",
+      }),
+    );
+    const deletion = brief.evidence.find((item) => item.source?.path === "src/inventory.ts");
+    expect(deletion).toMatchObject({
+      kind: "change",
+      provenance: { source: "git-status-porcelain-v2", freshness: "stale" },
+      source: { freshness: "stale", excerptIncluded: false },
+    });
+    expect(deletion?.source?.error).toBeTruthy();
+    expect(brief.readFirst).not.toContain("src/inventory.ts");
+  });
+
+  it("prioritizes indexed changes and compacts change metadata to the byte budget", async () => {
+    const files: Record<string, string> = {
+      "src/z.ts": "export const relevantChange = 1;\n",
+    };
+    const unsupported: string[] = [];
+    for (let index = 0; index < 24; index += 1) {
+      const path = `src/a${String(index).padStart(2, "0")}-${"x".repeat(220)}.rs`;
+      unsupported.push(path);
+      files[path] = `pub fn ignored_${index}() {}\n`;
+    }
+    root = await makeProject(files);
+    await initializeGit(root);
+    await scan(root, { kind: "change-priority-baseline" });
+    for (const path of unsupported) await appendFile(join(root, path), "// changed\n");
+    await writeFile(join(root, "src/z.ts"), "export const relevantChange = 2;\n");
+    await scan(root, { kind: "change-priority" });
+
+    const brief = await buildTaskContext(await getDb(root), root, {
+      task: "review the current working tree change",
+      intent: "review",
+      budgetBytes: 6_000,
+    });
+
+    expect(brief.budget.usedBytes).toBeLessThanOrEqual(6_000);
+    expect(brief.budget.truncated).toBe(true);
+    expect(brief.changeContext).not.toBe("clean");
+    if (typeof brief.changeContext === "string") throw new Error("Expected detected changes.");
+    expect(brief.changeContext.changes?.[0]).toMatchObject({
+      path: "src/z.ts",
+      indexState: "current",
+    });
+    expect(brief.changeContext.omittedPaths).toBeGreaterThan(0);
+    expect(brief.evidence.some((item) => item.source?.path === "src/z.ts")).toBe(true);
+  });
+
   it("ranks task, graph, authored, test, and source evidence with navigable references", async () => {
     root = await makeProject({
       "package.json": JSON.stringify({ name: "task-context" }),
@@ -620,7 +959,7 @@ describe("budgeted task context", () => {
         schemaVersion?: number;
         evidence?: Array<{ source?: { path?: string } }>;
       };
-      expect(taskResponse.schemaVersion).toBe(2);
+      expect(taskResponse.schemaVersion).toBe(3);
       expect(taskResponse.evidence?.length).toBeGreaterThan(0);
       expect(
         taskResponse.evidence?.some((item) => item.source?.path === "src/app.test.ts"),

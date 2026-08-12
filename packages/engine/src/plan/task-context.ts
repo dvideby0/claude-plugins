@@ -8,8 +8,10 @@
  */
 
 import { Buffer } from "node:buffer";
+import { gitChanges, type NativeGitChangeSet } from "@sdlc/scan-core";
 import type {
   Db,
+  TaskChangeInput,
   TaskContextCandidate,
   TaskContextPlan,
   TaskIntent,
@@ -34,6 +36,8 @@ export interface TaskContextOptions {
   targets?: readonly string[];
   intent?: TaskIntent;
   budgetBytes?: number;
+  /** Internal evaluation mode: ignore user-global Git config for reproducibility. */
+  isolatedGitConfig?: boolean;
 }
 
 export interface TaskEvidenceRef {
@@ -59,10 +63,12 @@ export interface TaskEvidenceRef {
 }
 
 export interface TaskContextBrief {
-  schemaVersion: 2;
+  schemaVersion: 3;
   task: string;
   intent: TaskIntent;
   targets: TaskTargetResolution[];
+  /** "clean" is the compact successful-Git/no-change case. */
+  changeContext: TaskContextPlan["changeContext"] | "clean";
   strategy: TaskContextPlan["strategy"] & {
     sourcePacking: "rank-order-path-diverse-utf8-budget";
     evaluationStatus: "experimental";
@@ -203,11 +209,54 @@ function followUps(plan: TaskContextPlan, selected: readonly MaterializedEvidenc
   if (plan.uncertainties.some((item) => item.includes("import-resolved"))) {
     result.push("Run resolve_types when precise method/type references affect the change.");
   }
+  if (plan.changeContext.state === "unavailable") {
+    result.push("Run git status directly if working-tree changes are important to this task.");
+  }
+  if (plan.changeContext.changes?.some((change) => change.indexState === "absent")) {
+    result.push("Inspect changed paths that are absent from the current source inventory.");
+  }
   return [...new Set(result)];
+}
+
+function taskChangeInput(native: NativeGitChangeSet): TaskChangeInput {
+  const state = ["available", "not-repository", "unavailable", "not-requested"].includes(
+    native.state,
+  )
+    ? (native.state as TaskChangeInput["state"])
+    : "unavailable";
+  return {
+    state,
+    source: native.source,
+    changes: native.changes.map((change) => ({
+      path: change.path,
+      previousPath: change.previousPath,
+      status: change.status,
+      indexStatus: change.indexStatus,
+      worktreeStatus: change.worktreeStatus,
+      worktreePathPresent: change.worktreePathPresent,
+    })),
+    detectedPaths: native.detectedPaths,
+    truncated: native.truncated,
+    diagnostic:
+      state === native.state
+        ? native.diagnostic
+        : `Native change detector returned unknown state ${native.state}.`,
+  };
 }
 
 function responseBytes(response: TaskContextBrief): number {
   return utf8Bytes(JSON.stringify(response, null, 2));
+}
+
+function responseChangeContext(
+  context: TaskContextPlan["changeContext"],
+): TaskContextBrief["changeContext"] {
+  return context.state === "available" &&
+    context.detectedPaths === 0 &&
+    context.truncated !== true &&
+    !context.diagnostic
+    ? "clean"
+    : context;
 }
 
 function buildResponse(
@@ -216,20 +265,22 @@ function buildResponse(
   requestedBytes: number,
   excerptOmissions: number,
   unavailableSources: number,
+  changeContext: TaskContextBrief["changeContext"],
 ): TaskContextBrief {
   const budgetCandidates = plan.candidates.length - selected.length;
   const readFirst = [
     ...new Set(
       selected
-        .map((item) => item.source?.path)
+        .map((item) => (item.source?.error ? undefined : item.source?.path))
         .filter((path): path is string => path !== undefined),
     ),
   ];
   const response: TaskContextBrief = {
-    schemaVersion: 2,
+    schemaVersion: 3,
     task: plan.task,
     intent: plan.intent,
     targets: plan.targets,
+    changeContext,
     strategy: {
       ...plan.strategy,
       sourcePacking: "rank-order-path-diverse-utf8-budget",
@@ -243,7 +294,11 @@ function buildResponse(
       requestedBytes,
       usedBytes: 0,
       truncated:
-        plan.omittedCandidates > 0 || budgetCandidates > 0 || excerptOmissions > 0,
+        plan.omittedCandidates > 0 ||
+        budgetCandidates > 0 ||
+        excerptOmissions > 0 ||
+        (typeof changeContext === "string" ? 0 : (changeContext.omittedPaths ?? 0)) > 0 ||
+        (typeof changeContext === "string" ? false : changeContext.truncated === true),
     },
     omissions: {
       plannerCandidates: plan.omittedCandidates,
@@ -262,6 +317,47 @@ function buildResponse(
     response.budget.usedBytes = actual;
   }
   throw new Error("Cannot stabilize task-context byte accounting.");
+}
+
+function compactChangeContext(
+  plan: TaskContextPlan,
+  requestedBytes: number,
+): TaskContextBrief["changeContext"] {
+  const initial = responseChangeContext(plan.changeContext);
+  if (typeof initial === "string") return initial;
+  const changes = [...(initial.changes ?? [])];
+  const metadataCeiling =
+    plan.candidates.length > 0
+      ? Math.max(0, requestedBytes - EVIDENCE_SLOT_BYTES)
+      : requestedBytes;
+  let includeDiagnostic = initial.diagnostic !== undefined && initial.diagnostic !== null;
+  let diagnosticDropped = false;
+  for (;;) {
+    const omittedPaths = Math.max(
+      initial.omittedPaths ?? 0,
+      initial.detectedPaths - changes.length,
+    );
+    const candidate: TaskContextPlan["changeContext"] = {
+      ...initial,
+      changes: changes.length > 0 ? [...changes] : undefined,
+      omittedPaths: omittedPaths > 0 ? omittedPaths : undefined,
+      truncated:
+        initial.truncated === true || omittedPaths > 0 || diagnosticDropped ? true : undefined,
+      diagnostic: includeDiagnostic ? initial.diagnostic : undefined,
+    };
+    const base = buildResponse(plan, [], requestedBytes, 0, 0, candidate);
+    if (responseBytes(base) <= metadataCeiling) return candidate;
+    if (changes.length > 0) {
+      changes.pop();
+      continue;
+    }
+    if (includeDiagnostic) {
+      includeDiagnostic = false;
+      diagnosticDropped = true;
+      continue;
+    }
+    return candidate;
+  }
 }
 
 async function materialize(
@@ -315,7 +411,7 @@ async function materialize(
         indexedSha: candidate.indexedSha,
         evidenceSha: candidate.evidenceSha,
         currentSha: null,
-        freshness: "unverified",
+        freshness: candidate.provenance.freshness === "stale" ? "stale" : "unverified",
         excerptIncluded: false,
         excerptTruncated: false,
         error: error instanceof Error ? error.message : String(error),
@@ -336,7 +432,14 @@ export async function buildTaskContext(
     throw new Error("brief requires a task, at least one target, or both.");
   }
   const budget = requestedBudget(options.budgetBytes);
-  const plan = db.taskContext(task, targets, options.intent ?? "understand", DEFAULT_CANDIDATE_LIMIT);
+  const changes = taskChangeInput(await gitChanges(projectRoot, options.isolatedGitConfig));
+  const plan = db.taskContext(
+    task,
+    targets,
+    options.intent ?? "understand",
+    DEFAULT_CANDIDATE_LIMIT,
+    changes,
+  );
   // A byte ceiling is an upper bound, not a target to fill with metadata-only
   // tail facts. Reserve enough response space per admitted fact for its
   // structured navigation data and a useful compact excerpt.
@@ -347,8 +450,9 @@ export async function buildTaskContext(
   const selected: MaterializedEvidence[] = [];
   const fullById = new Map<string, MaterializedEvidence>();
   const excerptedPaths = new Set<string>();
+  const changeContext = compactChangeContext(plan, budget);
 
-  const base = buildResponse(plan, selected, budget, 0, 0);
+  const base = buildResponse(plan, selected, budget, 0, 0, changeContext);
   if (responseBytes(base) > budget) {
     throw new Error(
       `The task and target metadata require ${responseBytes(base)} bytes; increase brief budgetBytes.`,
@@ -399,6 +503,7 @@ export async function buildTaskContext(
         budget,
         excerptOmissions(trialItems),
         unavailableSources(trialItems),
+        changeContext,
       );
       if (responseBytes(trial) <= budget) {
         accepted = variant;
@@ -438,6 +543,7 @@ export async function buildTaskContext(
           budget,
           excerptOmissions(trialItems),
           unavailableSources(trialItems),
+          changeContext,
         );
         if (responseBytes(trial) <= budget) {
           selected[index] = variant;
@@ -453,5 +559,6 @@ export async function buildTaskContext(
     budget,
     excerptOmissions(selected),
     unavailableSources(selected),
+    changeContext,
   );
 }
