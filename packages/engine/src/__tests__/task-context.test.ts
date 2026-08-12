@@ -169,6 +169,50 @@ describe("budgeted task context", () => {
     );
   });
 
+  it("admits repeated-path facts without repeating their overlapping source first", async () => {
+    root = await makeProject({
+      "src/checkout.ts": [
+        "import { reserveInventory } from './inventory.js';",
+        "export interface CheckoutResult { status: string; reservationId?: string }",
+        "export async function submitCheckout(items: string[]): Promise<CheckoutResult> {",
+        "  const reservation = await reserveInventory(items);",
+        "  return { status: 'accepted', reservationId: reservation.id };",
+        "}",
+        "",
+      ].join("\n"),
+      "src/inventory.ts": [
+        "export interface Reservation { id: string }",
+        "export async function reserveInventory(items: string[]): Promise<Reservation> {",
+        "  return { id: `reservation-${items.length}` };",
+        "}",
+        "",
+      ].join("\n"),
+    });
+    await scan(root, { kind: "full" });
+    const db = await getDb(root);
+    remember(db, {
+      kind: "constraint",
+      title: "Checkout reservation rule",
+      body: "Keep the reservation id attached to the result.",
+      anchors: [{ path: "src/checkout.ts", symbol: "submitCheckout" }],
+    });
+
+    const brief = await buildTaskContext(db, root, {
+      task: "review submitCheckout inventory reservation",
+      intent: "review",
+      budgetBytes: 6_000,
+    });
+    const checkoutEvidence = brief.evidence.filter(
+      (item) => item.source?.path === "src/checkout.ts",
+    );
+    expect(checkoutEvidence.length).toBeGreaterThan(1);
+    expect(
+      checkoutEvidence.filter((item) => item.source?.excerptIncluded).length,
+    ).toBe(1);
+    expect(brief.strategy.sourcePacking).toBe("rank-order-path-diverse-utf8-budget");
+    expect(brief.budget.usedBytes).toBeLessThanOrEqual(6_000);
+  });
+
   it("marks selected evidence stale when the working source changes after indexing", async () => {
     root = await makeProject({
       "src/policy.ts": "export function policy() { return 'old'; }\n",

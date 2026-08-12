@@ -603,12 +603,8 @@ export async function runEvaluationWorker(
               "warm and one-file-change provider indexing",
               "external SCIP child peak RSS",
               ...(flow ? [] : ["entry-to-effect path precision and recall"]),
-              "retrieval quality",
             ]
-          : [
-              ...(flow ? [] : ["entry-to-effect path precision and recall"]),
-              "retrieval quality",
-            ],
+          : [...(flow ? [] : ["entry-to-effect path precision and recall"])],
     };
   } finally {
     // scan() can cache a connection before the branch reaches its explicit

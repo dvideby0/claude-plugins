@@ -1,7 +1,7 @@
 # Code-intelligence evaluation
 
-Status: executable symbol/reference corpus, measured HTTP flow slice, and
-bounded Joern flow spike, 2026-08-12.
+Status: executable symbol/reference and retrieval corpora, measured HTTP flow
+slice, and bounded Joern flow spike, 2026-08-12.
 
 ## Purpose
 
@@ -52,6 +52,17 @@ normalize to the expected symbol and resolved-reference relations.
 The current oracle is targeted, not an exhaustive claim about every local or
 standard-library symbol. A provider can only be compared for facts explicitly
 inside the selected domain.
+
+The same command discovers strict retrieval oracles under
+`packages/engine/fixtures/retrieval`. Those scenarios run the real budgeted
+`brief` pipeline against a copied, freshly indexed fixture and compare it with
+a checked-in map produced by pinned Aider 0.86.2. Source-tree and normalized
+artifact SHA-256 digests make a stale baseline a hard error. The scorer reports
+path recall at K, reviewed evidence coverage, irrelevant-path rate, complete
+pretty-JSON bytes, and exact `o200k_base` tokens through pinned
+`js-tiktoken` 1.0.21. It does not reimplement Aider's graph ranking.
+Top-level report schema version 2 keeps provider scenarios and retrieval
+scenarios in separate fields and includes both in the final pass/fail summary.
 
 Oracle schema version 2 can also record reviewed entrypoints, relations,
 terminal effects, conditions, and complete entry-to-effect paths. The ordinary
@@ -114,6 +125,47 @@ filesystem sandbox. Its precise-reference benefit is real, but its Pyright fork
 and older transitive dependencies make it a weaker long-term production choice
 than an actively maintained compiler/CPG path.
 
+## Current retrieval result
+
+The first retrieval corpus is a small TypeScript checkout domain with 18 source
+files, two config files, one reviewed authored constraint, and two task-only
+queries in a shared 1,600-token comparison band. Aider is generated with that
+map target; SDLC's 6,000-byte ceiling produces fewer than 1,600 measured tokens
+for both scenarios. The comparison artifact is the actual output of Aider's maintained
+[repository map](https://aider.chat/docs/repomap.html), not an SDLC imitation.
+It occupies 4,063 bytes and 982 `o200k_base` tokens.
+
+For `review submitCheckout inventory reservation`, SDLC scores 0.166667 path
+recall@5 and covers 1/3 required evidence; Aider scores 0.333333 and 3/3. SDLC
+returns only the relevant checkout path, while Aider exposes fourteen
+irrelevant paths among twenty (0.7). SDLC's complete response uses 5,635 bytes
+and 1,582 tokens, 1.610998 times the baseline token count. The missing reviewed
+items are the inventory declaration and covering checkout test.
+
+For `debug checkout idempotency requirement`, SDLC scores 0.5 path recall@4,
+2/3 evidence coverage, and no irrelevant returned path. Aider scores 0.25,
+2/3, and 0.8 respectively. The equal evidence counts contain different facts:
+SDLC retrieves the authored constraint but misses `recordCheckout`; the symbol
+map retrieves `recordCheckout` but cannot contain the constraint. SDLC uses
+5,798 bytes and 1,588 tokens, 1.617108 times the Aider artifact.
+
+These measurements clear checked-in regression floors, but they do not promote
+QUERY-001. The corpus explicitly blocks promotion until change relevance and a
+broader multi-project/language sample are measured. The result also makes the
+next optimization concrete: improve review/test coverage and reduce response
+duplication before claiming the focused package is better than the cheap repo
+map. The source packer now avoids spending a tight budget on overlapping
+excerpts from one path, then restores those excerpts in rank order when a
+larger budget has room.
+
+To run only one retrieval fixture while retaining the provider corpus:
+
+```bash
+npm run --silent eval -- --retrieval-fixture typescript-checkout
+```
+
+Provider-only diagnostics can opt out explicitly with `--skip-retrieval`.
+
 ## Bounded Joern result
 
 Joern remains opt-in and is not run by the ordinary build, test, or evaluation
@@ -160,8 +212,8 @@ measurements as zeros:
 
 - entry-to-effect path precision and recall outside the one opt-in
   Python/LangGraph Joern scenario and the measured TypeScript HTTP adapter;
-- retrieval recall at K, evidence coverage, token packing, and irrelevant
-  context rate;
+- retrieval change relevance, downstream task/answer quality, and quality
+  outside the first TypeScript checkout fixture;
 - warm and one-file-change SCIP indexing;
 - peak RSS of the external SCIP child process.
 
@@ -185,3 +237,22 @@ SCIP providers also require count bounds, source comment syntax, and official
 test files. Add reviewed `entryToEffect` truth when the fixture exercises flow.
 The command discovers the fixture automatically. CI fails when the schema,
 thresholds, count bounds, or official SCIP assertions regress.
+
+For retrieval, create a directory under `packages/engine/fixtures/retrieval`
+with `source/`, a strict schema-version-1 `oracle.json`, and a normalized
+baseline artifact. Generate the baseline from an isolated Git copy of the
+source so Aider cannot write history or ignore files in the fixture. The first
+fixture used this pinned command:
+
+```bash
+uvx --python 3.12 --from aider-chat==0.86.2 aider \
+  --show-repo-map --map-tokens 1600 --model gpt-4o-mini \
+  --no-show-model-warnings --no-check-update --analytics-disable --no-gitignore \
+  --chat-history-file /tmp/sdlc-aider-1600-chat.md \
+  --input-history-file /tmp/sdlc-aider-1600-input.md \
+  --llm-history-file /tmp/sdlc-aider-1600-llm.md
+```
+
+Remove only Aider's CLI preamble, normalize line endings to LF and trailing
+whitespace, then record both source-tree and artifact digests in the oracle.
+Normal CI consumes that artifact and does not install Aider's Python runtime.

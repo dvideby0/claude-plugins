@@ -65,12 +65,12 @@ authoritative relational rows.
 | Execution and data flow | Early vertical slice | One measured HTTP adapter produces real entry-to-response paths; the general view remains a heuristic call graph and data flow is not modeled. |
 | Human-readable system map | Promising | Components and ordered flows exist, but they are authored overlays rather than evidence-derived semantic objects. |
 | Incremental recomputation | Basic | Content hashes avoid some database rewrites, but invalidation is file-level and native scans still revisit the repository. |
-| Search and context retrieval | Early experimental vertical slice | The primary brief now has Rust-owned lexical/one-hop task ranking, bounded source evidence, and exact response budgets; change ranking and comparative retrieval evaluation remain open. |
+| Search and context retrieval | Measured experimental vertical slice | The primary brief has Rust-owned lexical/one-hop task ranking, bounded source evidence, exact response budgets, and a pinned Aider comparison; mixed first-corpus quality, change ranking, broader coverage, and token compaction keep it experimental. |
 | Memories and notes | Basic | Anchored durable notes exist; search, evidence, validation, editing, and fine-grained staleness need work. |
 | Desktop experience | Functional shell | Useful maps and operational views exist, but it is not yet a complete code-intelligence workspace. |
 | Claude/Codex installation | Partial | MCP connection exists; complete plugin/skill lifecycle and supported Codex configuration are missing. |
 | Packaging and CI | Promising | Desktop packaging, native build matrices, smoke scripts, and plugin validation are present. |
-| Quality measurement | Emerging | One command now scores narrow fixtures across native, compiler-prototype, and SCIP facts with official SCIP golden assertions; broader path/retrieval corpora and provider-child resource measurement remain absent. |
+| Quality measurement | Emerging | One command now scores narrow provider and retrieval fixtures with official SCIP golden assertions and a real pinned Aider map; broader corpora, change/task outcomes, and provider-child resource measurement remain absent. |
 
 ## What exists today
 
@@ -234,9 +234,13 @@ relation, and exported-symbol evidence; the Node boundary reads only selected
 contained source ranges and enforces an exact byte ceiling on the complete MCP
 response. It exposes ranking reasons, provenance, freshness, omissions,
 uncertainty, and recommended reads without adding another tool to the 33-tool
-catalog. The path is not yet proven: change relevance and a checked-in retrieval
-corpus against an Aider-style symbol-map baseline remain open, so the response
-labels itself experimental and no redundant public tools have been retired.
+catalog. The path is not yet proven. A checked-in corpus now compares it with
+actual digest-pinned Aider 0.86.2 output: the authored-memory debug task wins on
+recall and noise but misses the ledger declaration, while the review task
+misses its inventory declaration and covering test. Both stay inside the same
+1,600-token band but use roughly 1.6 times the map's actual tokens. Change
+relevance and broader corpora remain open, so the response labels itself
+experimental and no redundant public tools have been retired.
 
 ### Desktop application
 

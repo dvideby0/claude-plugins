@@ -9,12 +9,15 @@ import {
   type EvaluationOracle,
   type EvaluationProvider,
 } from "./model.js";
+import { runRetrievalCorpus } from "./retrieval.js";
 import type { ProviderEvaluationReport } from "./worker.js";
 
 interface CliOptions {
   fixture: string | null;
+  retrievalFixture: string | null;
   scipCli: string | null;
   requireScipCli: boolean;
+  skipRetrieval: boolean;
 }
 
 interface ScipCliStatus {
@@ -27,21 +30,29 @@ interface ScipCliStatus {
 function parseArgs(args: string[]): CliOptions {
   const options: CliOptions = {
     fixture: null,
+    retrievalFixture: null,
     scipCli: process.env.SCIP_CLI ?? null,
     requireScipCli: false,
+    skipRetrieval: false,
   };
   for (let index = 0; index < args.length; index++) {
     const arg = args[index];
     if (arg === "--require-scip-cli") {
       options.requireScipCli = true;
-    } else if (arg === "--fixture" || arg === "--scip-cli") {
+    } else if (arg === "--skip-retrieval") {
+      options.skipRetrieval = true;
+    } else if (arg === "--fixture" || arg === "--retrieval-fixture" || arg === "--scip-cli") {
       const value = args[++index];
       if (!value) throw new Error(`${arg} requires a value.`);
       if (arg === "--fixture") options.fixture = value;
+      else if (arg === "--retrieval-fixture") options.retrievalFixture = value;
       else options.scipCli = value;
     } else if (arg !== "--json") {
       throw new Error(`Unknown evaluation option: ${arg}`);
     }
+  }
+  if (options.skipRetrieval && options.retrievalFixture) {
+    throw new Error("--skip-retrieval cannot be combined with --retrieval-fixture.");
   }
   return options;
 }
@@ -185,8 +196,22 @@ async function main(): Promise<void> {
   const unmeasuredEntryToEffect = scenarios.some(
     (scenario) => scenario.entryToEffectOracle?.scoring === "unmeasured",
   );
+  const retrieval = options.skipRetrieval
+    ? {
+        status: "skipped" as const,
+        passed: null,
+        failures: [] as string[],
+        scenarios: [],
+      }
+    : {
+        status: "measured" as const,
+        ...(await runRetrievalCorpus(options.retrievalFixture)),
+      };
+  if (retrieval.status === "measured") {
+    failures.push(...retrieval.failures.map((failure) => `retrieval/${failure}`));
+  }
   const report = {
-    schemaVersion: 1,
+    schemaVersion: 2,
     generatedAt: new Date().toISOString(),
     environment: {
       platform: process.platform,
@@ -195,6 +220,7 @@ async function main(): Promise<void> {
     },
     officialScipCli: scip,
     scenarios,
+    retrieval,
     summary: {
       passed: failures.length === 0,
       failures,
@@ -207,12 +233,24 @@ async function main(): Promise<void> {
         ...(measuredEntryToEffect
           ? ["entry-to-effect precision and recall for enabled product adapters"]
           : []),
+        ...(retrieval.status === "measured"
+          ? [
+              "retrieval recall at K and required-evidence coverage",
+              "packed retrieval bytes and o200k_base tokens",
+              "retrieval irrelevant-context rate against a pinned Aider repo-map baseline",
+            ]
+          : []),
       ],
       explicitlyUnmeasured: [
         ...(unmeasuredEntryToEffect
           ? ["entry-to-effect path precision and recall where no product adapter is enabled"]
           : []),
-        "retrieval recall, evidence coverage, token packing, and irrelevant-context rate",
+        ...(retrieval.status === "skipped"
+          ? ["retrieval recall, evidence coverage, token packing, and irrelevant-context rate"]
+          : [
+              "retrieval change relevance and task-outcome quality",
+              "retrieval quality beyond the checked-in TypeScript checkout corpus",
+            ]),
         "external SCIP child peak RSS",
       ],
     },
