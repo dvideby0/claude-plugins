@@ -39,6 +39,11 @@ jobs:
       # test passing on one has already been found failing on another. Every
       # runner here is native, so the host-targeted test build runs.
       - run: cargo test --manifest-path packages/scan-core/Cargo.toml
+      # The crate declares `#![deny(clippy::all)]`, which until now nothing
+      # checked — so a lint it had already opted into was failing anybody who
+      # ran it locally. `--all-targets` covers the test code too, where the
+      # crate's own attribute does not reach.
+      - run: cargo clippy --manifest-path packages/scan-core/Cargo.toml --all-targets -- -D warnings
       - run: npm run build -w @sdlc/scan-core -- --target ${{ matrix.target }}
       - uses: actions/upload-artifact@v4
         with:

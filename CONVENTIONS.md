@@ -251,8 +251,18 @@ runtime code remains in the packaged desktop even though it disappeared from
 
 ```bash
 npm run build && npm test -w @sdlc/engine
+cargo test --manifest-path packages/scan-core/Cargo.toml
+cargo clippy --manifest-path packages/scan-core/Cargo.toml --all-targets -- -D warnings
 node scripts/smoke.mjs                    # end to end through the bridge
 ```
+
+Root `npm test` runs the engine suite only — it does not touch Rust, so the
+`cargo` lines are not optional. And read the *warnings*, not only the errors: a
+fix that was a dead store shipped from here because the build output was
+filtered for `error`.
+
+These now run on every platform in CI rather than Linux alone, which is how a
+path-confinement rule that only worked on Unix was found.
 
 A schema change additionally needs a run against an **existing** store, not
 just a fresh one. That is the case `CREATE TABLE IF NOT EXISTS` hides.

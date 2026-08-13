@@ -195,7 +195,7 @@ fn python_docstring(node: Node, bytes: &[u8]) -> bool {
     // `semantic_extra` — an instruction is not prose, whatever it looks like.
     literal
         .utf8_text(bytes)
-        .map_or(false, |text| !text.contains(">>>"))
+        .is_ok_and(|text| !text.contains(">>>"))
 }
 
 /// A `str` literal with no prefix that changes what it is.

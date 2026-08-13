@@ -718,7 +718,7 @@ mod tests {
     use crate::input_policy::{EntryKind, InputPolicy};
     use std::collections::HashSet;
     use std::fs;
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
     use std::time::{SystemTime, UNIX_EPOCH};
 
     fn fixture_root(label: &str) -> PathBuf {
@@ -734,7 +734,7 @@ mod tests {
 
     /// A baseline that claims every file is unchanged, with the recorded
     /// content hash the caller supplies.
-    fn baseline_claiming(root: &PathBuf, policy: &InputPolicy, content_sha: &str) -> FileBaseline {
+    fn baseline_claiming(root: &Path, policy: &InputPolicy, content_sha: &str) -> FileBaseline {
         let entries = walk(root, policy, WalkMode::ReadAll)
             .files
             .into_iter()

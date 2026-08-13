@@ -695,9 +695,12 @@ mod tests {
             "././src/x.ts",
             "src/./x.ts",
         ] {
-            let Some(confined) = confined_relative_path(accepted) else {
-                continue;
-            };
+            // Asserted rather than skipped when absent. Letting a missing
+            // result fall through would make the loop vacuous for exactly the
+            // input that motivated it — `.//escape.ts` names a file inside the
+            // workspace and has to stay accepted, just not rooted.
+            let confined = confined_relative_path(accepted)
+                .unwrap_or_else(|| panic!("{accepted} names a file inside the workspace"));
             assert_eq!(
                 confined_relative_path(&confined).as_deref(),
                 Some(confined.as_str()),
