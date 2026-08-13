@@ -757,6 +757,57 @@ function bars(entries, total) {
     .join("");
 }
 
+const EXCLUSION_LABELS = {
+  app_owned_artifact: "Application-owned storage",
+  packaged_application: "Packaged application bundles",
+  generated_output: "Generated output (.gitignore)",
+  ignored_directory: "Dependency and build directories",
+  hidden_path: "Hidden configuration directories",
+  unsupported_extension: "Unsupported file types",
+  too_large: "Larger than the size limit",
+  binary_content: "Binary, not text",
+  unreadable: "Could not be read",
+};
+
+/**
+ * What the repository inventory left out, and which rule left it out.
+ *
+ * Coverage is only a trustworthy number when the denominator is explainable —
+ * a packaged copy of this application once appeared on the map with nothing
+ * anywhere to say where it came from.
+ */
+function inputBoundary(boundary) {
+  if (!boundary || boundary.excludedTotal === 0) return "";
+  const label = (reason) => EXCLUSION_LABELS[reason] ?? reason;
+  const largest = boundary.byReason[0]?.paths ?? 1;
+  return `
+    <div class="block">
+      <h3 class="section">Not indexed</h3>
+      ${bars(boundary.byReason.map((row) => [label(row.reason), row.paths]), largest)}
+      ${
+        boundary.samples.length
+          ? `<table class="rows">
+              <tr><th>Path</th><th>Why</th><th>Rule</th></tr>
+              ${boundary.samples
+                .map(
+                  (row) => `<tr>
+                    <td class="path">${esc(row.path)}${row.directory ? "/" : ""}</td>
+                    <td>${esc(label(row.reason))}</td>
+                    <td class="sub">${esc(row.detail)}</td>
+                  </tr>`,
+                )
+                .join("")}
+            </table>`
+          : ""
+      }
+      ${
+        boundary.truncated
+          ? `<div class="sub">Showing ${num(boundary.samples.length)} of ${num(boundary.excludedTotal)} decisions. Whole directories are recorded once.</div>`
+          : ""
+      }
+    </div>`;
+}
+
 async function paneOverview(workspace, pane) {
   try {
     const [overview, findings, providerState] = await Promise.all([
@@ -772,6 +823,7 @@ async function paneOverview(workspace, pane) {
       { k: "symbols", n: workspace.symbols },
       { k: "import edges", n: workspace.edges },
       { k: "unimported", n: overview.orphans },
+      { k: "not indexed", n: overview.inputBoundary.excludedTotal },
       ...severities
         .filter((severity) => findings.bySeverity[severity])
         .map((severity) => ({ k: severity, n: findings.bySeverity[severity], cls: `sev-${severity}` })),
@@ -821,6 +873,8 @@ async function paneOverview(workspace, pane) {
             : ""
         }
       </div>
+
+      ${inputBoundary(overview.inputBoundary)}
 
       ${providerEvaluation(workspace, providerState)}
 

@@ -52,6 +52,12 @@ struct Candidate {
     end_line: Option<u32>,
     evidence_sha: Option<String>,
     indexed_sha: Option<String>,
+    /// Comment-invariant signatures, where the artifact and file both carry
+    /// one. Authored knowledge describes what code means, so reformatting the
+    /// file it points at must not report it stale here while every other
+    /// reader calls it current.
+    evidence_meaning: Option<String>,
+    indexed_meaning: Option<String>,
     provenance: String,
     certainty: String,
     freshness_override: Option<String>,
@@ -135,6 +141,12 @@ impl Candidate {
                 _ => "unverified",
             };
         }
+        // Never compare one side's syntax signature against the other's
+        // content hash: a store upgraded but not yet rescanned has anchors
+        // with no syntax signature and files that already have one.
+        if let (Some(evidence), Some(indexed)) = (&self.evidence_meaning, &self.indexed_meaning) {
+            return if evidence == indexed { "current" } else { "stale" };
+        }
         match (&self.evidence_sha, &self.indexed_sha) {
             (Some(evidence), Some(indexed)) if evidence == indexed => "current",
             (Some(_), Some(_)) => "stale",
@@ -154,6 +166,10 @@ impl Candidate {
             "endLine": self.end_line,
             "evidenceSha": self.evidence_sha,
             "indexedSha": self.indexed_sha,
+            // True when this verdict was reached by comparing meaning rather
+            // than bytes, so the Node boundary does not re-apply a content
+            // comparison that would call a comment-only edit stale.
+            "meaningVerified": self.evidence_meaning.is_some() && self.indexed_meaning.is_some(),
             "sourceBacked": self.source_backed,
             "isTest": self.is_test,
             "score": self.score,
@@ -548,6 +564,8 @@ fn file_candidate(file: &FileMeta, score: i64, why: &str) -> Candidate {
         end_line: Some(file.loc.clamp(1, 40)),
         evidence_sha: Some(file.content_sha.clone()),
         indexed_sha: Some(file.content_sha.clone()),
+        evidence_meaning: None,
+        indexed_meaning: None,
         provenance: "deterministic-index".to_string(),
         certainty: "deterministic".to_string(),
         freshness_override: None,
@@ -578,6 +596,8 @@ fn historical_change_candidate(
         end_line: Some(file.loc.clamp(1, 40)),
         evidence_sha: Some(file.content_sha.clone()),
         indexed_sha: Some(file.content_sha.clone()),
+        evidence_meaning: None,
+        indexed_meaning: None,
         provenance: provenance.to_string(),
         certainty: "deterministic".to_string(),
         freshness_override: Some("stale".to_string()),
@@ -647,6 +667,8 @@ fn symbol_candidate(
                     end_line: positive_line(Some(row.get(5)?)),
                     evidence_sha: Some(indexed_sha.clone()),
                     indexed_sha: Some(indexed_sha),
+                    evidence_meaning: None,
+                    indexed_meaning: None,
                     provenance: "deterministic-index".to_string(),
                     certainty: "deterministic".to_string(),
                     freshness_override: None,
@@ -697,6 +719,8 @@ fn dependency_candidate(
         end_line,
         evidence_sha: Some(source.content_sha.clone()),
         indexed_sha: Some(source.content_sha.clone()),
+        evidence_meaning: None,
+        indexed_meaning: None,
         provenance: "deterministic-index".to_string(),
         certainty: if start_line.is_some() {
             "resolved".to_string()
@@ -884,6 +908,8 @@ fn reference_candidate(
         // compare the live caller with the revision that produced the fact.
         evidence_sha: Some(row.content_sha.clone()),
         indexed_sha: Some(row.content_sha),
+        evidence_meaning: None,
+        indexed_meaning: None,
         provenance: if typed {
             "compiler-reference-index".to_string()
         } else {
@@ -921,7 +947,7 @@ fn authored_candidate(
                 "SELECT m.title, m.kind, m.body, m.source,
                         a.path, NULLIF(a.symbol, ''), a.content_sha,
                         f.content_sha, COALESCE(f.is_test, 0),
-                        s.start_line, s.end_line
+                        s.start_line, s.end_line, a.syntax_sha, f.syntax_sha
                  FROM memories m
                  LEFT JOIN memory_anchors a ON a.memory_id = m.id
                  LEFT JOIN files f ON f.path = a.path AND f.present = 1
@@ -955,6 +981,8 @@ fn authored_candidate(
                         end_line: positive_line(row.get(10)?),
                         evidence_sha: row.get(6)?,
                         indexed_sha: row.get(7)?,
+                        evidence_meaning: row.get(11)?,
+                        indexed_meaning: row.get(12)?,
                         provenance: row.get(3)?,
                         certainty: "asserted".to_string(),
                         freshness_override: None,
@@ -1003,6 +1031,8 @@ fn authored_candidate(
                         end_line: positive_line(row.get(6)?),
                         evidence_sha: row.get(7)?,
                         indexed_sha: row.get(8)?,
+                        evidence_meaning: None,
+                        indexed_meaning: None,
                         provenance: row.get(11)?,
                         certainty: row.get(10)?,
                         freshness_override: None,
@@ -1038,6 +1068,8 @@ fn authored_candidate(
                         end_line: None,
                         evidence_sha: None,
                         indexed_sha: None,
+                        evidence_meaning: None,
+                        indexed_meaning: None,
                         provenance: "authored-map".to_string(),
                         certainty: "asserted".to_string(),
                         freshness_override: None,
@@ -1054,7 +1086,7 @@ fn authored_candidate(
             .query_row(
                 "SELECT fl.name, fl.summary, fl.trigger, fs.path, fs.symbol,
                         fs.content_sha, fi.content_sha, COALESCE(fi.is_test, 0),
-                        s.start_line, s.end_line
+                        s.start_line, s.end_line, fs.syntax_sha, fi.syntax_sha
                  FROM flows fl
                  LEFT JOIN flow_steps fs ON fs.flow_id = fl.id
                  LEFT JOIN files fi ON fi.path = fs.path AND fi.present = 1
@@ -1095,6 +1127,8 @@ fn authored_candidate(
                         end_line: positive_line(row.get(9)?),
                         evidence_sha: row.get(5)?,
                         indexed_sha: row.get(6)?,
+                        evidence_meaning: row.get(10)?,
+                        indexed_meaning: row.get(11)?,
                         provenance: "authored-map".to_string(),
                         certainty: "asserted".to_string(),
                         freshness_override: None,
@@ -1111,7 +1145,7 @@ fn authored_candidate(
             .query_row(
                 "SELECT COALESCE(r.label, r.kind), r.evidence, r.src_path, r.src_symbol,
                         r.evidence_line, r.content_sha, f.content_sha, COALESCE(f.is_test, 0),
-                        r.confidence, r.source
+                        r.confidence, r.source, r.syntax_sha, f.syntax_sha
                  FROM relations r LEFT JOIN files f ON f.path = r.src_path AND f.present = 1
                  WHERE r.id = ?1",
                 [source_id],
@@ -1128,6 +1162,8 @@ fn authored_candidate(
                         end_line: line,
                         evidence_sha: row.get(5)?,
                         indexed_sha: row.get(6)?,
+                        evidence_meaning: row.get(10)?,
+                        indexed_meaning: row.get(11)?,
                         provenance: row.get(9)?,
                         certainty: row.get(8)?,
                         freshness_override: None,
@@ -1177,6 +1213,8 @@ fn execution_candidate(
                     end_line: positive_line(Some(row.get(8)?)),
                     evidence_sha: Some(row.get(10)?),
                     indexed_sha: Some(row.get(11)?),
+                    evidence_meaning: None,
+                    indexed_meaning: None,
                     provenance: "framework-adapter".to_string(),
                     certainty: row.get(9)?,
                     freshness_override: None,
@@ -2335,6 +2373,8 @@ mod tests {
             end_line: Some(1),
             evidence_sha: Some("abc".to_string()),
             indexed_sha: Some("abc".to_string()),
+            evidence_meaning: None,
+            indexed_meaning: None,
             provenance: "test".to_string(),
             certainty: "deterministic".to_string(),
             freshness_override: None,

@@ -11,6 +11,14 @@ export interface GitInfo {
   available: boolean;
   sha: string | null;
   churn: Map<string, number>;
+  /**
+   * Renames Git already knows about, new path to old path.
+   *
+   * Git detects these reliably and this repository has parsed them from
+   * porcelain output since change-aware retrieval landed — they just never
+   * reached the index, so a `git mv` still looked like a delete plus an add.
+   */
+  renames: Map<string, string>;
 }
 
 export async function collectGit(
@@ -18,7 +26,12 @@ export async function collectGit(
   since = "6 months ago",
   signal?: AbortSignal,
 ): Promise<GitInfo> {
-  const empty: GitInfo = { available: false, sha: null, churn: new Map() };
+  const empty: GitInfo = {
+    available: false,
+    sha: null,
+    churn: new Map(),
+    renames: new Map(),
+  };
 
   try {
     await access(join(projectRoot, ".git"));
@@ -53,5 +66,62 @@ export async function collectGit(
     }
   }
 
-  return { available: true, sha, churn };
+  return { available: true, sha, churn, renames: await collectRenames(projectRoot, signal) };
+}
+
+/**
+ * Renames in the working tree, new path to old path.
+ *
+ * Git's own similarity detection decides what counts as a rename, which is
+ * exactly the judgement not worth reimplementing. A failure is not an error:
+ * without this signal a move simply behaves as it always has, as a delete and
+ * an unrelated add.
+ */
+async function collectRenames(
+  projectRoot: string,
+  signal?: AbortSignal,
+): Promise<Map<string, string>> {
+  const renames = new Map<string, string>();
+  // Porcelain paths are relative to the repository root, not the working
+  // directory. A workspace nested inside a larger repository would otherwise
+  // produce paths that never match the scanned inventory, and every rename
+  // would be silently discarded.
+  const prefix = await exec("git", ["rev-parse", "--show-prefix"], {
+    cwd: projectRoot,
+    timeout: 10_000,
+    signal,
+  });
+  if (prefix.exitCode !== 0 || prefix.timedOut) return renames;
+  const inside = prefix.stdout.trim();
+
+  const relative = (repoPath: string): string | null => {
+    if (!inside) return repoPath;
+    return repoPath.startsWith(inside) ? repoPath.slice(inside.length) : null;
+  };
+
+  // `-z` because the readable form quotes any path containing a space, and a
+  // quoted path never matches the scanned inventory — the rename would be
+  // detected and then silently discarded. NUL-delimited output emits each
+  // rename as two consecutive records, new path then old.
+  const status = await exec(
+    "git",
+    ["status", "--porcelain=v1", "-z", "--find-renames"],
+    { cwd: projectRoot, timeout: 15_000, signal },
+  );
+  if (status.exitCode !== 0 || status.timedOut) return renames;
+
+  const records = status.stdout.split("\0");
+  for (let index = 0; index < records.length; index++) {
+    const record = records[index];
+    if (!record) continue;
+    // `XY <path>`, where either status column may be R or C.
+    const code = record.slice(0, 2);
+    if (!code.includes("R") && !code.includes("C")) continue;
+    const to = relative(record.slice(3));
+    const from = records[index + 1] === undefined ? null : relative(records[index + 1] as string);
+    index++;
+    // A rename that crossed the workspace boundary is not a move within it.
+    if (from && to) renames.set(to, from);
+  }
+  return renames;
 }

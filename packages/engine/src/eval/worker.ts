@@ -59,6 +59,23 @@ export interface EvaluationTimings {
   scope: string;
 }
 
+/**
+ * What the one-file-change probe actually invalidated.
+ *
+ * The probe appends a comment, so this measures the difference between
+ * re-reading a file and invalidating everything anchored to it. Before syntax
+ * signatures both numbers were the same, and every component, flow step,
+ * relation and memory touching that file needed re-checking for a change that
+ * altered nothing.
+ */
+export interface IncrementalInvalidation {
+  probe: "comment-only append";
+  filesReparsed: number;
+  filesMeaningChanged: number;
+  executionEntriesStale: number;
+  scope: string;
+}
+
 export interface OfficialScipTest {
   status: "passed" | "failed" | "unavailable";
   command: string | null;
@@ -85,6 +102,8 @@ export interface ProviderEvaluationReport {
   failures: string[];
   scores: FactScores;
   timings: EvaluationTimings;
+  /** Null for providers whose probe does not run through the native scan. */
+  invalidation: IncrementalInvalidation | null;
   storage: {
     workspaceDbBytes: number;
     providerArtifactBytes: number | null;
@@ -280,6 +299,7 @@ export async function runEvaluationWorker(
   let workspaceDbPath: string | null = null;
   let batch: FactBatch;
   let timings: EvaluationTimings;
+  let invalidation: IncrementalInvalidation | null = null;
   let official: OfficialScipTest | null = null;
   let scipCounts: ProviderEvaluationReport["scipCounts"] = null;
   const providerFailures: string[] = [];
@@ -314,6 +334,18 @@ export async function runEvaluationWorker(
         warmMs: warm.durationMs,
         changedFileMs: changed.durationMs,
         scope: "repository scan and native workspace-store update",
+      };
+      invalidation = {
+        probe: "comment-only append",
+        filesReparsed: changed.value.filesChanged,
+        filesMeaningChanged: changed.value.filesSyntaxChanged,
+        executionEntriesStale: db.count(
+          `SELECT COUNT(*) AS n FROM execution_entries e
+             JOIN files f ON f.path = e.path
+            WHERE f.syntax_sha IS NOT NULL AND e.syntax_sha IS NOT NULL
+              AND f.syntax_sha != e.syntax_sha`,
+        ),
+        scope: "one comment appended to the probe file, then rescanned",
       };
     } else if (provider === "native-plus-typescript-checker") {
       const [{ projectLegacyFacts }, { resolveTypes }] = await Promise.all([
@@ -585,6 +617,7 @@ export async function runEvaluationWorker(
       failures,
       scores,
       timings,
+      invalidation,
       storage: { workspaceDbBytes, providerArtifactBytes },
       memory: {
         runnerPeakRssBytes: process.resourceUsage().maxRSS * 1024,

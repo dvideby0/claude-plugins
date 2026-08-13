@@ -228,6 +228,7 @@ async function main(): Promise<void> {
         "targeted symbol precision and recall",
         "targeted resolved-reference precision and recall",
         "cold, warm, and one-file-change syntax/compiler timing where supported",
+        "derived-artifact invalidation caused by a comment-only change",
         "workspace-store and SCIP artifact size",
         "isolated worker peak RSS",
         ...(measuredEntryToEffect

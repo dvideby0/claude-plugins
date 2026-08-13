@@ -134,6 +134,12 @@ export interface NativeGitChangeSet {
 export interface NativeSymbol {
   kind: string
   name: string
+  /** Identity that survives cosmetic edits, unlike the positional id. */
+  symbolKey: string
+  /** The contract callers depend on: the declaration without its body. */
+  interfaceSha: string
+  /** The implementation, absent where the declaration has no body. */
+  bodySha?: string
   startLine: number
   startColumn: number
   endLine: number
@@ -209,6 +215,13 @@ export interface NativeFile {
   isTest: boolean
   /** False for files no grammar covers, or that were skipped as noise. */
   parsed: boolean
+  /**
+   * The file's meaning with comments and formatting removed. Empty where no
+   * grammar covers the file, which callers read as "not applicable".
+   */
+  syntaxSha: string
+  /** The sorted set of modules and imported names this file depends on. */
+  relationSetSha: string
   symbols: Array<NativeSymbol>
   imports: Array<NativeImport>
   /** Uses of imported names, for symbol-level reference resolution. */
@@ -216,8 +229,43 @@ export interface NativeFile {
   /** Product-specific entry-to-effect facts extracted by bounded adapters. */
   executionEntries: Array<NativeExecutionEntry>
 }
+/**
+ * One recorded decision to keep a path out of the inventory.
+ *
+ * A pruned directory is one entry, not one per file underneath it — the
+ * interior is never enumerated.
+ */
+export interface NativeExclusion {
+  path: string
+  directory: boolean
+  /** Stable machine key from the input policy's closed reason set. */
+  reason: string
+  /** Which rule matched, for a person reading it. */
+  detail: string
+}
+/**
+ * Per-reason totals. `paths` counts every decision; `recorded` counts the
+ * ones listed individually, so a bounded sample is never read as the whole.
+ */
+export interface NativeExclusionCount {
+  reason: string
+  paths: number
+  recorded: number
+}
 export interface NativeScan {
   files: Array<NativeFile>
+  exclusions: Array<NativeExclusion>
+  exclusionSummary: Array<NativeExclusionCount>
+  /**
+   * Set when the walk had to relax a rule rather than report an empty
+   * repository, so the workspace can say what did not happen.
+   */
+  diagnostic?: string
+  /**
+   * False only when the gitignore matcher was abandoned entirely. Watch
+   * decisions must match the inventory the scan actually produced.
+   */
+  gitignoreApplied: boolean
   walkMs: number
   parseMs: number
 }
@@ -228,10 +276,21 @@ export interface NativeSourceFile {
   isTest: boolean
   content: string
 }
-export interface NativePathPolicy {
+export interface NativePathDecision {
   language: string
-  ignored: boolean
-  noise: boolean
+  /** True when this path is part of the trusted inventory. */
+  included: boolean
+  /** True when it is also parsed for evidence. Lockfiles are indexed but not. */
+  parseable: boolean
+  /** Stable machine key from the input policy's closed reason set. */
+  reason: string
+  /** Which rule decided it, phrased for a person. */
+  detail: string
+  /**
+   * Not indexed, but editing it changes the source set — the watcher must
+   * still refresh on it. Today: `.gitignore`.
+   */
+  policyInput: boolean
 }
 /** Walk and parse a repository. Both phases use every core, off the event loop. */
 export declare function scanRepo(root: string): Promise<NativeScan>
@@ -240,8 +299,18 @@ export declare function scanRepo(root: string): Promise<NativeScan>
  * Failure is returned as explicit degraded state so retrieval still works.
  */
 export declare function gitChanges(root: string, isolatedConfig?: boolean | undefined | null): Promise<NativeGitChangeSet>
-/** Classify a watcher path through the Rust-owned repository policy. */
-export declare function sourcePathPolicy(path: string): NativePathPolicy
+/**
+ * Ask the repository input policy about one path, and why.
+ *
+ * This is the same function the scan walk uses, so a watcher decision and an
+ * inventory decision cannot disagree. `root` reads the repository's committed
+ * `.gitignore`; pass `None` to classify a bare path on shape alone.
+ * `directory` distinguishes `dist/` the build directory from `dist.ts` the
+ * source file, which is the one thing a path string cannot say by itself.
+ * `ignore_gitignore` mirrors a scan that had to relax that rule, so watcher
+ * decisions match the inventory the scan actually produced.
+ */
+export declare function sourcePathDecision(path: string, root?: string | undefined | null, directory?: boolean | undefined | null, ignoreGitignore?: boolean | undefined | null): NativePathDecision
 export interface NativeMatch {
   path: string
   line: number

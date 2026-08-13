@@ -7,7 +7,7 @@ import {
   type ExecutionFlowView,
 } from "../db/db.js";
 import { scan } from "../scan/scan.js";
-import { loadNative } from "../scan/source.js";
+import { loadNative, sourcePathDecision } from "../scan/source.js";
 
 const withNative = loadNative() ? describe : describe.skip;
 const repositoryRoot = fileURLToPath(new URL("../../../../", import.meta.url));
@@ -187,5 +187,29 @@ withNative("repository HTTP flow dogfood", () => {
       "Await registry.add",
       "Await syncWatchers",
     ]);
+  });
+  /**
+   * Locking this repository's own input boundary.
+   *
+   * Asserting that `release/` is absent would pass vacuously — it is gitignored,
+   * so a fresh clone or a CI runner never has one. The invariant is what
+   * actually holds: every path in the index is a path the shared policy would
+   * admit. That would have failed on the leaked `preload.cjs`, and it cannot
+   * pass by accident.
+   *
+   * It lives beside the flow dogfood because both need this repository scanned
+   * into one store, and two test files racing for it is a conflict, not a test.
+   */
+  it("indexes only paths the shared input policy admits", async () => {
+    const db = await getDb(repositoryRoot);
+    const indexed = db
+      .all<{ path: string }>("SELECT path FROM files WHERE present = 1 ORDER BY path")
+      .map((row) => row.path);
+
+    expect(indexed.length).toBeGreaterThan(0);
+    const shouldNotBeIndexed = indexed.filter(
+      (path) => !sourcePathDecision(path, repositoryRoot, false).included,
+    );
+    expect(shouldNotBeIndexed).toEqual([]);
   });
 });

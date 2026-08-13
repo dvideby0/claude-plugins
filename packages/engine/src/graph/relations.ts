@@ -12,6 +12,11 @@
 
 import { createHash } from "node:crypto";
 import type { Db } from "../db/db.js";
+import {
+  meaningFreshness,
+  signaturesToRecord,
+  type FreshnessVerdict,
+} from "../lib/freshness.js";
 
 export const RELATION_KINDS = [
   "calls",
@@ -47,6 +52,8 @@ export interface Relation extends RelationInput {
   updatedAt: string;
   /** The source file changed after this was recorded. */
   stale: boolean;
+  /** Why, so a reader knows whether to re-check the claim or rewrite it. */
+  freshness: FreshnessVerdict;
 }
 
 function fingerprint(input: RelationInput): string {
@@ -80,19 +87,22 @@ export function relate(db: Db, input: RelationInput): { id: string; created: boo
 
   const id = fingerprint(input);
   const now = new Date().toISOString();
-  const sha =
-    db.get<{ content_sha: string }>("SELECT content_sha FROM files WHERE path = ?", [input.srcPath])
-      ?.content_sha ?? null;
+  // Both signatures: syntax decides whether the assertion drifted, content
+  // keeps the exact revision it was asserted against.
+  const recorded = signaturesToRecord(db, input.srcPath);
 
   const existing = db.get<{ id: string }>("SELECT id FROM relations WHERE id = ?", [id]);
   if (existing) {
     db.run(
-      "UPDATE relations SET evidence = ?, evidence_line = ?, confidence = ?, content_sha = ?, updated_at = ? WHERE id = ?",
+      `UPDATE relations SET evidence = ?, evidence_line = ?, confidence = ?,
+                            content_sha = ?, syntax_sha = ?, updated_at = ?
+        WHERE id = ?`,
       [
         input.evidence.trim(),
         input.evidenceLine ?? null,
         input.confidence ?? "medium",
-        sha,
+        recorded.contentSha,
+        recorded.syntaxSha,
         now,
         id,
       ],
@@ -102,8 +112,9 @@ export function relate(db: Db, input: RelationInput): { id: string; created: boo
 
   db.run(
     `INSERT INTO relations(id, kind, src_path, src_symbol, dst_path, dst_symbol, label,
-                           evidence, evidence_line, confidence, source, content_sha, created_at, updated_at)
-     VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'agent', ?, ?, ?)`,
+                           evidence, evidence_line, confidence, source, content_sha, syntax_sha,
+                           created_at, updated_at)
+     VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'agent', ?, ?, ?, ?)`,
     [
       id,
       input.kind,
@@ -115,7 +126,8 @@ export function relate(db: Db, input: RelationInput): { id: string; created: boo
       input.evidence.trim(),
       input.evidenceLine ?? null,
       input.confidence ?? "medium",
-      sha,
+      recorded.contentSha,
+      recorded.syntaxSha,
       now,
       now,
     ],
@@ -136,9 +148,12 @@ interface Row {
   confidence: string;
   source: string;
   content_sha: string | null;
+  syntax_sha: string | null;
   created_at: string;
   updated_at: string;
+  current_present: number | null;
   current_sha: string | null;
+  current_syntax_sha: string | null;
 }
 
 function hydrate(rows: Row[]): Relation[] {
@@ -156,13 +171,71 @@ function hydrate(rows: Row[]): Relation[] {
     source: row.source,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
-    // Without a source snapshot the claim was never verifiable as current.
-    stale: row.content_sha === null || row.content_sha !== row.current_sha,
+    ...(() => {
+      const freshness = verdict(row);
+      // Without a source snapshot the claim was never verifiable as current.
+      return { freshness, stale: freshness.state !== "current" };
+    })(),
   }));
 }
 
-const SELECT = `SELECT r.*, f.content_sha AS current_sha FROM relations r
+/**
+ * An assertion describes what code means, so a rewritten comment leaves it
+ * standing. The verdict carries the reason, because "stale" alone does not
+ * tell anyone whether to re-read the claim or rewrite it.
+ */
+function verdict(row: Row): FreshnessVerdict {
+  return meaningFreshness(
+    row.src_path,
+    { contentSha: row.content_sha, syntaxSha: row.syntax_sha },
+    {
+      present: row.current_present === 1,
+      contentSha: row.current_sha,
+      syntaxSha: row.current_syntax_sha,
+    },
+  );
+}
+
+const SELECT = `SELECT r.*, f.present AS current_present, f.content_sha AS current_sha,
+                       f.syntax_sha AS current_syntax_sha
+                FROM relations r
                 LEFT JOIN files f ON f.path = r.src_path AND f.present = 1`;
+
+/**
+ * Repoint every assertion about a file that moved.
+ *
+ * A relation's id is a fingerprint over its own endpoints, so rewriting the
+ * path without re-deriving the id leaves a row whose identity no longer
+ * describes it — and the next assertion of the same fact computes the new
+ * fingerprint, misses it, and inserts a duplicate. The id has to move with the
+ * path, which is why this lives beside `fingerprint` rather than in the scan.
+ */
+export function renameRelationPaths(db: Db, from: string, to: string): void {
+  const rows = db.all<Row>(`${SELECT} WHERE r.src_path = ? OR r.dst_path = ?`, [from, from]);
+  for (const row of rows) {
+    const srcPath = row.src_path === from ? to : row.src_path;
+    const dstPath = row.dst_path === from ? to : row.dst_path;
+    const id = fingerprint({
+      kind: row.kind as RelationKind,
+      srcPath,
+      srcSymbol: row.src_symbol ?? undefined,
+      dstPath: dstPath ?? undefined,
+      dstSymbol: row.dst_symbol ?? undefined,
+      label: row.label ?? undefined,
+      evidence: row.evidence,
+    });
+    if (id === row.id) continue;
+    // The same claim may already have been asserted about the destination.
+    // Keeping both would report one fact twice.
+    db.run("DELETE FROM relations WHERE id = ?", [id]);
+    db.run("UPDATE relations SET id = ?, src_path = ?, dst_path = ? WHERE id = ?", [
+      id,
+      srcPath,
+      dstPath,
+      row.id,
+    ]);
+  }
+}
 
 export function relationsFor(db: Db, path: string, symbol?: string): Relation[] {
   const rows = symbol
@@ -180,11 +253,17 @@ export function listRelations(db: Db, limit = 200): Relation[] {
 
 /** Record that a file was examined, so the loop does not revisit it blindly. */
 export function markExplored(db: Db, path: string, found: number, note?: string): void {
-  const sha =
-    db.get<{ content_sha: string }>("SELECT content_sha FROM files WHERE path = ?", [path])
-      ?.content_sha ?? "";
+  const recorded = signaturesToRecord(db, path);
   db.run(
-    "INSERT OR REPLACE INTO explorations(path, content_sha, found, note, explored_at) VALUES(?, ?, ?, ?, ?)",
-    [path, sha, found, note ?? null, new Date().toISOString()],
+    `INSERT OR REPLACE INTO explorations(path, content_sha, syntax_sha, found, note, explored_at)
+     VALUES(?, ?, ?, ?, ?, ?)`,
+    [
+      path,
+      recorded.contentSha ?? "",
+      recorded.syntaxSha,
+      found,
+      note ?? null,
+      new Date().toISOString(),
+    ],
   );
 }

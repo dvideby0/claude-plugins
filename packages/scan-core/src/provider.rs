@@ -1389,7 +1389,10 @@ fn stage_source_sync(
         ));
     }
 
-    let files = crate::walk::walk(root);
+    // The same input policy the scan used. A provider staged from a different
+    // file set could not be compared with the index it is meant to evaluate.
+    let policy = crate::input_policy::InputPolicy::for_root(root);
+    let files = crate::walk::walk(root, &policy).files;
     let signature = source_signature(&files);
     if signature != expected_signature {
         return Err(Error::new(
@@ -2131,7 +2134,8 @@ mod tests {
         fs::write(root.join("src/main.ts"), "export const value = 1;\n")
             .expect("write source fixture");
 
-        let walked = crate::walk::walk(&root);
+        let policy = crate::input_policy::InputPolicy::for_root(&root);
+        let walked = crate::walk::walk(&root, &policy).files;
         let signature = source_signature(&walked);
         let staged = stage_source_sync(
             root.to_str().expect("utf8 root"),

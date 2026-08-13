@@ -371,8 +371,16 @@ async function materialize(
   const endLine = Math.min(anchorEnd + 6, startLine + 47);
   try {
     const slice = await readWorkspaceSourceSlice(projectRoot, candidate.path, startLine, endLine);
+    // Where the planner already compared meaning, the only question left here
+    // is whether the working tree moved since indexing. Re-applying the
+    // artifact's own content hash would call a comment-only edit stale after
+    // every other reader agreed it was current.
     const sourceRevisionFreshness = candidate.indexedSha
-      ? sourceFreshness(slice.contentSha, candidate.indexedSha, candidate.evidenceSha)
+      ? sourceFreshness(
+          slice.contentSha,
+          candidate.indexedSha,
+          candidate.meaningVerified ? undefined : candidate.evidenceSha,
+        )
       : "unverified";
     // The native planner can know that a provider generation is stale even
     // when the caller file itself has not changed. Preserve that stronger

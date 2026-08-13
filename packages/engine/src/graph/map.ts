@@ -19,6 +19,12 @@
 import { createHash, randomUUID } from "node:crypto";
 import type { Db } from "../db/db.js";
 import { likeEscape } from "../lib/sql.js";
+import {
+  pathFreshness,
+  sameMeaning,
+  signaturesToRecord,
+  type RecordedSignatures,
+} from "../lib/freshness.js";
 
 export const COMPONENT_KINDS = [
   "system",
@@ -44,18 +50,77 @@ const slug = (name: string): string =>
  * pass over a repository is expensive, and after that only the boxes whose
  * ground shifted need looking at again.
  */
-function memberDigest(db: Db, componentId: string): string {
+/**
+ * Recompute a box's aggregates after its members' paths moved.
+ *
+ * Both are rewritten together: leaving one behind is what turns a rename into
+ * permanent drift that names no file.
+ */
+/** Whether a path is still covered by a box's membership patterns. */
+export function componentContains(db: Db, componentId: string, path: string): boolean {
+  return membersOf(db, componentId).files.includes(path);
+}
+
+export function refreshMemberDigests(db: Db, componentId: string): void {
+  db.run(
+    `UPDATE components
+        SET member_digest = ?,
+            member_syntax_digest = CASE
+              WHEN member_syntax_digest IS NULL THEN NULL ELSE ? END
+      WHERE id = ?`,
+    [
+      memberDigest(db, componentId, "content"),
+      memberDigest(db, componentId, "syntax"),
+      componentId,
+    ],
+  );
+}
+
+function memberDigest(db: Db, componentId: string, basis: DigestBasis): string {
   const { files } = membersOf(db, componentId);
-  const parts = files
-    .sort()
-    .map(
-      (path) =>
-        `${path}:${
-          db.get<{ content_sha: string }>("SELECT content_sha FROM files WHERE path = ?", [path])
-            ?.content_sha ?? ""
-        }`,
-    );
+  const parts = files.sort().map((path) => {
+    const signature = memberSignature(db, path);
+    const term =
+      basis === "syntax"
+        ? (signature.syntaxSha ?? signature.contentSha ?? "")
+        : (signature.contentSha ?? "");
+    return `${path}:${term}`;
+  });
   return createHash("sha256").update(parts.join("|")).digest("hex").slice(0, 20);
+}
+
+/**
+ * Which aggregate a box is compared on.
+ *
+ * Two digests are stored, not one. Changing what a single digest hashes would
+ * have made every component drawn before syntax signatures existed drift the
+ * moment its files gained one — and drift with nothing to name, because the
+ * per-file comparison would correctly find no member changed. Nothing would
+ * clear it except redrawing the whole map by hand, which is the model cost this
+ * work exists to avoid.
+ *
+ * So `member_digest` keeps its original content meaning, and
+ * `member_syntax_digest` carries the comment-invariant one. A box drawn before
+ * the upgrade has no syntax digest and is compared the way it was drawn; the
+ * next time it is described it gains one and stops churning on comments.
+ */
+type DigestBasis = "content" | "syntax";
+
+/**
+ * What a member file contributes to its box's identity.
+ *
+ * The syntax signature, not the content hash: a box describes what its code
+ * *does*, and re-interpreting one because somebody rewrote a comment costs a
+ * model call to reach the same conclusion. Files no parser covers, and indexes
+ * predating syntax signatures, fall back to content — an unverifiable
+ * comparison must not silently read as unchanged.
+ */
+function memberSignature(db: Db, path: string): RecordedSignatures {
+  const row = db.get<{ content_sha: string; syntax_sha: string | null }>(
+    "SELECT content_sha, syntax_sha FROM files WHERE path = ?",
+    [path],
+  );
+  return { contentSha: row?.content_sha ?? null, syntaxSha: row?.syntax_sha ?? null };
 }
 
 /** `pattern` is a path or a prefix ending in `/`, matched against files. */
@@ -83,6 +148,107 @@ function membersOf(db: Db, componentId: string): { files: string[]; patterns: st
     for (const file of matched) files.add(file.path);
   }
   return { files: [...files], patterns: rows.map((row) => row.pattern) };
+}
+
+/**
+ * How many outside contracts one box may depend on before the list stops being
+ * useful. Recorded so a truncated set reports as partial rather than clean.
+ */
+const MAX_COMPONENT_DEPENDENCIES = 500;
+
+/**
+ * What a box depends on that it does not contain.
+ *
+ * A component's description is written against the contracts its members call.
+ * When one of those changes, the box may now describe something that is no
+ * longer true — even though every file inside it is untouched, so no snapshot
+ * comparison would ever notice. Recording the interface signature at drawing
+ * time is what makes that answerable later.
+ */
+function recordComponentDependencies(db: Db, componentId: string): void {
+  db.run(
+    `DELETE FROM artifact_dependencies
+      WHERE artifact_kind = 'component' AND artifact_id = ?
+        AND signature_kind IN ('symbol-interface', 'coverage')`,
+    [componentId],
+  );
+  const { files } = membersOf(db, componentId);
+  if (files.length === 0) return;
+
+  const placeholders = files.map(() => "?").join(", ");
+  db.run(
+    `INSERT OR REPLACE INTO artifact_dependencies(
+       artifact_kind, artifact_id, signature_kind, depends_on, signature)
+     SELECT 'component', ?, 'symbol-interface', s.symbol_key, s.interface_sha
+       FROM refs r
+       JOIN symbols s ON s.id = r.dst_symbol_id
+      WHERE r.src_path IN (${placeholders})
+        AND r.dst_path NOT IN (${placeholders})
+        AND s.symbol_key IS NOT NULL AND s.interface_sha IS NOT NULL
+      GROUP BY s.symbol_key
+      LIMIT ?`,
+    [componentId, ...files, ...files, MAX_COMPONENT_DEPENDENCIES + 1],
+  );
+
+  // A silently truncated dependency set would let an omitted contract change
+  // while the box still reported clean. Record the overflow as a dependency of
+  // its own, so it is impossible to read the box as fully checked.
+  const recorded = db.count(
+    `SELECT COUNT(*) AS n FROM artifact_dependencies
+      WHERE artifact_kind = 'component' AND artifact_id = ?
+        AND signature_kind = 'symbol-interface'`,
+    [componentId],
+  );
+  if (recorded > MAX_COMPONENT_DEPENDENCIES) {
+    db.run(
+      `INSERT OR REPLACE INTO artifact_dependencies(
+         artifact_kind, artifact_id, signature_kind, depends_on, signature)
+       VALUES('component', ?, 'coverage', 'external-contracts', ?)`,
+      [componentId, `truncated at ${MAX_COMPONENT_DEPENDENCIES}`],
+    );
+  }
+}
+
+/** Contracts a box was drawn against that have since moved. */
+function changedDependencies(
+  db: Db,
+  componentId: string,
+): Array<{ symbol: string; path: string }> {
+  const changed = db
+    .all<{ depends_on: string; path: string | null }>(
+      `SELECT d.depends_on,
+              (SELECT s.path FROM symbols s WHERE s.symbol_key = d.depends_on LIMIT 1) AS path
+         FROM artifact_dependencies d
+        WHERE d.artifact_kind = 'component' AND d.artifact_id = ?
+          AND d.signature_kind = 'symbol-interface'
+          AND NOT EXISTS (
+            SELECT 1 FROM symbols s
+             WHERE s.symbol_key = d.depends_on AND s.interface_sha = d.signature)
+        ORDER BY d.depends_on`,
+      [componentId],
+    )
+    .map((row) => ({ symbol: symbolNameFromKey(row.depends_on), path: row.path ?? "" }));
+
+  const truncated = db.get<{ signature: string }>(
+    `SELECT signature FROM artifact_dependencies
+      WHERE artifact_kind = 'component' AND artifact_id = ? AND signature_kind = 'coverage'`,
+    [componentId],
+  );
+  if (truncated) {
+    // Coverage is partial, so this box can never report itself checked.
+    changed.push({
+      symbol: `more dependencies than were recorded (${truncated.signature})`,
+      path: "",
+    });
+  }
+  return changed;
+}
+
+/** `path#kind:name#ordinal` — the name sits between the colon and the ordinal. */
+function symbolNameFromKey(key: string): string {
+  const colon = key.indexOf(":");
+  const hash = key.lastIndexOf("#");
+  return colon >= 0 && hash > colon ? key.slice(colon + 1, hash) : key;
 }
 
 export interface ComponentInput {
@@ -200,19 +366,27 @@ export function describeComponent(db: Db, input: ComponentInput): { id: string; 
   // Only an explicit membership statement acknowledges the current code.
   // Moving a box or editing its prose must not silently clear existing drift.
   if (!existing || input.members !== undefined) {
-    db.run("UPDATE components SET member_digest = ? WHERE id = ?", [memberDigest(db, id), id]);
+    db.run("UPDATE components SET member_digest = ?, member_syntax_digest = ? WHERE id = ?", [
+      memberDigest(db, id, "content"),
+      memberDigest(db, id, "syntax"),
+      id,
+    ]);
 
     // Per-file snapshot, so drift can name the files rather than the box.
     db.run("DELETE FROM component_snapshot WHERE component_id = ?", [id]);
     for (const path of membersOf(db, id).files) {
-      const sha =
-        db.get<{ content_sha: string }>("SELECT content_sha FROM files WHERE path = ?", [path])
-          ?.content_sha ?? "";
+      const row = db.get<{ content_sha: string; syntax_sha: string | null }>(
+        "SELECT content_sha, syntax_sha FROM files WHERE path = ?",
+        [path],
+      );
       db.run(
-        "INSERT OR REPLACE INTO component_snapshot(component_id, path, content_sha) VALUES(?, ?, ?)",
-        [id, path, sha],
+        `INSERT OR REPLACE INTO component_snapshot(component_id, path, content_sha, syntax_sha)
+         VALUES(?, ?, ?, ?)`,
+        [id, path, row?.content_sha ?? "", row?.syntax_sha ?? null],
       );
     }
+
+    recordComponentDependencies(db, id);
   }
 
   if (input.acknowledgeUnassigned) {
@@ -323,14 +497,24 @@ export function describeFlow(db: Db, input: FlowInput): { id: string; steps: num
   // would silently interleave an old sequence with a new one.
   db.run("DELETE FROM flow_steps WHERE flow_id = ?", [id]);
   input.steps.forEach((step, index) => {
-    const sha = step.path
-      ? (db.get<{ content_sha: string }>("SELECT content_sha FROM files WHERE path = ?", [
-          step.path,
-        ])?.content_sha ?? null)
-      : null;
+    // Both signatures: syntax decides whether the step drifted, content keeps
+    // the exact revision this narrative was written against.
+    const recorded = step.path
+      ? signaturesToRecord(db, step.path)
+      : { contentSha: null, syntaxSha: null };
     db.run(
-      "INSERT INTO flow_steps(flow_id, ordinal, label, path, symbol, note, content_sha) VALUES(?, ?, ?, ?, ?, ?, ?)",
-      [id, index, step.label, step.path ?? null, step.symbol ?? null, step.note ?? null, sha],
+      `INSERT INTO flow_steps(flow_id, ordinal, label, path, symbol, note, content_sha, syntax_sha)
+       VALUES(?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        id,
+        index,
+        step.label,
+        step.path ?? null,
+        step.symbol ?? null,
+        step.note ?? null,
+        recorded.contentSha,
+        recorded.syntaxSha,
+      ],
     );
   });
 
@@ -418,6 +602,16 @@ export interface MapDrift {
   complete: boolean;
   components: Array<{ id: string; name: string; changedFiles: string[] }>;
   flows: Array<{ id: string; name: string; steps: string[] }>;
+  /**
+   * Boxes whose own files are untouched, but which were drawn against a
+   * contract elsewhere that has since changed. No snapshot comparison can see
+   * this: every file inside the box still hashes the same.
+   */
+  dependencyDrift: Array<{
+    id: string;
+    name: string;
+    changed: Array<{ symbol: string; path: string }>;
+  }>;
   /** Files belonging to no box — usually code added since the last drawing. */
   newlyUnassigned: string[];
   clean: boolean;
@@ -437,26 +631,28 @@ export function mapDrift(db: Db): MapDrift {
     .map((component) => {
       // Diffed against the snapshot taken when the box was drawn: edited,
       // added and removed files each name themselves.
+      // Compared on the same signature the digest uses, so a file cannot be
+      // named as changed by a box that does not consider itself drifted.
       const drawnAt = new Map(
         db
-          .all<{ path: string; content_sha: string }>(
-            "SELECT path, content_sha FROM component_snapshot WHERE component_id = ?",
+          .all<{ path: string; content_sha: string; syntax_sha: string | null }>(
+            "SELECT path, content_sha, syntax_sha FROM component_snapshot WHERE component_id = ?",
             [component.id],
           )
-          .map((row) => [row.path, row.content_sha]),
+          .map((row) => [
+            row.path,
+            { contentSha: row.content_sha, syntaxSha: row.syntax_sha },
+          ]),
       );
       const now = new Map(
-        membersOf(db, component.id).files.map((path) => [
-          path,
-          db.get<{ content_sha: string }>("SELECT content_sha FROM files WHERE path = ?", [path])
-            ?.content_sha ?? "",
-        ]),
+        membersOf(db, component.id).files.map((path) => [path, memberSignature(db, path)]),
       );
 
       const changedFiles: string[] = [];
-      for (const [path, sha] of now) {
-        if (!drawnAt.has(path)) changedFiles.push(`${path} (added)`);
-        else if (drawnAt.get(path) !== sha) changedFiles.push(path);
+      for (const [path, current] of now) {
+        const recorded = drawnAt.get(path);
+        if (!recorded) changedFiles.push(`${path} (added)`);
+        else if (!sameMeaning(recorded, current)) changedFiles.push(path);
       }
       for (const path of drawnAt.keys()) {
         if (!now.has(path)) changedFiles.push(`${path} (removed)`);
@@ -475,6 +671,17 @@ export function mapDrift(db: Db): MapDrift {
         .map((step) => `${step.label}${step.resolves ? "" : " (file gone)"}`),
     }));
 
+  // A box whose own files are untouched can still have been drawn against a
+  // contract that moved. Computed here at read time rather than written during
+  // a scan: touching `components` re-indexes it for search on every rescan.
+  const dependencyDrift = map.components
+    .map((component) => ({
+      id: component.id,
+      name: component.name,
+      changed: changedDependencies(db, component.id),
+    }))
+    .filter((component) => component.changed.length > 0);
+
   const acknowledged = new Set(
     db.all<{ path: string }>("SELECT path FROM map_file_ack").map((row) => row.path),
   );
@@ -489,13 +696,33 @@ export function mapDrift(db: Db): MapDrift {
     complete,
     components,
     flows,
+    dependencyDrift,
     newlyUnassigned,
     clean:
       complete &&
       components.length === 0 &&
       flows.length === 0 &&
+      dependencyDrift.length === 0 &&
       newlyUnassigned.length === 0,
   };
+}
+
+/**
+ * A box drawn before syntax signatures is compared the way it was drawn.
+ * Anything drawn since is compared on meaning, so comments stop costing a
+ * redraw.
+ */
+function hasDrifted(
+  db: Db,
+  component: { id: string; member_digest: string | null; member_syntax_digest: string | null },
+): boolean {
+  if (component.member_syntax_digest) {
+    return component.member_syntax_digest !== memberDigest(db, component.id, "syntax");
+  }
+  return (
+    Boolean(component.member_digest) &&
+    component.member_digest !== memberDigest(db, component.id, "content")
+  );
 }
 
 export function systemMap(db: Db): SystemMap {
@@ -507,6 +734,7 @@ export function systemMap(db: Db): SystemMap {
     parent_id: string | null;
     ordinal: number;
     member_digest: string | null;
+    member_syntax_digest: string | null;
   }>("SELECT * FROM components ORDER BY ordinal, name");
 
   const assigned = new Set<string>();
@@ -545,8 +773,7 @@ export function systemMap(db: Db): SystemMap {
         .map((other) => other.id),
       rollupFiles: 0,
       rollupSymbols: 0,
-      drifted:
-        Boolean(component.member_digest) && component.member_digest !== memberDigest(db, component.id),
+      drifted: hasDrifted(db, component),
     };
   });
 
@@ -622,8 +849,9 @@ export function systemMap(db: Db): SystemMap {
           symbol: string | null;
           note: string | null;
           content_sha: string | null;
+          syntax_sha: string | null;
         }>(
-          "SELECT label, path, symbol, note, content_sha FROM flow_steps WHERE flow_id = ? ORDER BY ordinal",
+          "SELECT label, path, symbol, note, content_sha, syntax_sha FROM flow_steps WHERE flow_id = ? ORDER BY ordinal",
           [flow.id],
         )
         .map((step) => ({
@@ -633,6 +861,19 @@ export function systemMap(db: Db): SystemMap {
           note: step.note,
           contentSha: step.content_sha,
           component: step.path ? (componentOfFile.get(step.path)?.name ?? null) : null,
+          // Why, not just whether. A step that drifted because somebody
+          // renamed an exported function needs re-reading; one whose file was
+          // deleted needs rewriting.
+          freshness: step.path
+            ? pathFreshness(db, step.path, {
+                contentSha: step.content_sha,
+                syntaxSha: step.syntax_sha,
+              })
+            : {
+                state: "not-applicable" as const,
+                reason: "This step names no file.",
+                basis: "none" as const,
+              },
           // A drawing that points at deleted code should say so rather than
           // quietly describing a system that no longer exists.
           resolves: step.path
@@ -646,10 +887,10 @@ export function systemMap(db: Db): SystemMap {
           drifted: Boolean(
             step.path &&
               (!step.content_sha ||
-                step.content_sha !==
-                  db.get<{ content_sha: string }>("SELECT content_sha FROM files WHERE path = ?", [
-                    step.path,
-                  ])?.content_sha),
+                pathFreshness(db, step.path, {
+                  contentSha: step.content_sha,
+                  syntaxSha: step.syntax_sha,
+                }).state !== "current"),
           ),
         })),
     }));
@@ -732,18 +973,15 @@ export function componentDetail(db: Db, id: string): ComponentDetail | null {
   const { files, patterns } = membersOf(db, id);
   const drawn = new Map(
     db
-      .all<{ path: string; content_sha: string }>(
-        "SELECT path, content_sha FROM component_snapshot WHERE component_id = ?",
+      .all<{ path: string; content_sha: string; syntax_sha: string | null }>(
+        "SELECT path, content_sha, syntax_sha FROM component_snapshot WHERE component_id = ?",
         [id],
       )
-      .map((row) => [row.path, row.content_sha]),
+      .map((row) => [row.path, { contentSha: row.content_sha, syntaxSha: row.syntax_sha }]),
   );
 
   const detail = files.map((path) => {
-    const file = db.get<{ loc: number; content_sha: string }>(
-      "SELECT loc, content_sha FROM files WHERE path = ?",
-      [path],
-    );
+    const file = db.get<{ loc: number }>("SELECT loc FROM files WHERE path = ?", [path]);
     return {
       path,
       loc: file?.loc ?? 0,
@@ -756,7 +994,10 @@ export function componentDetail(db: Db, id: string): ComponentDetail | null {
       tags: db
         .all<{ tag: string }>("SELECT tag FROM node_tags WHERE path = ?", [path])
         .map((row) => row.tag),
-      changed: drawn.has(path) && drawn.get(path) !== (file?.content_sha ?? ""),
+      changed: (() => {
+        const recorded = drawn.get(path);
+        return recorded !== undefined && !sameMeaning(recorded, memberSignature(db, path));
+      })(),
     };
   });
 

@@ -11,7 +11,7 @@
  */
 
 import { watch, type FSWatcher } from "node:fs";
-import { sourcePathPolicy } from "../scan/source.js";
+import { sourcePathDecision } from "../scan/source.js";
 
 export interface WatcherOptions {
   /** Quiet period before re-indexing. */
@@ -27,22 +27,58 @@ export interface WatcherOptions {
   log: (message: string) => void;
 }
 
-function interesting(relative: string, event: "rename" | "change" = "change"): boolean {
+/**
+ * Roots whose last scan had to relax the gitignore rule to avoid an empty
+ * index. Those scans indexed files the strict policy rejects, so watching them
+ * strictly would classify every later edit as generated output and silently
+ * stop refreshing.
+ */
+const relaxedRoots = new Set<string>();
+
+export function setInputPolicyRelaxed(root: string, relaxed: boolean): void {
+  if (relaxed) relaxedRoots.add(root);
+  else relaxedRoots.delete(root);
+}
+
+function interesting(
+  root: string,
+  relative: string,
+  event: "rename" | "change" = "change",
+): boolean {
   if (!relative) return false;
   for (const segment of relative.split(/[\\/]/)) {
     // Editor swap and lock files, which change constantly and mean nothing.
     if (segment.startsWith(".#") || segment.endsWith("~")) return false;
   }
-  const policy = sourcePathPolicy(relative);
-  if (policy.ignored) return false;
-  // Root dotfiles such as .mcp.json and .eslintrc.json are indexed inputs.
-  // Classification and the ignored-segment list are the boundary; a leading
-  // dot by itself is not evidence that a recognized config file is noise.
-  // A recursive watcher may report a directory rename only as `src/old` or
-  // `src/new`. Directories have no classifiable extension, and the old path no
-  // longer exists to stat, so retain every non-noise rename event. The scan is
-  // debounced and will cheaply determine whether indexed files really moved.
-  return (event === "rename" || policy.language !== "other") && !policy.noise;
+  // The same decision the scan walk makes, asked of the same function, so the
+  // watcher cannot refresh on a path the inventory would reject or ignore one
+  // it would keep. A recursive watcher may report a directory rename only as
+  // `src/old`, which has no extension and no longer exists to stat, so the
+  // entry kind is deliberately left unstated.
+  const decision = sourcePathDecision(relative, root, undefined, relaxedRoots.has(root));
+
+  // `.gitignore` is never indexed but decides what is. Editing it changes the
+  // source set, so the refresh has to run even though the file itself is not
+  // a fact.
+  if (decision.policyInput) return true;
+
+  if (decision.included) {
+    // Lockfiles and bundled output are inventory but never evidence, and they
+    // churn on every install. Refreshing on them would rescan the whole
+    // repository to learn nothing.
+    return decision.parseable;
+  }
+
+  // Everything below is excluded. Where a path sits — a dependency directory,
+  // a packaged bundle, generated output — is true of directories as well as
+  // files, so those rules suppress every event.
+  if (decision.reason !== "unsupported_extension") return false;
+
+  // An unclassifiable name is as often a directory as a stray file, and a
+  // recursive watcher reports a directory rename only as `src/old`, which no
+  // longer exists to stat. Keep those: the scan is debounced and will cheaply
+  // determine whether indexed files really moved.
+  return event === "rename";
 }
 
 interface Watched {
@@ -104,7 +140,7 @@ export class WorkspaceWatcher {
     watcher.on("change", (event, filename) => {
       if (!filename) return;
       const relative = typeof filename === "string" ? filename : filename.toString();
-      if (!interesting(relative, event === "rename" ? "rename" : "change")) return;
+      if (!interesting(root, relative, event === "rename" ? "rename" : "change")) return;
 
       entry.pending.add(relative);
       if (entry.timer) clearTimeout(entry.timer);

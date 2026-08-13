@@ -17,13 +17,17 @@
  */
 
 import type { Db } from "../db/db.js";
+import { sameMeaning } from "../lib/freshness.js";
+import { orphanedOverlays } from "../scan/moves.js";
 
 export type GapKind =
   | "dynamic-dispatch"
   | "orphan-entry"
   | "unresolved-import"
   | "undocumented-hub"
-  | "stale-note";
+  | "stale-note"
+  /** Knowledge whose file is gone, not merely changed. */
+  | "orphan-anchor";
 
 export interface Gap {
   kind: GapKind;
@@ -71,19 +75,46 @@ export interface GapsResult {
 export function findGaps(db: Db, limit = 25): GapsResult {
   const gaps: Gap[] = [];
 
+  // Reading a file is understanding what it does, so reformatting it does not
+  // make it unread.
+  //
+  // Both sides keep both signatures and are compared pairwise through the
+  // shared rule. Coalescing each side independently compared an exploration
+  // recorded before syntax signatures against a file that has one since — old
+  // content hash versus new syntax hash, which can never match, so every
+  // pre-upgrade exploration would read unexplored forever.
   const explored = new Map(
     db
-      .all<{ path: string; content_sha: string }>("SELECT path, content_sha FROM explorations")
-      .map((row) => [row.path, row.content_sha]),
+      .all<{ path: string; content_sha: string; syntax_sha: string | null }>(
+        "SELECT path, content_sha, syntax_sha FROM explorations",
+      )
+      .map((row) => [row.path, { contentSha: row.content_sha, syntaxSha: row.syntax_sha }]),
   );
-  const isExplored = (path: string, sha: string | null): boolean =>
-    Boolean(sha) && explored.get(path) === sha;
 
-  const files = db.all<{ path: string; content_sha: string; loc: number; churn: number }>(
-    `SELECT path, content_sha, loc, churn FROM files
+  const files = db.all<{
+    path: string;
+    content_sha: string;
+    syntax_sha: string | null;
+    loc: number;
+    churn: number;
+  }>(
+    `SELECT path, content_sha, syntax_sha, loc, churn FROM files
      WHERE present = 1 AND lang IN ('typescript','javascript','python') AND is_test = 0`,
   );
-  const shaOf = new Map(files.map((file) => [file.path, file.content_sha]));
+  // One map, because there were five call sites and three of them reached for
+  // the content hash while the exploration row now stores syntax — leaving
+  // those gap kinds permanently unexplored for every parsed file.
+  const signatureOf = new Map(
+    files.map((file) => [
+      file.path,
+      { contentSha: file.content_sha, syntaxSha: file.syntax_sha },
+    ]),
+  );
+  const isExplored = (path: string): boolean => {
+    const recorded = explored.get(path);
+    const current = signatureOf.get(path);
+    return recorded !== undefined && current !== undefined && sameMeaning(recorded, current);
+  };
 
   // --- dispatch that the parser cannot follow -----------------------------
   for (const file of files) {
@@ -121,7 +152,7 @@ export function findGaps(db: Db, limit = 25): GapsResult {
         hint: "Read the registrations and record each one as a relation: which name maps to which function, and in what order they run.",
         // A file named for wiring outranks one that merely mentions a marker.
         score: (namedLikeWiring ? 140 : 100) + Math.min(file.churn, 20),
-        explored: isExplored(file.path, file.content_sha),
+        explored: isExplored(file.path),
       });
     }
   }
@@ -145,7 +176,12 @@ export function findGaps(db: Db, limit = 25): GapsResult {
          SELECT 1 FROM relations rel
          JOIN files source ON source.path = rel.src_path AND source.present = 1
          WHERE rel.dst_symbol = s.name AND rel.dst_path = s.path
-           AND rel.content_sha IS NOT NULL AND rel.content_sha = source.content_sha
+           AND rel.content_sha IS NOT NULL
+           AND CASE
+                 WHEN rel.syntax_sha IS NOT NULL AND source.syntax_sha IS NOT NULL
+                   THEN rel.syntax_sha = source.syntax_sha
+                 ELSE rel.content_sha = source.content_sha
+               END
        )
      LIMIT 400`,
   );
@@ -162,7 +198,7 @@ export function findGaps(db: Db, limit = 25): GapsResult {
       reason: `${names.length} exported symbols here are called from nowhere the parser can see.`,
       hint: "Find what invokes them — a registry, a config file, a framework convention — and record the relation.",
       score: 60 + names.length * 3,
-      explored: isExplored(path, shaOf.get(path) ?? null),
+      explored: isExplored(path),
     });
   }
 
@@ -180,7 +216,7 @@ export function findGaps(db: Db, limit = 25): GapsResult {
       reason: `${row.n} import(s) resolved to neither a file nor a package.`,
       hint: "Usually an alias or a path mapping the resolver does not know. Confirm where they point.",
       score: 40 + row.n,
-      explored: isExplored(row.src_path, shaOf.get(row.src_path) ?? null),
+      explored: isExplored(row.src_path),
     });
   }
 
@@ -201,17 +237,43 @@ export function findGaps(db: Db, limit = 25): GapsResult {
       reason: `${hub.fan_in} files depend on this and nothing has been recorded about why.`,
       hint: "Work out the contract it provides and record it as a decision or constraint.",
       score: 30 + hub.fan_in,
-      explored: isExplored(hub.path, shaOf.get(hub.path) ?? null),
+      explored: isExplored(hub.path),
+    });
+  }
+
+  // --- knowledge whose file is gone ----------------------------------------
+  //
+  // Distinct from a stale note, which is about code that changed: nothing here
+  // can be re-read and confirmed, because there is nothing left to read. One
+  // definition covers memories, assertions and flow steps alike, and it is the
+  // same list the scan uses to show that a delete leaves no silent orphan.
+  for (const orphan of orphanedOverlays(db, 20)) {
+    gaps.push({
+      kind: "orphan-anchor",
+      path: orphan.path,
+      symbol: null,
+      reason: `"${orphan.label}" describes ${orphan.path}, which is no longer in the index.`,
+      hint: "Re-anchor it to where the code went, or retire it.",
+      score: 75,
+      explored: false,
     });
   }
 
   // --- notes written against code that has moved ---------------------------
+  //
+  // Present files only: a note about a deleted file is reported above, and
+  // saying it "was recorded against an older version" would be untrue.
   const stale = db.all<{ path: string; symbol: string; title: string }>(
     `SELECT a.path, a.symbol, m.title FROM memory_anchors a
      JOIN memories m ON m.id = a.memory_id
-     LEFT JOIN files f ON f.path = a.path
+     JOIN files f ON f.path = a.path AND f.present = 1
      WHERE m.status = 'active'
-       AND (a.content_sha IS NULL OR f.path IS NULL OR f.present = 0 OR a.content_sha != f.content_sha)
+       AND (a.content_sha IS NULL
+            OR CASE
+                 WHEN a.syntax_sha IS NOT NULL AND f.syntax_sha IS NOT NULL
+                   THEN a.syntax_sha != f.syntax_sha
+                 ELSE a.content_sha != f.content_sha
+               END)
      LIMIT 20`,
   );
   for (const row of stale) {
@@ -234,7 +296,7 @@ export function findGaps(db: Db, limit = 25): GapsResult {
   const totals: Record<string, number> = {};
   for (const gap of gaps) totals[gap.kind] = (totals[gap.kind] ?? 0) + 1;
 
-  const exploredCount = files.filter((file) => isExplored(file.path, file.content_sha)).length;
+  const exploredCount = files.filter((file) => isExplored(file.path)).length;
   return {
     gaps: ranked,
     totals,

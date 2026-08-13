@@ -59,6 +59,55 @@ must call that Rust boundary rather than reproduce its path rules in
 TypeScript. A missing platform binary is a broken installation, not a reason to
 silently downgrade to a second scanner with different evidence coverage.
 
+## Only the repository's own content decides what is source
+
+Packaging output reached the map: `release/` was absent from the ignored list,
+and a packaged copy of this very application appeared as an unexplained,
+drifting file. The fix is not a directory name. A repository's committed
+`.gitignore` already states which paths are output, so that file participates
+in the inclusion policy — and nothing else does. `.ignore`,
+`$GIT_DIR/info/exclude`, the global gitignore and ignore files above the
+workspace root are per-user or per-clone, and letting them decide would mean
+two people scanning the same commit see different repositories. **Determinism
+is the rule, not "ignore files are untrustworthy."**
+
+The matcher is owned in `input_policy.rs` rather than switched on in
+`WalkBuilder`, because the crate drops entries before anything can explain
+them. Every skip returns a reason, `excluded_paths` records it, and the
+overview shows it. A pruned directory is one decision — never enumerate its
+interior to produce a count.
+
+`EntryKind` exists because `skip_dir` and `is_watch_ignored_path` disagreed
+about hidden segments, and neither was wrong: a hidden *directory* is
+configuration, a trailing `.mcp.json` is an indexed input. Pass what the caller
+knows instead of keeping two functions that happen to agree.
+
+## Invalidate on meaning, anchor on bytes
+
+Every artifact compared content hashes, so adding a comment drifted the
+components, flow steps, relations, memories and explorations touching that
+file. Re-drawing a map costs model calls; paying that for a typo teaches people
+to ignore staleness.
+
+Anything describing what code **means** compares `syntax_sha`, which is the
+comment-free token stream. Anything anchored to a **line range** — findings,
+source slices — keeps comparing `content_sha`, because inserting a comment
+really does move those lines. Reporting a stale line number as current is worse
+than over-invalidating: it is silent.
+
+Both are stored. `lib/freshness.ts` owns the comparison and the sentence
+explaining it, because a bare `stale: true` does not tell anyone whether to
+re-read a claim or rewrite it. A file with no parser, or a store written before
+signatures existed, falls back to content and says so rather than reporting an
+unverifiable `current`.
+
+A changed contract does **not** re-parse its callers: their own text is
+unchanged, so their facts would be rebuilt identically — and doing it destroys
+their compiler-resolved references. What a moved contract invalidates is the
+*summaries* written against it, through `artifact_dependencies`, computed at
+read time. Read time matters: `search_components_au` has no `WHEN` guard, so
+writing to `components` during a scan re-indexes every one of them.
+
 ## Record the vocabulary, not just the shape
 
 Exported constants are a codebase's closed value sets, and they are what a

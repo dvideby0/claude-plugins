@@ -184,6 +184,11 @@ export interface TaskContextCandidate {
   endLine: number | null;
   evidenceSha: string | null;
   indexedSha: string | null;
+  /**
+   * The planner reached its verdict by comparing meaning rather than bytes,
+   * so a content comparison must not be layered on top of it.
+   */
+  meaningVerified: boolean;
   sourceBacked: boolean;
   isTest: boolean;
   score: number;

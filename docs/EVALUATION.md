@@ -42,6 +42,14 @@ checked-in regression thresholds, cold/warm/one-file-change timings where the
 provider supports them, workspace-store size, provider-artifact size, isolated
 worker peak RSS, and enforced SCIP document/definition/reference bounds.
 
+The one-file-change probe appends a comment, which makes it a direct
+measurement of INCR-001: the report states how many files were re-parsed, how
+many actually changed meaning, and how many execution entries went stale as a
+result. On the TypeScript fixtures a comment append now re-parses one file,
+changes zero meanings, and stales zero entries. Before syntax signatures those
+numbers were the same, and every artifact anchored to the file needed
+re-checking for a change that altered nothing.
+
 Exact SCIP occurrence ranges are not reimplemented by SDLC. Fixture source
 uses the upstream
 [`scip test` file format](https://github.com/scip-code/scip/blob/v0.9.0/docs/test_file_format.md),
@@ -238,6 +246,9 @@ measurements as zeros:
 - downstream retrieval task/answer quality and retrieval quality outside the
   first TypeScript checkout fixture;
 - warm and one-file-change SCIP indexing;
+- invalidation caused by anything other than the comment-only probe, including
+  interface changes and renames, which have contract regressions but no
+  provider-neutral score;
 - peak RSS of the external SCIP child process.
 
 Additional fixtures must expand the oracle before any Joern/CPG production

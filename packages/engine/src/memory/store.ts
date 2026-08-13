@@ -9,6 +9,7 @@
 
 import { createHash } from "node:crypto";
 import type { Db } from "../db/db.js";
+import { pathFreshness, type FreshnessVerdict } from "../lib/freshness.js";
 
 /**
  * `constraint` is deliberately distinct from `gotcha`: a gotcha is a trap you
@@ -48,7 +49,13 @@ export interface Memory {
   status: string;
   createdAt: string;
   updatedAt: string;
-  anchors: Array<{ path: string; symbol: string | null; stale: boolean }>;
+  anchors: Array<{
+    path: string;
+    symbol: string | null;
+    stale: boolean;
+    /** Why, so a reader knows whether to re-check the note or rewrite it. */
+    freshness: FreshnessVerdict;
+  }>;
 }
 
 /**
@@ -62,16 +69,20 @@ function fingerprint(kind: string, title: string): string {
     .slice(0, 20);
 }
 
-function currentSha(db: Db, path: string): string | null {
-  // Present files only: a deleted file keeps its last row (present = 0), and
-  // matching against that old hash made memories about deleted files read as
-  // fresh — the "quietly believed" case staleness exists to prevent.
-  return (
-    db.get<{ content_sha: string }>(
-      "SELECT content_sha FROM files WHERE path = ? AND present = 1",
-      [path],
-    )?.content_sha ?? null
+/**
+ * Present files only: a deleted file keeps its last row (present = 0), and
+ * matching against that old hash made memories about deleted files read as
+ * fresh — the "quietly believed" case staleness exists to prevent.
+ */
+function recordedSignatures(
+  db: Db,
+  path: string,
+): { contentSha: string | null; syntaxSha: string | null } {
+  const row = db.get<{ content_sha: string; syntax_sha: string | null }>(
+    "SELECT content_sha, syntax_sha FROM files WHERE path = ? AND present = 1",
+    [path],
   );
+  return { contentSha: row?.content_sha ?? null, syntaxSha: row?.syntax_sha ?? null };
 }
 
 export function remember(db: Db, input: MemoryInput): { id: string; created: boolean } {
@@ -97,9 +108,11 @@ export function remember(db: Db, input: MemoryInput): { id: string; created: boo
     db.run("DELETE FROM memory_anchors WHERE memory_id = ?", [id]);
     for (const anchor of input.anchors) {
       if (!anchor.path) continue;
+      const recorded = recordedSignatures(db, anchor.path);
       db.run(
-        "INSERT OR REPLACE INTO memory_anchors(memory_id, path, symbol, content_sha) VALUES(?, ?, ?, ?)",
-        [id, anchor.path, anchor.symbol ?? "", currentSha(db, anchor.path)],
+        `INSERT OR REPLACE INTO memory_anchors(memory_id, path, symbol, content_sha, syntax_sha)
+         VALUES(?, ?, ?, ?, ?)`,
+        [id, anchor.path, anchor.symbol ?? "", recorded.contentSha, recorded.syntaxSha],
       );
     }
   }
@@ -120,19 +133,23 @@ export function forget(db: Db, id: string, supersededBy?: string): boolean {
 
 function anchorsFor(db: Db, id: string): Memory["anchors"] {
   return db
-    .all<{ path: string; symbol: string; content_sha: string | null }>(
-      "SELECT path, symbol, content_sha FROM memory_anchors WHERE memory_id = ?",
+    .all<{ path: string; symbol: string; content_sha: string | null; syntax_sha: string | null }>(
+      "SELECT path, symbol, content_sha, syntax_sha FROM memory_anchors WHERE memory_id = ?",
       [id],
     )
     .map((row) => {
-      const current = currentSha(db, row.path);
+      // A note explains what code means, so reformatting the file it points at
+      // leaves it standing. An anchor recorded before its file was ever indexed
+      // has nothing to compare, and unknown must not present as fresh.
+      const freshness = pathFreshness(db, row.path, {
+        contentSha: row.content_sha,
+        syntaxSha: row.syntax_sha,
+      });
       return {
         path: row.path,
         symbol: row.symbol || null,
-        // The file has moved on — or gone away — since this was written.
-        // An anchor recorded before its file was ever indexed has no hash to
-        // compare; that is unknown, and unknown must not present as fresh.
-        stale: row.content_sha === null || current !== row.content_sha,
+        freshness,
+        stale: freshness.state !== "current",
       };
     });
 }

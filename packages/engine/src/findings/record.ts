@@ -58,9 +58,20 @@ export function recordFindings(
     return contentShaByPath.get(path) ?? null;
   };
 
+  // A finding's id is a fingerprint over its path, so a renamed file would
+  // otherwise produce a brand-new finding at the destination — losing an
+  // accepted or false-positive decision, its suppressions and its history. The
+  // scan records confirmed moves; adopting them here keeps that state.
+  const movedFrom = new Map(
+    db
+      .all<{ from_path: string; to_path: string }>("SELECT from_path, to_path FROM file_moves")
+      .map((row) => [row.to_path, row.from_path]),
+  );
+
   for (const finding of findings) {
     const id = fingerprint(finding);
     const path = finding.path ?? null;
+    if (path && movedFrom.has(path)) adoptMovedFinding(db, finding, movedFrom, id);
     // Production callers that read source pass the revision from that same
     // read. The indexed row is only a compatibility fallback for callers that
     // have no source snapshot of their own.
@@ -172,6 +183,54 @@ export function closeStale(db: Db, runId: number, rulePrefix: string): number {
     );
   }
   return stale;
+}
+
+/**
+ * Re-key a finding whose file moved, so its history is not orphaned.
+ *
+ * Only the fingerprint's path term changes on a rename, so the old id is
+ * recomputable from the same input. Suppressions reference the finding by id
+ * and have to follow it.
+ */
+function adoptMovedFinding(
+  db: Db,
+  finding: FindingInput,
+  movedFrom: Map<string, string>,
+  currentId: string,
+): void {
+  // Follow the whole chain, not one hop. Scans are watch-triggered per edit
+  // while analyzers run on demand, so a file can be renamed a→b→c before any
+  // analyzer sees it — and the stored row still carries the id fingerprinted
+  // over `a`, because a move rewrites the path and never the id. Stopping at
+  // `b` would insert a duplicate, then close the original as "fixed" on a run
+  // that never examined it, losing an accepted or false-positive decision with
+  // it.
+  const visited = new Set<string>();
+  let fromPath = movedFrom.get(finding.path ?? "");
+
+  while (fromPath !== undefined && !visited.has(fromPath)) {
+    visited.add(fromPath);
+    const previousId = fingerprint({ ...finding, path: fromPath });
+    if (previousId !== currentId) {
+      const previous = db.get<{ id: string }>("SELECT id FROM findings WHERE id = ?", [previousId]);
+      if (previous) {
+        // The destination may already have its own row for the same problem;
+        // keeping both would report one finding twice.
+        db.run("DELETE FROM findings WHERE id = ?", [currentId]);
+        db.run("UPDATE findings SET id = ?, path = ? WHERE id = ?", [
+          currentId,
+          finding.path ?? null,
+          previousId,
+        ]);
+        db.run("UPDATE suppressions SET finding_id = ? WHERE finding_id = ?", [
+          currentId,
+          previousId,
+        ]);
+        return;
+      }
+    }
+    fromPath = movedFrom.get(fromPath);
+  }
 }
 
 export function suppress(

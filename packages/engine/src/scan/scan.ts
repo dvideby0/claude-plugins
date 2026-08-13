@@ -15,6 +15,9 @@ import { TYPED_SPECIFIER } from "../graph/typed-contract.js";
 import { collectFiles, type ParsedSource } from "./source.js";
 import { canonicalWorkspaceRoot, workspaceIdentityKey } from "../lib/workspace-path.js";
 import { sourceSignature } from "./signature.js";
+import { applyMove, correlateMoves } from "./moves.js";
+import { refreshMemberDigests } from "../graph/map.js";
+import { setInputPolicyRelaxed } from "../daemon/watcher.js";
 
 /**
  * Bumped whenever the parsers start producing something they did not before.
@@ -27,7 +30,7 @@ import { sourceSignature } from "./signature.js";
  *
  * When the stored version is behind, the next scan is promoted to a full one.
  */
-export const EXTRACTION_VERSION = 18;
+export const EXTRACTION_VERSION = 19;
 
 export interface ScanOptions {
   /** Re-parse every file, ignoring content hashes. */
@@ -49,6 +52,18 @@ export interface ScanResult {
   executionEntries: number;
   languages: Record<string, number>;
   gitAvailable: boolean;
+  /** Paths the input policy kept out, so coverage is never silently partial. */
+  filesExcluded: number;
+  /**
+   * Re-parsed files whose meaning actually moved. Lower than `filesChanged`
+   * when an edit was only comments or formatting, which is the difference
+   * between re-reading a file and invalidating everything anchored to it.
+   */
+  filesSyntaxChanged: number;
+  /** Set when the walk relaxed a rule rather than report an empty repository. */
+  inputDiagnostic: string | null;
+  /** Renames confirmed well enough to carry authored knowledge across. */
+  filesMoved: number;
   /** The bundled Rust source engine. */
   engine: "native";
   /** True when the index was rebuilt because it predated the current extractor. */
@@ -98,7 +113,8 @@ async function doScan(projectRoot: string, options: ScanOptions = {}): Promise<S
   const storedVersion = Number(
     db.get<{ value: string }>("SELECT value FROM meta WHERE key = 'extraction_version'")?.value ?? 0,
   );
-  const { files, engine } = await collectFiles(projectRoot);
+  const { files, engine, exclusions, exclusionSummary, diagnostic, gitignoreApplied } =
+    await collectFiles(projectRoot);
   const storedEngine =
     db.get<{ value: string }>("SELECT value FROM meta WHERE key = 'extraction_engine'")?.value ??
     "unknown";
@@ -110,14 +126,30 @@ async function doScan(projectRoot: string, options: ScanOptions = {}): Promise<S
 
   const previous = new Map(
     db
-      .all<{ path: string; content_sha: string }>(
-        "SELECT path, content_sha FROM files WHERE present = 1",
+      .all<{ path: string; content_sha: string; syntax_sha: string | null }>(
+        "SELECT path, content_sha, syntax_sha FROM files WHERE present = 1",
       )
-      .map((row) => [row.path, row.content_sha]),
+      .map((row) => [row.path, row]),
   );
 
   const walked = new Set(files.map((file) => file.path));
   const removed = [...previous.keys()].filter((path) => !walked.has(path));
+
+  // A rename looks like a deletion plus an unrelated creation, which strands
+  // every note, assertion and flow step written about the old path. Correlate
+  // the two where the evidence is unambiguous so that knowledge follows the
+  // code; anything doubtful keeps the old behaviour and degrades to stale.
+  const moves = correlateMoves({
+    removed,
+    added: files.filter((file) => !previous.has(file.path)),
+    previousLang: new Map(
+      db
+        .all<{ path: string; lang: string }>("SELECT path, lang FROM files WHERE present = 1")
+        .map((row) => [row.path, row.lang]),
+    ),
+    previousSha: new Map([...previous].map(([path, row]) => [path, row.content_sha])),
+    gitRenames: git.renames,
+  });
   const invalidatedSources = new Set<string>();
   for (const path of removed) {
     for (const row of db.all<{ src_path: string }>(
@@ -142,27 +174,52 @@ async function doScan(projectRoot: string, options: ScanOptions = {}): Promise<S
     // again when the target returns. Deleting the inbound row permanently lost
     // the call until a full scan or an unrelated caller edit.
     const changed =
-      full || previous.get(file.path) !== file.contentSha || invalidatedSources.has(file.path);
+      full ||
+      previous.get(file.path)?.content_sha !== file.contentSha ||
+      invalidatedSources.has(file.path);
     if (!changed || !file.parsed) continue;
     parsed.set(file.path, file.parsed);
   }
+
+  // Which files changed in a way anything anchored to them should care about.
+  // A comment-only edit re-parses the file — its symbol ranges really did move
+  // — but leaves this set, and therefore every derived artifact, alone.
+  const syntaxChanged = new Set(
+    files
+      .filter((file) => {
+        const source = parsed.get(file.path);
+        if (!source) return false;
+        const before = previous.get(file.path)?.syntax_sha;
+        // An index predating syntax signatures cannot claim a file is
+        // unchanged; treat the missing baseline as changed rather than fresh.
+        return before == null || before !== source.syntaxSha;
+      })
+      .map((file) => file.path),
+  );
 
   db.transaction(() => {
     for (const file of files) {
       seen.add(file.path);
       languages[file.lang] = (languages[file.lang] ?? 0) + 1;
-      const refreshed = parsed.has(file.path);
+      const result = parsed.get(file.path);
+      const refreshed = result !== undefined;
       const referenceCoverage = refreshed ? "import" : "none";
 
       db.run(
-        `INSERT INTO files(path, lang, loc, bytes, content_sha, churn, is_test, parsed,
+        `INSERT INTO files(path, lang, loc, bytes, content_sha, syntax_sha, relation_set_sha,
+                           churn, is_test, parsed,
                            ref_coverage, ref_generation, ref_source_signature, present,
                            first_seen_run, last_seen_run)
-         VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, 1, ?, ?)
+         VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, 1, ?, ?)
          ON CONFLICT(path) DO UPDATE SET
            lang = excluded.lang, loc = excluded.loc, bytes = excluded.bytes,
            content_sha = excluded.content_sha, churn = excluded.churn,
            is_test = excluded.is_test,
+           -- Only a re-parse produces these. An unchanged file keeps the ones
+           -- it already has rather than having them overwritten with nulls.
+           syntax_sha = CASE WHEN ? = 1 THEN excluded.syntax_sha ELSE files.syntax_sha END,
+           relation_set_sha =
+             CASE WHEN ? = 1 THEN excluded.relation_set_sha ELSE files.relation_set_sha END,
            ref_coverage = CASE WHEN ? = 1 THEN excluded.ref_coverage ELSE files.ref_coverage END,
            ref_generation = CASE WHEN ? = 1 THEN NULL ELSE files.ref_generation END,
            ref_source_signature = CASE WHEN ? = 1 THEN NULL ELSE files.ref_source_signature END,
@@ -173,6 +230,8 @@ async function doScan(projectRoot: string, options: ScanOptions = {}): Promise<S
           file.loc,
           file.bytes,
           file.contentSha,
+          result?.syntaxSha ?? null,
+          result?.relationSetSha ?? null,
           git.churn.get(file.path) ?? 0,
           file.isTest ? 1 : 0,
           file.parsed ? 1 : 0,
@@ -182,10 +241,11 @@ async function doScan(projectRoot: string, options: ScanOptions = {}): Promise<S
           refreshed ? 1 : 0,
           refreshed ? 1 : 0,
           refreshed ? 1 : 0,
+          refreshed ? 1 : 0,
+          refreshed ? 1 : 0,
         ],
       );
 
-      const result = parsed.get(file.path);
       if (!result) continue;
       filesChanged++;
       filesParsed++;
@@ -197,14 +257,18 @@ async function doScan(projectRoot: string, options: ScanOptions = {}): Promise<S
 
       for (const symbol of result.symbols) {
         db.run(
-          `INSERT OR REPLACE INTO symbols(id, path, kind, name, start_line, start_column,
+          `INSERT OR REPLACE INTO symbols(id, path, kind, name, symbol_key, interface_sha,
+                                          body_sha, start_line, start_column,
                                           end_line, end_column, exported, default_export, signature)
-           VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+           VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           [
             `${file.path}#${symbol.kind}:${symbol.name}@${symbol.startLine}:${symbol.startColumn}`,
             file.path,
             symbol.kind,
             symbol.name,
+            symbol.symbolKey,
+            symbol.interfaceSha,
+            symbol.bodySha ?? null,
             symbol.startLine,
             symbol.startColumn,
             symbol.endLine,
@@ -237,8 +301,9 @@ async function doScan(projectRoot: string, options: ScanOptions = {}): Promise<S
         db.run(
           `INSERT INTO execution_entries(
              id, kind, label, method, route, path, symbol, start_line, end_line,
-             producer_id, producer_version, producer_kind, certainty, input_sha, indexed_run
-           ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+             producer_id, producer_version, producer_kind, certainty, input_sha,
+             syntax_sha, indexed_run
+           ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           [
             entry.id,
             entry.kind,
@@ -254,6 +319,7 @@ async function doScan(projectRoot: string, options: ScanOptions = {}): Promise<S
             entry.producerKind,
             entry.certainty,
             file.contentSha,
+            result.syntaxSha,
             runId,
           ],
         );
@@ -312,6 +378,13 @@ async function doScan(projectRoot: string, options: ScanOptions = {}): Promise<S
       }
     }
 
+    // Knowledge follows confirmed moves before the old path is retired, so an
+    // anchor is carried across rather than left pointing at a tombstone.
+    const movedComponents = new Set<string>();
+    for (const move of moves) {
+      for (const id of applyMove(db, runId, move)) movedComponents.add(id);
+    }
+
     // Files that disappeared: keep the row for history, retire their graph and
     // close any findings that pointed at them. Present callers were re-parsed
     // above, leaving unresolved refs that can heal if the target returns.
@@ -325,6 +398,38 @@ async function doScan(projectRoot: string, options: ScanOptions = {}): Promise<S
       db.run(
         "UPDATE findings SET status = 'fixed', fixed_in_run = ? WHERE path = ? AND status IN ('open','regressed')",
         [runId, path],
+      );
+    }
+
+    // Only now is the inventory final: the old paths are retired and the
+    // membership patterns rewritten. Re-baselining a box any earlier hashes a
+    // state that does not survive this transaction, which would leave it
+    // drifted forever with no file to name.
+    for (const id of movedComponents) refreshMemberDigests(db, id);
+
+    // Why each absent path is absent. Replaced wholesale, which is sound
+    // because every refresh — including a watch refresh — is a full re-walk,
+    // so there is no incremental exclusion bookkeeping to get wrong.
+    db.run("DELETE FROM excluded_paths");
+    db.run("DELETE FROM exclusion_summary");
+    for (const exclusion of exclusions) {
+      db.run(
+        `INSERT OR REPLACE INTO excluded_paths(path, directory, reason, detail, run_id)
+         VALUES(?, ?, ?, ?, ?)`,
+        [
+          exclusion.path,
+          exclusion.directory ? 1 : 0,
+          exclusion.reason,
+          exclusion.detail,
+          runId,
+        ],
+      );
+    }
+    for (const count of exclusionSummary) {
+      db.run(
+        `INSERT OR REPLACE INTO exclusion_summary(reason, paths, recorded, run_id)
+         VALUES(?, ?, ?, ?)`,
+        [count.reason, count.paths, count.recorded, runId],
       );
     }
 
@@ -383,6 +488,17 @@ async function doScan(projectRoot: string, options: ScanOptions = {}): Promise<S
   db.run("INSERT OR REPLACE INTO meta(key, value) VALUES('source_signature', ?)", [
     sourceSignature(files),
   ]);
+  // Watch decisions must match the inventory this scan actually produced, not
+  // the strict policy it had to abandon. A malformed rule still leaves the
+  // rest applied, so only an abandoned matcher relaxes the watcher too.
+  //
+  // Persisted as well as set in memory: a daemon restart would otherwise watch
+  // a relaxed workspace strictly, classify its own indexed files as generated
+  // output, and drop every edit — with no rescan left to heal it.
+  db.run("INSERT OR REPLACE INTO meta(key, value) VALUES('input_policy_relaxed', ?)", [
+    gitignoreApplied ? "0" : "1",
+  ]);
+  setInputPolicyRelaxed(projectRoot, !gitignoreApplied);
 
   db.run(
     "UPDATE runs SET finished_at = ?, files_total = ?, files_changed = ? WHERE id = ?",
@@ -404,6 +520,12 @@ async function doScan(projectRoot: string, options: ScanOptions = {}): Promise<S
     executionEntries: db.count("SELECT COUNT(*) AS n FROM execution_entries"),
     languages,
     gitAvailable: git.available,
+    filesExcluded: exclusionSummary
+      .filter((count) => count.reason !== "source" && count.reason !== "noise")
+      .reduce((total, count) => total + count.paths, 0),
+    filesSyntaxChanged: syntaxChanged.size,
+    filesMoved: moves.length,
+    inputDiagnostic: diagnostic,
     engine,
     upgraded: stale,
   };
