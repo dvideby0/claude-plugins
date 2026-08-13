@@ -310,7 +310,7 @@ if (!nativeBinding) {
   throw new Error(`Failed to load native binding`)
 }
 
-const { databaseSchemaVersion, NativeDatabase, inspectScip, projectScip, stageSourceSnapshot, snapshotManifest, verifySnapshotManifest, scanRepo, gitChanges, sourcePathDecision, searchStructural, readRepoFiles } = nativeBinding
+const { databaseSchemaVersion, NativeDatabase, inspectScip, projectScip, stageSourceSnapshot, snapshotManifest, verifySnapshotManifest, scanRepo, gitChanges, sourcePathDecision, searchStructural, parseRepoPaths, readRepoFiles } = nativeBinding
 
 module.exports.databaseSchemaVersion = databaseSchemaVersion
 module.exports.NativeDatabase = NativeDatabase
@@ -323,4 +323,5 @@ module.exports.scanRepo = scanRepo
 module.exports.gitChanges = gitChanges
 module.exports.sourcePathDecision = sourcePathDecision
 module.exports.searchStructural = searchStructural
+module.exports.parseRepoPaths = parseRepoPaths
 module.exports.readRepoFiles = readRepoFiles

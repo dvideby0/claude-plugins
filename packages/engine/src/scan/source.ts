@@ -128,6 +128,11 @@ export interface SourceFile {
    * baseline for a later scan. Null never means unchanged.
    */
   statKey: string | null;
+  /**
+   * Whether this scan read the file or trusted the filesystem's word that it
+   * had not changed.
+   */
+  freshness: "read" | "verified";
 }
 
 export interface SourceTextFile {
@@ -185,6 +190,8 @@ interface NativeFile {
   contentSha: string;
   isTest: boolean;
   parsed: boolean;
+  /** How this entry was established: `read` or `verified`. */
+  freshness: string;
   /** Absent when the observation cannot serve as a baseline for a later scan. */
   statKey?: string;
   syntaxSha: string;
@@ -306,7 +313,13 @@ export interface NativeSnapshotManifest {
 }
 
 export interface NativeCore {
-  scanRepo(root: string): Promise<{
+  /**
+   * `baseline` is `NativeDatabase.fileBaseline()` output, forwarded verbatim.
+   * Passing it lets the walk skip reading files the filesystem says are
+   * unchanged. Omit it for a full scan. Deliberately opaque: the shape and the
+   * comparison live in Rust so there is only one definition of "unchanged".
+   */
+  scanRepo(root: string, baseline?: string): Promise<{
     files: NativeFile[];
     exclusions: SourceExclusion[];
     exclusionSummary: ExclusionCount[];
@@ -317,6 +330,8 @@ export interface NativeCore {
   }>;
   /** Read source text through the same bounded inventory policy used by scans. */
   readRepoFiles(root: string): Promise<SourceTextFile[]>;
+  /** Re-read and parse named files, bypassing the walk and any baseline. */
+  parseRepoPaths(root: string, paths: string[]): Promise<NativeFile[]>;
   /**
    * Ask the repository input policy about one path, and why.
    *
@@ -409,6 +424,41 @@ export async function readSourceFiles(projectRoot: string): Promise<SourceTextFi
   return requireNative().readRepoFiles(projectRoot);
 }
 
+/**
+ * Re-read and parse named files, bypassing the walk and any baseline.
+ *
+ * For the files an incremental scan must rebuild even though nothing about
+ * them changed — the callers of something that was deleted. That set is only
+ * known once the walk has finished and already skipped them.
+ */
+export async function parseSourcePaths(
+  projectRoot: string,
+  paths: string[],
+): Promise<Map<string, { parsed: ParsedSource; refs: SourceRef[] }>> {
+  if (paths.length === 0) return new Map();
+  const files = await requireNative().parseRepoPaths(projectRoot, paths);
+  return new Map(
+    files
+      .filter((file) => file.parsed)
+      .map((file) => [
+        file.path,
+        {
+          // Refs travel beside the parse output rather than inside it, so a
+          // caller rebuilding a file has to carry both or its references are
+          // deleted and never written back.
+          refs: file.refs,
+          parsed: {
+            symbols: file.symbols as ParsedSymbol[],
+            imports: file.imports,
+            executionEntries: file.executionEntries,
+            syntaxSha: file.syntaxSha,
+            relationSetSha: file.relationSetSha,
+          },
+        },
+      ]),
+  );
+}
+
 export interface CollectResult {
   files: SourceFile[];
   /** Recorded decisions to keep paths out, so absence is never unexplained. */
@@ -426,8 +476,11 @@ export interface CollectResult {
   parseMs: number;
 }
 
-export async function collectFiles(projectRoot: string): Promise<CollectResult> {
-  const result = await requireNative().scanRepo(projectRoot);
+export async function collectFiles(
+  projectRoot: string,
+  baseline?: string | null,
+): Promise<CollectResult> {
+  const result = await requireNative().scanRepo(projectRoot, baseline ?? undefined);
   return {
     engine: "native",
     walkMs: result.walkMs,
@@ -445,7 +498,10 @@ export async function collectFiles(projectRoot: string): Promise<CollectResult> 
       isTest: file.isTest,
       parseable: file.parsed,
       statKey: file.statKey ?? null,
-      parsed: file.parsed
+      // A verified file was not read, so it has no parse output — which is not
+      // the same as having none to give. Reading the flag rather than checking
+      // for empty symbols keeps "we did not look" separate from "nothing here".
+      parsed: file.freshness !== "verified" && file.parsed
         ? {
             symbols: file.symbols as ParsedSymbol[],
             imports: file.imports,
@@ -454,7 +510,8 @@ export async function collectFiles(projectRoot: string): Promise<CollectResult> 
             relationSetSha: file.relationSetSha,
           }
         : null,
-      refs: file.parsed ? file.refs : [],
+      refs: file.freshness !== "verified" && file.parsed ? file.refs : [],
+      freshness: file.freshness === "verified" ? "verified" : "read",
     })),
   };
 }

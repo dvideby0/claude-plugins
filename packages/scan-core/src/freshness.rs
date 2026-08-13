@@ -21,6 +21,7 @@
 
 use crate::signature::finish;
 use sha2::{Digest, Sha256};
+use std::collections::HashMap;
 use std::fs::Metadata;
 
 /// The filesystem's identity for a file, or `None` when it cannot be trusted.
@@ -43,6 +44,90 @@ pub fn stat_key(metadata: &Metadata, walk_started_secs: i64) -> Option<String> {
         return None;
     }
     Some(finish(hasher))
+}
+
+/// What the last scan recorded about a file, for deciding whether to read it.
+#[derive(Clone)]
+pub struct BaselineEntry {
+    pub stat_key: String,
+    pub content_sha: String,
+    pub loc: u32,
+}
+
+/// Everything a walk needs in order to skip work, and nothing else.
+///
+/// Built in the store owner from one indexed query and handed to the walk. The
+/// walk cannot reach the database and the database does not know how to walk,
+/// so this is the whole of what passes between them — which is also why the
+/// comparison can only be made in one place.
+#[derive(Default)]
+pub struct FileBaseline {
+    entries: HashMap<String, BaselineEntry>,
+    /// The run that produced this baseline, so sampling can rotate.
+    pub last_run: i64,
+}
+
+impl FileBaseline {
+    pub fn new(entries: HashMap<String, BaselineEntry>, last_run: i64) -> Self {
+        Self { entries, last_run }
+    }
+
+    /// The recorded entry for a path whose current identity matches it.
+    ///
+    /// A miss is any of: never indexed, indexed without a usable key, or a key
+    /// that no longer matches. All three mean read the file, and none of them
+    /// is distinguishable from the others here on purpose — the caller's next
+    /// move is the same for all of them.
+    pub fn unchanged(&self, path: &str, current: Option<&str>) -> Option<&BaselineEntry> {
+        let current = current?;
+        let entry = self.entries.get(path)?;
+        (entry.stat_key == current).then_some(entry)
+    }
+
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+}
+
+/// Read a baseline produced by the store owner.
+///
+/// JSON rather than a typed handle because the two live in different napi
+/// objects, and a string the caller only forwards keeps the shape private to
+/// this crate. An entry without a usable key is dropped here rather than stored
+/// and skipped later, so the map contains only files that could be trusted.
+pub fn parse_baseline(json: &str) -> napi::Result<FileBaseline> {
+    let parsed: serde_json::Value = serde_json::from_str(json).map_err(|error| {
+        napi::Error::new(
+            napi::Status::InvalidArg,
+            format!("The file baseline is not valid JSON: {error}"),
+        )
+    })?;
+
+    let last_run = parsed.get("lastRun").and_then(serde_json::Value::as_i64).unwrap_or(0);
+    let mut entries = HashMap::new();
+    for row in parsed
+        .get("files")
+        .and_then(serde_json::Value::as_array)
+        .map(Vec::as_slice)
+        .unwrap_or_default()
+    {
+        let (Some(path), Some(stat_key), Some(content_sha)) = (
+            row.get("path").and_then(serde_json::Value::as_str),
+            row.get("statKey").and_then(serde_json::Value::as_str),
+            row.get("contentSha").and_then(serde_json::Value::as_str),
+        ) else {
+            continue;
+        };
+        entries.insert(
+            path.to_string(),
+            BaselineEntry {
+                stat_key: stat_key.to_string(),
+                content_sha: content_sha.to_string(),
+                loc: row.get("loc").and_then(serde_json::Value::as_u64).unwrap_or(0) as u32,
+            },
+        );
+    }
+    Ok(FileBaseline::new(entries, last_run))
 }
 
 /// Seconds since the epoch, for stamping the start of a walk.

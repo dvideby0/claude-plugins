@@ -10,6 +10,7 @@
 //! indistinguishable from one that was never there. Every skip now carries its
 //! reason out with it.
 
+use crate::freshness::FileBaseline;
 use crate::input_policy::{Decision, EntryKind, InputPolicy, Reason, MAX_RECORDED_EXCLUSIONS};
 use ignore::WalkBuilder;
 use sha2::{Digest, Sha256};
@@ -30,7 +31,41 @@ pub struct Scanned {
     /// The filesystem's identity for this file, or `None` when it cannot serve
     /// as a baseline for a later scan. See [`crate::freshness`].
     pub stat_key: Option<String>,
-    pub content: String,
+    /// How this entry's facts were established.
+    pub freshness: Freshness,
+    /// The file's text, or `None` when it was not read because the filesystem
+    /// said it had not changed. An `Option` rather than an empty string so a
+    /// skipped file cannot be mistaken for an empty one anywhere downstream.
+    pub content: Option<String>,
+}
+
+/// How one walked file's facts came to be believed.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Freshness {
+    /// The bytes were read and hashed on this walk.
+    Read,
+    /// The filesystem's identity matched the baseline, so the read was skipped.
+    Verified,
+}
+
+impl Freshness {
+    pub fn key(self) -> &'static str {
+        match self {
+            Freshness::Read => "read",
+            Freshness::Verified => "verified",
+        }
+    }
+}
+
+/// Whether a walk may trust a previous scan's record of a file.
+///
+/// An explicit choice at every call site rather than a default, because the
+/// wrong one is silent: an analyzer that needs the file's text would receive
+/// `None` and simply find nothing in it. Search, provider staging and the
+/// content analyzers all say [`WalkMode::ReadAll`] for that reason.
+pub enum WalkMode<'a> {
+    ReadAll,
+    Incremental(&'a FileBaseline),
 }
 
 /// One recorded exclusion. A pruned directory is one decision, not one per
@@ -116,14 +151,18 @@ fn relative_path(root: &Path, entry: &Path) -> Option<String> {
     }
 }
 
-/// Walk the repository, reading and hashing every indexable file.
+/// Walk the repository, reading every indexable file the mode does not excuse.
 ///
 /// The `ignore` crate walks directories on a thread pool, which is where most
 /// of the gain over a sequential readdir comes from on a large tree. Its own
 /// ignore-file handling stays off: it drops entries before this module sees
 /// them, and an exclusion nobody can explain is the defect being fixed.
-pub fn walk(root: &Path, policy: &InputPolicy) -> WalkOutcome {
-    let outcome = walk_with(root, policy);
+///
+/// Every path is still visited and still stat'ed, whatever the mode — that is
+/// how a deletion is noticed. What [`WalkMode::Incremental`] saves is the read,
+/// the UTF-8 decode, the content hash and, downstream, the parse.
+pub fn walk(root: &Path, policy: &InputPolicy, mode: WalkMode<'_>) -> WalkOutcome {
+    let outcome = walk_with(root, policy, &mode);
     if !outcome.files.is_empty() || !policy.has_gitignore() {
         return outcome;
     }
@@ -147,7 +186,7 @@ pub fn walk(root: &Path, policy: &InputPolicy) -> WalkOutcome {
          Narrow the rule, or index a directory where the source lives."
     );
     let relaxed = policy.without_gitignore(diagnostic.clone());
-    let mut retried = walk_with(root, &relaxed);
+    let mut retried = walk_with(root, &relaxed, &mode);
     retried.gitignore_applied = false;
     // Keep any earlier complaint about the file itself: "some rules could not
     // be read" and "the rules matched everything" are separate problems.
@@ -158,7 +197,67 @@ pub fn walk(root: &Path, policy: &InputPolicy) -> WalkOutcome {
     retried
 }
 
-fn walk_with(root: &Path, policy: &InputPolicy) -> WalkOutcome {
+/// Read and hash exactly the named paths, with no traversal.
+///
+/// For the case a walk cannot answer: a file the walk correctly skipped, which
+/// something discovered *after* the walk needs rebuilt anyway. The set is known
+/// only once the run knows what was deleted, so it cannot be folded into the
+/// baseline; asking for those few paths by name is cheaper and clearer than
+/// giving up the fast path for the whole repository.
+///
+/// A path the policy excludes, or that has gone, is left out rather than
+/// guessed at — the caller learns which by what comes back.
+pub fn read_paths(root: &Path, policy: &InputPolicy, paths: &[String]) -> Vec<Scanned> {
+    let started_secs = crate::freshness::now_secs();
+    paths
+        .iter()
+        .filter_map(|path| {
+            let decision = policy.decide(path, EntryKind::File);
+            if !decision.included() {
+                return None;
+            }
+            let absolute = root.join(path);
+            let metadata = std::fs::metadata(&absolute).ok()?;
+            if !metadata.is_file() || policy.decide_size(path, metadata.len()).is_some() {
+                return None;
+            }
+            let bytes = std::fs::read(&absolute).ok()?;
+            if policy.decide_content(path, &bytes).is_some() {
+                return None;
+            }
+
+            let content = String::from_utf8_lossy(&bytes).into_owned();
+            let digest = Sha256::digest(content.as_bytes());
+            let content_sha: String = digest
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>()
+                .chars()
+                .take(16)
+                .collect();
+            let loc = if content.is_empty() {
+                0
+            } else {
+                content.matches('\n').count() as u32 + 1
+            };
+
+            Some(Scanned {
+                path: path.clone(),
+                lang: decision.language,
+                loc,
+                bytes: metadata.len() as u32,
+                content_sha,
+                is_test: decision.is_test,
+                parseable: decision.parseable(),
+                stat_key: crate::freshness::stat_key(&metadata, started_secs),
+                freshness: Freshness::Read,
+                content: Some(content),
+            })
+        })
+        .collect()
+}
+
+fn walk_with(root: &Path, policy: &InputPolicy, mode: &WalkMode<'_>) -> WalkOutcome {
     // Stamped once, before anything is observed, so a file written during the
     // walk is compared against a moment that is definitely earlier than its own
     // modification time. Taking it per file would let a slow walk decide that a
@@ -235,7 +334,8 @@ fn walk_with(root: &Path, policy: &InputPolicy) -> WalkOutcome {
             };
 
             // Each step either keeps the file or produces the decision that
-            // dropped it, so no path leaves the walk unexplained.
+            // dropped it, so no path leaves the walk unexplained. The read is
+            // the last step, so a file the baseline excuses never reaches it.
             let rejected = match policy.decide(&path, EntryKind::File) {
                 decision if !decision.included() => Err(decision),
                 decision => match entry.metadata() {
@@ -245,18 +345,12 @@ fn walk_with(root: &Path, policy: &InputPolicy) -> WalkOutcome {
                     // parallel worker that reaches it.
                     Ok(metadata) => match policy.decide_size(&path, metadata.len()) {
                         Some(rejected) => Err(rejected),
-                        None => match std::fs::read(entry.path()) {
-                            Err(error) => Err(policy.unreadable(&path, error.to_string())),
-                            Ok(bytes) => match policy.decide_content(&path, &bytes) {
-                                Some(rejected) => Err(rejected),
-                                None => Ok((decision, metadata, bytes)),
-                            },
-                        },
+                        None => Ok((decision, metadata)),
                     },
                 },
             };
 
-            let (decision, metadata, bytes) = match rejected {
+            let (decision, metadata) = match rejected {
                 Ok(kept) => kept,
                 Err(decision) => {
                     if let Ok(mut collector) = collector.lock() {
@@ -266,40 +360,87 @@ fn walk_with(root: &Path, policy: &InputPolicy) -> WalkOutcome {
                 }
             };
 
-            // Decode lossily so one malformed byte does not make an otherwise
-            // indexable text file disappear from the repository inventory.
-            let content = String::from_utf8_lossy(&bytes).into_owned();
+            let stat_key = crate::freshness::stat_key(&metadata, started_secs);
+            let unchanged = match mode {
+                WalkMode::ReadAll => None,
+                WalkMode::Incremental(baseline) => baseline.unchanged(&path, stat_key.as_deref()),
+            };
 
-            let digest = Sha256::digest(content.as_bytes());
-            let content_sha: String = digest
-                .iter()
-                .map(|byte| format!("{byte:02x}"))
-                .collect::<String>()
-                .chars()
-                .take(16)
-                .collect();
+            let scanned = match unchanged {
+                // The filesystem says this is the same file we already read, so
+                // its recorded facts stand. Note what is *not* carried forward:
+                // the content. A caller that needs the text has to say so with
+                // `WalkMode::ReadAll` rather than receive an empty string.
+                Some(entry) => Scanned {
+                    path,
+                    lang: decision.language,
+                    loc: entry.loc,
+                    bytes: metadata.len() as u32,
+                    content_sha: entry.content_sha.clone(),
+                    is_test: decision.is_test,
+                    parseable: decision.parseable(),
+                    stat_key,
+                    freshness: Freshness::Verified,
+                    content: None,
+                },
+                None => {
+                    let bytes = match std::fs::read(entry.path()) {
+                        Ok(bytes) => bytes,
+                        Err(error) => {
+                            let decision = policy.unreadable(&path, error.to_string());
+                            if let Ok(mut collector) = collector.lock() {
+                                collector.record(&path, false, &decision);
+                            }
+                            return ignore::WalkState::Continue;
+                        }
+                    };
+                    if let Some(rejected) = policy.decide_content(&path, &bytes) {
+                        if let Ok(mut collector) = collector.lock() {
+                            collector.record(&path, false, &rejected);
+                        }
+                        return ignore::WalkState::Continue;
+                    }
 
-            let loc = if content.is_empty() {
-                0
-            } else {
-                content.matches('\n').count() as u32 + 1
+                    // Decode lossily so one malformed byte does not make an
+                    // otherwise indexable text file disappear from the
+                    // repository inventory.
+                    let content = String::from_utf8_lossy(&bytes).into_owned();
+
+                    let digest = Sha256::digest(content.as_bytes());
+                    let content_sha: String = digest
+                        .iter()
+                        .map(|byte| format!("{byte:02x}"))
+                        .collect::<String>()
+                        .chars()
+                        .take(16)
+                        .collect();
+
+                    let loc = if content.is_empty() {
+                        0
+                    } else {
+                        content.matches('\n').count() as u32 + 1
+                    };
+
+                    Scanned {
+                        path,
+                        lang: decision.language,
+                        loc,
+                        bytes: metadata.len() as u32,
+                        content_sha,
+                        is_test: decision.is_test,
+                        parseable: decision.parseable(),
+                        stat_key,
+                        freshness: Freshness::Read,
+                        content: Some(content),
+                    }
+                }
             };
 
             if let Ok(mut collector) = collector.lock() {
                 collector.count(&decision);
             }
 
-            let _ = sender.send(Scanned {
-                path,
-                lang: decision.language,
-                loc,
-                bytes: metadata.len() as u32,
-                content_sha,
-                is_test: decision.is_test,
-                parseable: decision.parseable(),
-                stat_key: crate::freshness::stat_key(&metadata, started_secs),
-                content,
-            });
+            let _ = sender.send(scanned);
             ignore::WalkState::Continue
         })
     });
@@ -332,7 +473,7 @@ fn walk_with(root: &Path, policy: &InputPolicy) -> WalkOutcome {
 
 #[cfg(test)]
 mod tests {
-    use super::walk;
+    use super::{walk, WalkMode};
     use crate::input_policy::{EntryKind, InputPolicy};
     use std::collections::HashSet;
     use std::fs;
@@ -365,7 +506,7 @@ mod tests {
             .expect("write hidden config");
 
         let policy = InputPolicy::for_root(&root);
-        let outcome = walk(&root, &policy);
+        let outcome = walk(&root, &policy, WalkMode::ReadAll);
         let paths: HashSet<String> = outcome.files.iter().map(|f| f.path.clone()).collect();
 
         assert!(paths.contains("ignored.ts"));
@@ -395,7 +536,7 @@ mod tests {
         fs::write(root.join("app.ts"), "export const app = 1;\n").expect("write source");
 
         let policy = InputPolicy::for_root(&root);
-        let outcome = walk(&root, &policy);
+        let outcome = walk(&root, &policy, WalkMode::ReadAll);
 
         assert_eq!(outcome.files.len(), 1);
         let recorded: Vec<&str> = outcome
@@ -425,7 +566,7 @@ mod tests {
         fs::write(root.join("node_modules/pkg/index.ts"), "export {};\n").expect("write dep");
 
         let policy = InputPolicy::for_root(&root);
-        let outcome = walk(&root, &policy);
+        let outcome = walk(&root, &policy, WalkMode::ReadAll);
 
         for file in &outcome.files {
             assert!(
@@ -459,7 +600,7 @@ mod tests {
         fs::write(root.join("app.ts"), "export const app = 1;\n").expect("write source");
 
         let policy = InputPolicy::for_root(&root);
-        let outcome = walk(&root, &policy);
+        let outcome = walk(&root, &policy, WalkMode::ReadAll);
 
         assert_eq!(outcome.files.len(), 1);
         assert!(
@@ -482,7 +623,7 @@ mod tests {
         fs::write(root.join("src/app.ts"), "export const app = 1;\n").expect("write source");
 
         let policy = InputPolicy::for_root(&root);
-        let outcome = walk(&root, &policy);
+        let outcome = walk(&root, &policy, WalkMode::ReadAll);
 
         assert_eq!(outcome.files.len(), 1);
         let reasons: HashSet<&str> = outcome

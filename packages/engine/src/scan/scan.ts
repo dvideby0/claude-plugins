@@ -13,7 +13,7 @@ import { getDb } from "../db/db.js";
 import { createResolver, parseTsAliases, type TsPathAlias } from "./resolve.js";
 import { collectGit } from "./git.js";
 import { TYPED_SPECIFIER } from "../graph/typed-contract.js";
-import { collectFiles, type ParsedSource } from "./source.js";
+import { collectFiles, parseSourcePaths, type ParsedSource } from "./source.js";
 import { canonicalWorkspaceRoot, workspaceIdentityKey } from "../lib/workspace-path.js";
 import { sourceSignature } from "./signature.js";
 import { applyMove, correlateMoves } from "./moves.js";
@@ -125,11 +125,11 @@ async function doScan(projectRoot: string, options: ScanOptions = {}): Promise<S
   const runId = await startRun(db, options.kind ?? "scan", git.sha);
 
   // Promote to a full scan when the index was built by an older extractor.
+  // Decided before the walk, not after it: a full scan is expressed by giving
+  // the walk no baseline, so it has to be known before the walk starts.
   const storedVersion = Number(
     db.get<{ value: string }>("SELECT value FROM meta WHERE key = 'extraction_version'")?.value ?? 0,
   );
-  const { files, engine, exclusions, exclusionSummary, diagnostic, gitignoreApplied } =
-    await collectFiles(projectRoot);
   const storedEngine =
     db.get<{ value: string }>("SELECT value FROM meta WHERE key = 'extraction_engine'")?.value ??
     "unknown";
@@ -137,6 +137,9 @@ async function doScan(projectRoot: string, options: ScanOptions = {}): Promise<S
   // references. Rebuild them once through the sole production source engine.
   const stale = storedVersion < EXTRACTION_VERSION || storedEngine !== "native";
   const full = options.full || stale;
+
+  const { files, engine, exclusions, exclusionSummary, diagnostic, gitignoreApplied } =
+    await collectFiles(projectRoot, full ? null : db.fileBaseline());
   const aliases = await loadAliases(projectRoot);
 
   const previous = new Map(
@@ -198,20 +201,42 @@ async function doScan(projectRoot: string, options: ScanOptions = {}): Promise<S
   let filesParsed = 0;
   let findingsRetired = 0;
 
+  // A file may be skipped only if nothing else in this run has invalidated it.
+  //
+  // A reference is owned by its caller, so when a target disappears the
+  // unchanged caller is rebuilt to keep the unresolved row, which can resolve
+  // again if the target returns. That set is only known after the walk — it
+  // depends on what turned out to be missing — so an incremental walk has
+  // already verified those callers and returned no parse output for them,
+  // while the removal pass below is about to delete their inbound references.
+  // Without this they would degrade until the next full scan, and nothing
+  // anywhere would report a problem. Re-read exactly those paths by name.
+  const missingParse = files.filter(
+    (file) => invalidatedSources.has(file.path) && file.parseable && file.parsed === null,
+  );
+  const rebuilt = await parseSourcePaths(
+    projectRoot,
+    missingParse.map((file) => file.path),
+  );
+
   // Rust has already walked and parsed before the transaction opens. Select
   // the changed parse results here so the write pass remains synchronous.
   const parsed = new Map<string, ParsedSource>();
+  // References are produced by the parse but written from their own list, so a
+  // rebuilt file has to contribute both. Reading `file.refs` alone would delete
+  // a verified caller's references and insert nothing in their place.
+  const refsByPath = new Map(files.map((file) => [file.path, file.refs]));
   for (const file of files) {
-    // A reference is owned by its caller. If its target disappears, rebuild
-    // that unchanged caller now so the unresolved row survives and can resolve
-    // again when the target returns. Deleting the inbound row permanently lost
-    // the call until a full scan or an unrelated caller edit.
     const changed =
       full ||
       previous.get(file.path)?.content_sha !== file.contentSha ||
       invalidatedSources.has(file.path);
-    if (!changed || !file.parsed) continue;
-    parsed.set(file.path, file.parsed);
+    if (!changed) continue;
+    const rebuiltSource = rebuilt.get(file.path);
+    if (rebuiltSource) refsByPath.set(file.path, rebuiltSource.refs);
+    const source = file.parsed ?? rebuiltSource?.parsed;
+    if (!source) continue;
+    parsed.set(file.path, source);
   }
 
   // Which files changed in a way anything anchored to them should care about.
@@ -251,7 +276,7 @@ async function doScan(projectRoot: string, options: ScanOptions = {}): Promise<S
            is_test = excluded.is_test,
            stat_key = excluded.stat_key,
            freshness_basis = excluded.freshness_basis,
-           last_read_run = excluded.last_read_run,
+           last_read_run = COALESCE(excluded.last_read_run, files.last_read_run),
            -- Only a re-parse produces these. An unchanged file keeps the ones
            -- it already has rather than having them overwritten with nulls.
            syntax_sha = CASE WHEN ? = 1 THEN excluded.syntax_sha ELSE files.syntax_sha END,
@@ -279,9 +304,11 @@ async function doScan(projectRoot: string, options: ScanOptions = {}): Promise<S
           runId,
           runId,
           file.statKey,
-          // Every file is read today. The other bases arrive with skipping.
-          "read",
-          runId,
+          file.freshness,
+          // The run that last read the bytes. A verified file keeps the one it
+          // already had, so "established at run 41, confirmed at run 57" stays
+          // true rather than collapsing into "read at 57".
+          file.freshness === "verified" ? null : runId,
           refreshed ? 1 : 0,
           refreshed ? 1 : 0,
           refreshed ? 1 : 0,
@@ -333,7 +360,7 @@ async function doScan(projectRoot: string, options: ScanOptions = {}): Promise<S
         );
       }
 
-      for (const reference of file.refs) {
+      for (const reference of refsByPath.get(file.path) ?? []) {
         db.run(
           `INSERT OR REPLACE INTO refs(src_path, src_line, src_column, name, specifier, dst_path)
            VALUES(?, ?, ?, ?, ?, NULL)`,

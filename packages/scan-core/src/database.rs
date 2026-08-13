@@ -1768,6 +1768,34 @@ impl NativeDatabase {
             .map_err(|error| database_error("SQLite statement failed", error))
     }
 
+    /// What the last scan recorded about each present file, for the walk.
+    ///
+    /// Produced here rather than assembled by the caller so the query, the
+    /// shape and the comparison all stay on this side of the boundary. The
+    /// caller forwards the string to `scanRepo` without reading it; it cannot
+    /// grow a second opinion about what "unchanged" means, which is the same
+    /// reason the input policy answers the walk and the watcher from one place.
+    ///
+    /// Rows without a `stat_key` are omitted: an absent key is not a baseline.
+    #[napi]
+    pub fn file_baseline(&self) -> Result<String> {
+        let connection = self.connection()?;
+        let connection = connection.as_ref().ok_or_else(|| {
+            Error::new(Status::GenericFailure, "SQLite store is closed".to_string())
+        })?;
+        let last_run: i64 = connection
+            .query_row("SELECT COALESCE(MAX(id), 0) FROM runs", [], |row| row.get(0))
+            .map_err(|error| database_error("Cannot read the last run id", error))?;
+        let files = query_json(
+            connection,
+            "SELECT path, stat_key AS statKey, content_sha AS contentSha, loc
+               FROM files
+              WHERE present = 1 AND stat_key IS NOT NULL",
+            &[],
+        )?;
+        Ok(format!("{{\"lastRun\":{last_run},\"files\":{files}}}"))
+    }
+
     #[napi]
     pub fn all(&self, sql: String, params_json: String) -> Result<String> {
         let params = parse_params(&params_json)?;

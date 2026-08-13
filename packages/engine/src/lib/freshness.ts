@@ -57,7 +57,13 @@ export function currentSignatures(db: Db, path: string): CurrentSignatures {
 
 /** How a file's recorded facts came to be believed. */
 export interface EvidenceBasis {
-  basis: "read" | "verified" | "sampled" | "unrecorded";
+  /**
+   * `absent` is not `unrecorded`. The first says no scan ever established
+   * anything about this path; the second says one did, before we started
+   * recording how. Collapsing them let a never-indexed path claim it was
+   * indexed a long time ago.
+   */
+  basis: "read" | "verified" | "sampled" | "unrecorded" | "absent";
   /** The run that last read the bytes, where that is known. */
   lastReadRun: number | null;
   /** The run that last confirmed the file is still there. */
@@ -76,16 +82,42 @@ export interface EvidenceBasis {
  */
 export function fileEvidenceBasis(db: Db, path: string): EvidenceBasis {
   const row = db.get<{
+    present: number;
     freshness_basis: string | null;
     last_read_run: number | null;
     last_seen_run: number | null;
-  }>("SELECT freshness_basis, last_read_run, last_seen_run FROM files WHERE path = ?", [path]);
+  }>("SELECT present, freshness_basis, last_read_run, last_seen_run FROM files WHERE path = ?", [
+    path,
+  ]);
 
   const lastReadRun = row?.last_read_run ?? null;
   const lastSeenRun = row?.last_seen_run ?? null;
   const at = lastReadRun === null ? "an earlier run" : `run ${lastReadRun}`;
+  const confirmedBy = lastSeenRun === null ? "A later scan" : `Run ${lastSeenRun}`;
 
-  switch (row?.freshness_basis) {
+  // No row, or a row for a path that has left the index. Either way no current
+  // scan established these facts, and describing how one did would be a claim
+  // about a file the inventory does not have.
+  if (!row) {
+    return {
+      basis: "absent",
+      lastReadRun: null,
+      lastSeenRun: null,
+      reason: "This path is not in the index, so no scan established anything about it.",
+    };
+  }
+  if (row.present !== 1) {
+    return {
+      basis: "absent",
+      lastReadRun,
+      lastSeenRun,
+      reason:
+        `This path left the index. What is recorded about it came from ${at} and has ` +
+        "not been confirmed since.",
+    };
+  }
+
+  switch (row.freshness_basis) {
     case "read":
       return {
         basis: "read",
@@ -99,9 +131,9 @@ export function fileEvidenceBasis(db: Db, path: string): EvidenceBasis {
         lastReadRun,
         lastSeenRun,
         reason:
-          `Its contents were read at ${at}. Run ${lastSeenRun} found the filesystem's ` +
-          "identity for it — size, inode, modification and change times — unchanged, " +
-          "and did not read it again.",
+          `Its contents were read at ${at}. ${confirmedBy} found the filesystem's ` +
+          "identity for it — device, inode, size, modification and change times — " +
+          "unchanged, and did not read it again.",
       };
     case "sampled":
       return {
@@ -109,7 +141,7 @@ export function fileEvidenceBasis(db: Db, path: string): EvidenceBasis {
         lastReadRun,
         lastSeenRun,
         reason:
-          `Run ${lastSeenRun} could have skipped this file, and read it anyway to check ` +
+          `${confirmedBy} could have skipped this file, and read it anyway to check ` +
           "that the filesystem's identity for it still matches its contents.",
       };
     default:
