@@ -183,12 +183,15 @@ export function applyMove(db: Db, runId: number, move: FileMove): string[] {
 export function orphanedOverlays(
   db: Db,
   limit = 50,
-): Array<{ kind: string; path: string; label: string }> {
+): Array<{ kind: "memory" | "relation" | "flow-step"; path: string; label: string }> {
   /** The path column differs per table; the absence test does not. */
   const absent = (column: string) =>
     `NOT EXISTS (SELECT 1 FROM files f WHERE f.path = ${column} AND f.present = 1)`;
 
-  const rows: Array<{ kind: string; path: string; label: string }> = [];
+  const rows: Array<{ kind: "memory" | "relation" | "flow-step"; path: string; label: string }> =
+    [];
+  // A share each, so one noisy kind cannot crowd the others out of the list.
+  const perKind = Math.max(1, Math.ceil(limit / 3));
   for (const [kind, sql] of [
     [
       "memory",
@@ -218,7 +221,7 @@ export function orphanedOverlays(
   ] as const) {
     for (const row of db.all<{ path: string; label: string | null }>(
       `${sql} ORDER BY path LIMIT ?`,
-      [limit],
+      [perKind],
     )) {
       rows.push({ kind, path: row.path, label: row.label ?? "" });
     }

@@ -191,11 +191,16 @@ describe("enrichment", () => {
     await scan(root, { kind: "incremental" });
 
     expect(relationsFor(db, "src/graph.py")[0]?.stale).toBe(true);
-    expect(findGaps(db).gaps).toEqual(
+    // A deleted file is an orphan, not a note recorded against an older
+    // version of something that still exists — and the relation is reported
+    // too, which the file-changed path never covered.
+    const gaps = findGaps(db).gaps;
+    expect(gaps).toEqual(
       expect.arrayContaining([
-        expect.objectContaining({ kind: "stale-note", path: "src/graph.py" }),
+        expect.objectContaining({ kind: "orphan-anchor", path: "src/graph.py" }),
       ]),
     );
+    expect(gaps.filter((gap) => gap.kind === "orphan-anchor").length).toBeGreaterThan(1);
   });
 
   it("queues a memory recorded before its anchor was indexed for validation", async () => {

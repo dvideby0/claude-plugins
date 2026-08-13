@@ -18,13 +18,16 @@
 
 import type { Db } from "../db/db.js";
 import { sameMeaning } from "../lib/freshness.js";
+import { orphanedOverlays } from "../scan/moves.js";
 
 export type GapKind =
   | "dynamic-dispatch"
   | "orphan-entry"
   | "unresolved-import"
   | "undocumented-hub"
-  | "stale-note";
+  | "stale-note"
+  /** Knowledge whose file is gone, not merely changed. */
+  | "orphan-anchor";
 
 export interface Gap {
   kind: GapKind;
@@ -238,13 +241,34 @@ export function findGaps(db: Db, limit = 25): GapsResult {
     });
   }
 
+  // --- knowledge whose file is gone ----------------------------------------
+  //
+  // Distinct from a stale note, which is about code that changed: nothing here
+  // can be re-read and confirmed, because there is nothing left to read. One
+  // definition covers memories, assertions and flow steps alike, and it is the
+  // same list the scan uses to show that a delete leaves no silent orphan.
+  for (const orphan of orphanedOverlays(db, 20)) {
+    gaps.push({
+      kind: "orphan-anchor",
+      path: orphan.path,
+      symbol: null,
+      reason: `"${orphan.label}" describes ${orphan.path}, which is no longer in the index.`,
+      hint: "Re-anchor it to where the code went, or retire it.",
+      score: 75,
+      explored: false,
+    });
+  }
+
   // --- notes written against code that has moved ---------------------------
+  //
+  // Present files only: a note about a deleted file is reported above, and
+  // saying it "was recorded against an older version" would be untrue.
   const stale = db.all<{ path: string; symbol: string; title: string }>(
     `SELECT a.path, a.symbol, m.title FROM memory_anchors a
      JOIN memories m ON m.id = a.memory_id
-     LEFT JOIN files f ON f.path = a.path
+     JOIN files f ON f.path = a.path AND f.present = 1
      WHERE m.status = 'active'
-       AND (a.content_sha IS NULL OR f.path IS NULL OR f.present = 0
+       AND (a.content_sha IS NULL
             OR CASE
                  WHEN a.syntax_sha IS NOT NULL AND f.syntax_sha IS NOT NULL
                    THEN a.syntax_sha != f.syntax_sha

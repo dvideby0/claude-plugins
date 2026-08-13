@@ -273,9 +273,10 @@ move a line range. A moved contract invalidates the *summaries* written against
 it through recorded interface dependencies, computed at read time — it does not
 re-parse callers, whose own facts would rebuild identically. Renames correlate
 only on a Git rename or an exact content match with a one-to-one pairing, and
-authored knowledge follows; anything ambiguous degrades as before, and
-`orphanedOverlays` lists what still points at deleted code instead of dropping
-it. The evaluation harness's existing comment-append probe now reports
+authored knowledge follows; anything ambiguous degrades as before. Knowledge
+left pointing at deleted code is neither dropped nor left invisible: it is
+reported as a distinct `orphan-anchor` gap covering memories, assertions and
+flow steps, separate from a note recorded against a file that merely changed. The evaluation harness's existing comment-append probe now reports
 `filesReparsed: 1, filesMeaningChanged: 0, executionEntriesStale: 0`. Parse time
 rose from 100.0 ms to 111.0 ms on this repository.
 

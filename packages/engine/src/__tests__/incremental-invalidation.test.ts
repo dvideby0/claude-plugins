@@ -495,5 +495,16 @@ describe("files that move keep the knowledge written about them", () => {
     expect(recall(db, "hashing")[0]?.anchors[0]?.freshness.reason).toContain(
       "no longer present in the index",
     );
+
+    // Visible where somebody would look, not only to a caller who knows to
+    // ask — an orphan nobody is shown is exactly the orphan fact this claims
+    // not to leave. Reported as gone, not as recorded against an older
+    // version, which would not be true of a file that no longer exists.
+    const gaps = findGaps(db).gaps;
+    expect(gaps.some((gap) => gap.kind === "orphan-anchor")).toBe(true);
+    expect(gaps.some((gap) => gap.kind === "stale-note")).toBe(false);
+    expect(gaps.find((gap) => gap.kind === "orphan-anchor")?.reason).toContain(
+      "no longer in the index",
+    );
   }, 30_000);
 });
