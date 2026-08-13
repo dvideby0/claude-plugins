@@ -16,7 +16,8 @@
 import type { Db } from "../db/db.js";
 import type { SourceFile } from "./source.js";
 import { renameRelationPaths } from "../graph/relations.js";
-import { memberDigestFor } from "../graph/map.js";
+import { refreshMemberDigests } from "../graph/map.js";
+import { likeEscape } from "../lib/sql.js";
 
 export interface FileMove {
   from: string;
@@ -133,14 +134,20 @@ export function applyMove(db: Db, runId: number, move: FileMove): void {
     [move.from],
   );
   db.run("UPDATE OR REPLACE component_snapshot SET path = ? WHERE path = ?", [move.to, move.from]);
-  for (const component of affected) {
-    db.run("UPDATE components SET member_digest = ? WHERE id = ?", [
-      memberDigestFor(db, component.component_id),
-      component.component_id,
-    ]);
-  }
+  for (const component of affected) refreshMemberDigests(db, component.component_id);
   db.run("UPDATE OR REPLACE node_tags SET path = ? WHERE path = ?", [move.to, move.from]);
   db.run("UPDATE OR REPLACE explorations SET path = ? WHERE path = ?", [move.to, move.from]);
+
+  // A symbol key embeds its path, so a recorded dependency on a moved file
+  // matches nothing afterwards and the box reports drift forever, naming a
+  // symbol with no path. The interface signature does not embed the path, so
+  // rewriting the prefix lets the comparison keep doing its job.
+  db.run(
+    `UPDATE OR REPLACE artifact_dependencies
+        SET depends_on = ? || substr(depends_on, ?)
+      WHERE signature_kind = 'symbol-interface' AND depends_on LIKE ? ESCAPE '\\'`,
+    [`${move.to}#`, move.from.length + 2, `${likeEscape(move.from)}#%`],
+  );
 
   // The file was renamed, not repaired. Leaving these behind lets the removal
   // pass close them as fixed, which is a claim no scan is entitled to make.

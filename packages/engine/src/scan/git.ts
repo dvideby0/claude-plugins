@@ -82,6 +82,23 @@ async function collectRenames(
   signal?: AbortSignal,
 ): Promise<Map<string, string>> {
   const renames = new Map<string, string>();
+  // Porcelain paths are relative to the repository root, not the working
+  // directory. A workspace nested inside a larger repository would otherwise
+  // produce paths that never match the scanned inventory, and every rename
+  // would be silently discarded.
+  const prefix = await exec("git", ["rev-parse", "--show-prefix"], {
+    cwd: projectRoot,
+    timeout: 10_000,
+    signal,
+  });
+  if (prefix.exitCode !== 0 || prefix.timedOut) return renames;
+  const inside = prefix.stdout.trim();
+
+  const relative = (repoPath: string): string | null => {
+    if (!inside) return repoPath;
+    return repoPath.startsWith(inside) ? repoPath.slice(inside.length) : null;
+  };
+
   // `-z` because the readable form quotes any path containing a space, and a
   // quoted path never matches the scanned inventory — the rename would be
   // detected and then silently discarded. NUL-delimited output emits each
@@ -100,9 +117,10 @@ async function collectRenames(
     // `XY <path>`, where either status column may be R or C.
     const code = record.slice(0, 2);
     if (!code.includes("R") && !code.includes("C")) continue;
-    const to = record.slice(3);
-    const from = records[index + 1];
+    const to = relative(record.slice(3));
+    const from = records[index + 1] === undefined ? null : relative(records[index + 1] as string);
     index++;
+    // A rename that crossed the workspace boundary is not a move within it.
     if (from && to) renames.set(to, from);
   }
   return renames;

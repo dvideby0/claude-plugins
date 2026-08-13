@@ -99,15 +99,20 @@ export function meaningFreshness(
     };
   }
 
-  // One side has no syntax signature: an unparsed file type, or an index that
-  // predates them. Say which comparison was actually available.
+  // One side has no syntax signature: an unparsed file type, or an artifact
+  // recorded before signatures existed. Content is still decisive here, and in
+  // one direction it is stronger — identical bytes cannot hide a changed
+  // meaning. Reporting that as unverified would make this reader disagree with
+  // the planner, the gap queries and the drift comparison, all of which treat
+  // equal content as current; two readers contradicting each other about the
+  // same artifact is worse than either answer alone.
   if (recorded.contentSha === current.contentSha) {
     return {
-      state: current.syntaxSha == null ? "current" : "unverified",
+      state: "current",
       reason:
         current.syntaxSha == null
           ? `${path} is unchanged, compared by content because no parser covers it.`
-          : `${path} is unchanged by content, but this was recorded before syntax signatures existed. Re-scan to compare meaning.`,
+          : `${path} is unchanged, compared by content because this was recorded before syntax signatures existed.`,
       basis: "content",
     };
   }

@@ -204,19 +204,90 @@ describe("invalidation follows meaning, not bytes", () => {
     expect(mapDrift(db).dependencyDrift).toEqual([]);
   });
 
-  it("reports an index predating syntax signatures as unverified rather than fresh", async () => {
+  it("falls back to content when neither side has a syntax signature", async () => {
     root = await makeProject(PROJECT);
     await scan(root, { kind: "full" });
     const db = await authorKnowledgeAbout(root, "src/lib/hash.ts");
 
-    // What an upgraded-but-not-yet-rescanned store looks like.
+    // A file no parser covers looks like this on both sides.
     db.run("UPDATE files SET syntax_sha = NULL");
     db.run("UPDATE relations SET syntax_sha = NULL");
 
     const relation = relationsFor(db, "src/lib/hash.ts")[0];
     expect(relation?.freshness.basis).toBe("content");
     expect(relation?.freshness.state).toBe("current");
+    expect(relation?.stale).toBe(false);
   });
+
+  it("agrees about an artifact recorded before signatures existed", async () => {
+    // The real shape of an upgraded store: the promoted full rescan gives the
+    // file a syntax signature, but an anchor written earlier never gets one
+    // until it is re-asserted. That mixed state persists indefinitely, so the
+    // readers have to agree about it — identical content cannot hide a changed
+    // meaning, so it is current, not merely unverifiable.
+    root = await makeProject(PROJECT);
+    await scan(root, { kind: "full" });
+    let db = await authorKnowledgeAbout(root, "src/lib/hash.ts");
+    db.run("UPDATE relations SET syntax_sha = NULL");
+    db.run("UPDATE memory_anchors SET syntax_sha = NULL");
+    db.run("UPDATE flow_steps SET syntax_sha = NULL");
+
+    const relation = relationsFor(db, "src/lib/hash.ts")[0];
+    expect(relation?.freshness.basis).toBe("content");
+    expect(relation?.freshness.state).toBe("current");
+    expect(recall(db, "hashing")[0]?.anchors[0]?.stale).toBe(false);
+
+    const context = await buildTaskContext(db, root, {
+      task: "hashing is identity for now",
+      budgetBytes: 40_000,
+      isolatedGitConfig: true,
+    });
+    for (const item of context.evidence.filter((entry) =>
+      ["memory", "relation", "flow"].includes(entry.kind),
+    )) {
+      expect(item.provenance.freshness).toBe("current");
+    }
+
+    // And it still goes stale when the file actually changes.
+    await writeFile(
+      join(root, "src/lib/hash.ts"),
+      "export function hash(value: string): string {\n  return value.trim();\n}\n",
+    );
+    await scan(root, { kind: "incremental" });
+    db = await getDb(root);
+    expect(relationsFor(db, "src/lib/hash.ts")[0]?.stale).toBe(true);
+  }, 30_000);
+
+  it("keeps a map drawn before syntax signatures from drifting for no reason", async () => {
+    // Changing what the digest hashes would otherwise flip every existing
+    // component to drifted the moment its files gained a syntax signature —
+    // and drifted with nothing to name, because no member actually changed.
+    // Only redrawing the whole map by hand would clear it.
+    root = await makeProject(PROJECT);
+    await scan(root, { kind: "full" });
+    let db = await authorKnowledgeAbout(root, "src/lib/hash.ts");
+    finalizeMap(db, { acknowledgeUnassigned: ["src/api/caller.ts"] });
+
+    // A box drawn before the upgrade: content digest only.
+    db.run("UPDATE components SET member_syntax_digest = NULL");
+    db.run("UPDATE component_snapshot SET syntax_sha = NULL");
+
+    await scan(root, { kind: "incremental" });
+    db = await getDb(root);
+    expect(mapDrift(db).components).toEqual([]);
+    expect(mapDrift(db).clean).toBe(true);
+
+    // It still drifts on a real change, and names the file.
+    await writeFile(
+      join(root, "src/lib/hash.ts"),
+      "export function hash(value: string): string {\n  return value.trim();\n}\n",
+    );
+    await scan(root, { kind: "incremental" });
+    db = await getDb(root);
+    const drift = mapDrift(db);
+    expect(drift.components.map((component) => component.name)).toEqual(["Library"]);
+    expect(drift.components[0]?.changedFiles).toEqual(["src/lib/hash.ts"]);
+  }, 30_000);
 });
 
 describe("files that move keep the knowledge written about them", () => {
@@ -281,6 +352,42 @@ describe("files that move keep the knowledge written about them", () => {
       evidence: "return value;",
     });
     expect(relationsFor(db, "src/lib/digest.ts")).toHaveLength(1);
+  }, 30_000);
+
+  it("keeps recorded contract dependencies pointing at a moved file", async () => {
+    // A symbol key embeds its path, so a dependency recorded against the old
+    // one matches nothing afterwards — leaving the box drifted forever while
+    // naming a symbol with no file.
+    root = await makeProject(PROJECT);
+    await initRepository(root);
+    await scan(root, { kind: "full" });
+    let db = await getDb(root);
+    describeComponent(db, { name: "API", members: ["src/api/"] });
+    finalizeMap(db, { acknowledgeUnassigned: ["src/lib/hash.ts", "package.json"] });
+    expect(mapDrift(db).dependencyDrift).toEqual([]);
+
+    await git(root, "mv", "src/lib/hash.ts", "src/lib/digest.ts");
+    await writeFiles(root, {
+      "src/api/caller.ts":
+        'import { hash } from "../lib/digest.js";\n\nexport function handle(input: string): string {\n  return hash(input);\n}\n',
+    });
+    await scan(root, { kind: "incremental" });
+    db = await getDb(root);
+
+    // The contract did not change, only where it lives.
+    expect(mapDrift(db).dependencyDrift).toEqual([]);
+
+    // And a real contract change is still caught at the new path.
+    await writeFile(
+      join(root, "src/lib/digest.ts"),
+      "export function hash(value: string, salt: string): string {\n  return value + salt;\n}\n",
+    );
+    await scan(root, { kind: "incremental" });
+    db = await getDb(root);
+    expect(mapDrift(db).dependencyDrift[0]?.changed[0]).toMatchObject({
+      symbol: "hash",
+      path: "src/lib/digest.ts",
+    });
   }, 30_000);
 
   it("refuses to guess when two identical files move at once", async () => {

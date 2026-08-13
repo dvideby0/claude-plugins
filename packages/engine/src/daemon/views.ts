@@ -472,8 +472,12 @@ export function exclusionForPath(
   path: string,
 ): { path: string; directory: boolean; reason: string; detail: string } | null {
   const row = db.get<{ path: string; directory: number; reason: string; detail: string }>(
+    // A recorded directory answers for everything beneath it, matched by
+    // prefix rather than LIKE: `node_modules` and `__pycache__` contain `_`,
+    // which LIKE reads as a wildcard, so `node_modules/` would also claim
+    // `nodeXmodules/`. SQLite's LIKE is case-insensitive for ASCII too.
     `SELECT path, directory, reason, detail FROM excluded_paths
-      WHERE path = ?1 OR (directory = 1 AND ?1 LIKE path || '/%')
+      WHERE path = ?1 OR (directory = 1 AND substr(?1, 1, LENGTH(path) + 1) = path || '/')
       ORDER BY LENGTH(path) DESC
       LIMIT 1`,
     [path],

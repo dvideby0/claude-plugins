@@ -50,15 +50,56 @@ const slug = (name: string): string =>
  * pass over a repository is expensive, and after that only the boxes whose
  * ground shifted need looking at again.
  */
-export function memberDigestFor(db: Db, componentId: string): string {
-  return memberDigest(db, componentId);
+/**
+ * Recompute a box's aggregates after its members' paths moved.
+ *
+ * Both are rewritten together: leaving one behind is what turns a rename into
+ * permanent drift that names no file.
+ */
+export function refreshMemberDigests(db: Db, componentId: string): void {
+  db.run(
+    `UPDATE components
+        SET member_digest = ?,
+            member_syntax_digest = CASE
+              WHEN member_syntax_digest IS NULL THEN NULL ELSE ? END
+      WHERE id = ?`,
+    [
+      memberDigest(db, componentId, "content"),
+      memberDigest(db, componentId, "syntax"),
+      componentId,
+    ],
+  );
 }
 
-function memberDigest(db: Db, componentId: string): string {
+function memberDigest(db: Db, componentId: string, basis: DigestBasis): string {
   const { files } = membersOf(db, componentId);
-  const parts = files.sort().map((path) => `${path}:${memberDigestTerm(db, path)}`);
+  const parts = files.sort().map((path) => {
+    const signature = memberSignature(db, path);
+    const term =
+      basis === "syntax"
+        ? (signature.syntaxSha ?? signature.contentSha ?? "")
+        : (signature.contentSha ?? "");
+    return `${path}:${term}`;
+  });
   return createHash("sha256").update(parts.join("|")).digest("hex").slice(0, 20);
 }
+
+/**
+ * Which aggregate a box is compared on.
+ *
+ * Two digests are stored, not one. Changing what a single digest hashes would
+ * have made every component drawn before syntax signatures existed drift the
+ * moment its files gained one — and drift with nothing to name, because the
+ * per-file comparison would correctly find no member changed. Nothing would
+ * clear it except redrawing the whole map by hand, which is the model cost this
+ * work exists to avoid.
+ *
+ * So `member_digest` keeps its original content meaning, and
+ * `member_syntax_digest` carries the comment-invariant one. A box drawn before
+ * the upgrade has no syntax digest and is compared the way it was drawn; the
+ * next time it is described it gains one and stops churning on comments.
+ */
+type DigestBasis = "content" | "syntax";
 
 /**
  * What a member file contributes to its box's identity.
@@ -75,12 +116,6 @@ function memberSignature(db: Db, path: string): RecordedSignatures {
     [path],
   );
   return { contentSha: row?.content_sha ?? null, syntaxSha: row?.syntax_sha ?? null };
-}
-
-/** The digest's per-file term. Syntax where available, content otherwise. */
-function memberDigestTerm(db: Db, path: string): string {
-  const recorded = memberSignature(db, path);
-  return recorded.syntaxSha ?? recorded.contentSha ?? "";
 }
 
 /** `pattern` is a path or a prefix ending in `/`, matched against files. */
@@ -326,7 +361,11 @@ export function describeComponent(db: Db, input: ComponentInput): { id: string; 
   // Only an explicit membership statement acknowledges the current code.
   // Moving a box or editing its prose must not silently clear existing drift.
   if (!existing || input.members !== undefined) {
-    db.run("UPDATE components SET member_digest = ? WHERE id = ?", [memberDigest(db, id), id]);
+    db.run("UPDATE components SET member_digest = ?, member_syntax_digest = ? WHERE id = ?", [
+      memberDigest(db, id, "content"),
+      memberDigest(db, id, "syntax"),
+      id,
+    ]);
 
     // Per-file snapshot, so drift can name the files rather than the box.
     db.run("DELETE FROM component_snapshot WHERE component_id = ?", [id]);
@@ -663,6 +702,24 @@ export function mapDrift(db: Db): MapDrift {
   };
 }
 
+/**
+ * A box drawn before syntax signatures is compared the way it was drawn.
+ * Anything drawn since is compared on meaning, so comments stop costing a
+ * redraw.
+ */
+function hasDrifted(
+  db: Db,
+  component: { id: string; member_digest: string | null; member_syntax_digest: string | null },
+): boolean {
+  if (component.member_syntax_digest) {
+    return component.member_syntax_digest !== memberDigest(db, component.id, "syntax");
+  }
+  return (
+    Boolean(component.member_digest) &&
+    component.member_digest !== memberDigest(db, component.id, "content")
+  );
+}
+
 export function systemMap(db: Db): SystemMap {
   const components = db.all<{
     id: string;
@@ -672,6 +729,7 @@ export function systemMap(db: Db): SystemMap {
     parent_id: string | null;
     ordinal: number;
     member_digest: string | null;
+    member_syntax_digest: string | null;
   }>("SELECT * FROM components ORDER BY ordinal, name");
 
   const assigned = new Set<string>();
@@ -710,8 +768,7 @@ export function systemMap(db: Db): SystemMap {
         .map((other) => other.id),
       rollupFiles: 0,
       rollupSymbols: 0,
-      drifted:
-        Boolean(component.member_digest) && component.member_digest !== memberDigest(db, component.id),
+      drifted: hasDrifted(db, component),
     };
   });
 

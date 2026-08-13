@@ -16,7 +16,26 @@
 //! what the previous rule was protecting.
 
 use ignore::gitignore::{Gitignore, GitignoreBuilder};
+use std::collections::HashMap;
 use std::path::Path;
+use std::sync::{LazyLock, Mutex};
+use std::time::SystemTime;
+
+/// Compiled policies, keyed by root. One entry per registered workspace in
+/// normal use.
+static POLICY_CACHE: LazyLock<Mutex<HashMap<String, (GitignoreStamp, InputPolicy)>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+const MAX_CACHED_POLICIES: usize = 64;
+
+/// Enough of a `.gitignore` to tell whether it needs recompiling. Absent,
+/// resized, or rewritten all read as different without opening the file.
+type GitignoreStamp = Option<(u64, Option<SystemTime>)>;
+
+fn gitignore_stamp(root: &Path) -> GitignoreStamp {
+    let metadata = std::fs::metadata(root.join(".gitignore")).ok()?;
+    Some((metadata.len(), metadata.modified().ok()))
+}
 
 pub const MAX_FILE_BYTES: u64 = 2 * 1024 * 1024;
 
@@ -287,6 +306,37 @@ impl InputPolicy {
             gitignore,
             gitignore_diagnostic: problem,
         }
+    }
+
+    /// The policy for a root, reusing a compiled matcher where the file has
+    /// not changed.
+    ///
+    /// The watcher asks about every filesystem event, and rebuilding meant a
+    /// read plus a glob compile per event, synchronously on the daemon's event
+    /// loop — a branch switch or an install fires thousands. The metadata check
+    /// stays because a `.gitignore` edit has to take effect without a restart.
+    pub fn cached_for_root(root: &Path) -> Self {
+        let stamp = gitignore_stamp(root);
+        let key = root.to_string_lossy().into_owned();
+
+        if let Ok(cache) = POLICY_CACHE.lock() {
+            if let Some((cached_stamp, policy)) = cache.get(&key) {
+                if *cached_stamp == stamp {
+                    return policy.clone();
+                }
+            }
+        }
+
+        let policy = InputPolicy::for_root(root);
+        if let Ok(mut cache) = POLICY_CACHE.lock() {
+            // Bounded: one entry per registered workspace in normal use, and a
+            // pathological caller cannot grow it without limit.
+            if cache.len() >= MAX_CACHED_POLICIES {
+                cache.clear();
+            }
+            cache.insert(key, (stamp, policy.clone()));
+        }
+        policy
     }
 
     /// A policy with no repository to read, for classifying a bare path.

@@ -484,7 +484,9 @@ pub fn source_path_decision(
         // every later edit to them as generated output, so the watcher would
         // stop refreshing and the index would go quietly stale.
         Some(_) if ignore_gitignore.unwrap_or(false) => input_policy::InputPolicy::path_only(),
-        Some(root) => input_policy::InputPolicy::for_root(Path::new(root)),
+        // Cached: the watcher asks this per filesystem event, and rebuilding
+        // meant a file read and a glob compile every time.
+        Some(root) => input_policy::InputPolicy::cached_for_root(Path::new(root)),
         None => input_policy::InputPolicy::path_only(),
     };
     let kind = match directory {
