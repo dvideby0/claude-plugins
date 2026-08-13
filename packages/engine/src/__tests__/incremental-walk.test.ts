@@ -155,21 +155,47 @@ describe("the walk skips a file the filesystem says did not change", () => {
 
   it("reads a file it has no usable baseline for", async () => {
     // A file written in the same tick as the walk that saw it records no key,
-    // so the next scan reads it rather than trusting a key that could have
-    // been captured mid-write.
+    // so the next scan reads it rather than trusting a key that could have been
+    // captured mid-write. Cleared explicitly rather than relying on the fixture
+    // landing inside that window: whether it does depends on which side of a
+    // second boundary the scan starts, so asserting it directly would be a test
+    // that fails a few times an hour for no reason.
     root = await makeProject(PROJECT);
+    await settle(root, ALL);
     await scan(root, { kind: "full" });
     const db = await getDb(root);
-
-    expect(
-      db.count("SELECT COUNT(*) AS n FROM files WHERE present = 1 AND stat_key IS NULL"),
-    ).toBeGreaterThan(0);
+    db.run("UPDATE files SET stat_key = NULL");
 
     const warm = await scan(root, { kind: "incremental" });
     expect(warm.filesChanged).toBe(0);
+    expect(warm.filesRead).toBe(ALL.length);
     const after = await getDb(root);
     expect(after.count("SELECT COUNT(*) AS n FROM files WHERE freshness_basis = 'read'")).toBe(
       ALL.length,
     );
+  });
+
+  it("rebuilds a caller in a repository whose gitignore rule had to be relaxed", async () => {
+    // The rebuild asks the input policy whether it may read each path. A
+    // repository whose catch-all `.gitignore` forced the walk to relax is
+    // indexed under the relaxed rule, so the strict policy would reject every
+    // path — rebuilding nothing and losing the reference silently, which is the
+    // exact failure the targeted rebuild exists to prevent.
+    root = await makeProject({ ...PROJECT, ".gitignore": "*\n" });
+    await settle(root, [...ALL, ".gitignore"]);
+    await scan(root, { kind: "full" });
+    let db = await getDb(root);
+    expect(db.count("SELECT COUNT(*) AS n FROM files WHERE present = 1")).toBeGreaterThan(0);
+
+    await rm(join(root, "src/lib/hash.ts"));
+    const result = await scan(root, { kind: "incremental" });
+    db = await getDb(root);
+
+    expect(result.inputDiagnostic).not.toContain("could not be re-read");
+    expect(
+      db.get<{ dst_path: string | null }>(
+        "SELECT dst_path FROM refs WHERE src_path = 'src/api/caller.ts' AND name = 'hash'",
+      ),
+    ).toMatchObject({ dst_path: null });
   });
 });

@@ -755,6 +755,7 @@ impl Task for ReadRepoFilesTask {
 pub struct ParsePathsTask {
     root: String,
     paths: Vec<String>,
+    ignore_gitignore: bool,
 }
 
 #[napi]
@@ -764,7 +765,16 @@ impl Task for ParsePathsTask {
 
     fn compute(&mut self) -> Result<Self::Output> {
         let root = Path::new(&self.root);
-        let policy = input_policy::InputPolicy::for_root(root);
+        // The same policy the walk actually applied, not the strict one. A
+        // repository whose catch-all `.gitignore` made the walk relax is
+        // indexed under the relaxed rule, and asking the strict policy here
+        // would reject every path — returning nothing, rebuilding nothing, and
+        // losing exactly the references this task exists to preserve.
+        let policy = if self.ignore_gitignore {
+            input_policy::InputPolicy::path_only()
+        } else {
+            input_policy::InputPolicy::for_root(root)
+        };
         Ok(walk::read_paths(root, &policy, &self.paths)
             .par_iter()
             .map_init(parse::Engines::new, native_file)
@@ -783,10 +793,21 @@ impl Task for ParsePathsTask {
 /// after the walk has already skipped them, and their stored references have
 /// been dropped by then. Asking for those paths by name rebuilds them without
 /// giving up the fast path for everything else.
+/// `ignore_gitignore` mirrors a walk that had to relax that rule, for the same
+/// reason `source_path_decision` takes it: a decision made under a different
+/// policy from the one that built the inventory is not the same decision.
 #[napi(ts_return_type = "Promise<Array<NativeFile>>")]
-pub fn parse_repo_paths(root: String, paths: Vec<String>) -> Result<AsyncTask<ParsePathsTask>> {
+pub fn parse_repo_paths(
+    root: String,
+    paths: Vec<String>,
+    ignore_gitignore: Option<bool>,
+) -> Result<AsyncTask<ParsePathsTask>> {
     require_dir(&root)?;
-    Ok(AsyncTask::new(ParsePathsTask { root, paths }))
+    Ok(AsyncTask::new(ParsePathsTask {
+        root,
+        paths,
+        ignore_gitignore: ignore_gitignore.unwrap_or(false),
+    }))
 }
 
 /// Read the bounded source inventory for deterministic content analyzers.

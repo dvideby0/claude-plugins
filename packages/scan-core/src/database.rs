@@ -1777,6 +1777,11 @@ impl NativeDatabase {
     /// reason the input policy answers the walk and the watcher from one place.
     ///
     /// Rows without a `stat_key` are omitted: an absent key is not a baseline.
+    ///
+    /// `lastRun` is the newest run id at the moment of the call, which is the
+    /// run about to consume this baseline — `startRun` has already inserted it.
+    /// It is used only to rotate the verification sample, so what matters is
+    /// that it advances, not which run it names.
     #[napi]
     pub fn file_baseline(&self) -> Result<String> {
         let connection = self.connection()?;

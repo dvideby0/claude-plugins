@@ -335,7 +335,11 @@ export interface NativeCore {
   /** Read source text through the same bounded inventory policy used by scans. */
   readRepoFiles(root: string): Promise<SourceTextFile[]>;
   /** Re-read and parse named files, bypassing the walk and any baseline. */
-  parseRepoPaths(root: string, paths: string[]): Promise<NativeFile[]>;
+  parseRepoPaths(
+    root: string,
+    paths: string[],
+    ignoreGitignore?: boolean,
+  ): Promise<NativeFile[]>;
   /**
    * Ask the repository input policy about one path, and why.
    *
@@ -438,9 +442,10 @@ export async function readSourceFiles(projectRoot: string): Promise<SourceTextFi
 export async function parseSourcePaths(
   projectRoot: string,
   paths: string[],
+  ignoreGitignore = false,
 ): Promise<Map<string, { parsed: ParsedSource; refs: SourceRef[] }>> {
   if (paths.length === 0) return new Map();
-  const files = await requireNative().parseRepoPaths(projectRoot, paths);
+  const files = await requireNative().parseRepoPaths(projectRoot, paths, ignoreGitignore);
   return new Map(
     files
       .filter((file) => file.parsed)

@@ -132,8 +132,8 @@ export function fileEvidenceBasis(db: Db, path: string): EvidenceBasis {
         lastSeenRun,
         reason:
           `Its contents were read at ${at}. ${confirmedBy} found the filesystem's ` +
-          "identity for it — device, inode, size, modification and change times — " +
-          "unchanged, and did not read it again.",
+          "identity for it unchanged — its size and timestamps, and on this platform " +
+          "whatever else identifies a file — and did not read it again.",
       };
     case "sampled":
       return {

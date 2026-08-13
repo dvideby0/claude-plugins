@@ -374,8 +374,11 @@ export declare function searchStructural(root: string, query: string, languages?
  * after the walk has already skipped them, and their stored references have
  * been dropped by then. Asking for those paths by name rebuilds them without
  * giving up the fast path for everything else.
+ * `ignore_gitignore` mirrors a walk that had to relax that rule, for the same
+ * reason `source_path_decision` takes it: a decision made under a different
+ * policy from the one that built the inventory is not the same decision.
  */
-export declare function parseRepoPaths(root: string, paths: Array<string>): Promise<Array<NativeFile>>
+export declare function parseRepoPaths(root: string, paths: Array<string>, ignoreGitignore?: boolean | undefined | null): Promise<Array<NativeFile>>
 /** Read the bounded source inventory for deterministic content analyzers. */
 export declare function readRepoFiles(root: string): Promise<Array<NativeSourceFile>>
 /** One directly persisted SQLite connection, owned by the engine process. */
@@ -399,6 +402,11 @@ export declare class NativeDatabase {
    * reason the input policy answers the walk and the watcher from one place.
    *
    * Rows without a `stat_key` are omitted: an absent key is not a baseline.
+   *
+   * `lastRun` is the newest run id at the moment of the call, which is the
+   * run about to consume this baseline — `startRun` has already inserted it.
+   * It is used only to rotate the verification sample, so what matters is
+   * that it advances, not which run it names.
    */
   fileBaseline(): string
   all(sql: string, paramsJson: string): string

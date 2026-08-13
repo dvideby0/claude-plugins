@@ -261,7 +261,25 @@ async function doScan(projectRoot: string, options: ScanOptions = {}): Promise<S
   const rebuilt = await parseSourcePaths(
     projectRoot,
     missingParse.map((file) => file.path),
+    // Under the policy the walk actually applied. A repository whose catch-all
+    // `.gitignore` made the walk relax is indexed under the relaxed rule, and
+    // the strict policy would reject every path here — rebuilding nothing and
+    // silently dropping the references this pass exists to keep.
+    !gitignoreApplied,
   );
+  // A requested rebuild that comes back with nothing means those references
+  // are about to be deleted with nothing to reinsert. That is the failure this
+  // pass exists to prevent, so it is reported rather than left to be noticed
+  // as a missing call months later.
+  const unrebuilt = missingParse.filter((file) => !rebuilt.has(file.path));
+  const rebuildDiagnostic =
+    unrebuilt.length === 0
+      ? null
+      : `${unrebuilt.length} file(s) needed rebuilding because something they reference was ` +
+        `deleted, and could not be re-read: ${unrebuilt
+          .slice(0, 5)
+          .map((file) => file.path)
+          .join(", ")}. Their references to the deleted files are lost until the next full scan.`;
 
   // Rust has already walked and parsed before the transaction opens. Select
   // the changed parse results here so the write pass remains synchronous.
@@ -348,11 +366,15 @@ async function doScan(projectRoot: string, options: ScanOptions = {}): Promise<S
           runId,
           runId,
           file.statKey,
-          file.freshness,
+          // A file rebuilt by the targeted pass had its bytes read this run,
+          // whatever the walk did, so it must not be recorded as taken on the
+          // filesystem's word — the evidence sentence would say it was not read
+          // again, which is untrue for exactly these rows.
+          rebuilt.has(file.path) ? "read" : file.freshness,
           // The run that last read the bytes. A verified file keeps the one it
           // already had, so "established at run 41, confirmed at run 57" stays
           // true rather than collapsing into "read at 57".
-          file.freshness === "verified" ? null : runId,
+          file.freshness !== "verified" || rebuilt.has(file.path) ? runId : null,
           refreshed ? 1 : 0,
           refreshed ? 1 : 0,
           refreshed ? 1 : 0,
@@ -745,7 +767,7 @@ async function doScan(projectRoot: string, options: ScanOptions = {}): Promise<S
     filesVerified,
     filesSampled,
     freshnessDistrusted: freshnessMismatches > 0 ? (diagnostic ?? "The freshness key was wrong.") : distrusted,
-    inputDiagnostic: diagnostic,
+    inputDiagnostic: [diagnostic, rebuildDiagnostic].filter(Boolean).join(" ") || null,
     engine,
     upgraded: stale,
   };
