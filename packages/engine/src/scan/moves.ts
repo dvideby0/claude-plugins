@@ -16,7 +16,6 @@
 import type { Db } from "../db/db.js";
 import type { SourceFile } from "./source.js";
 import { renameRelationPaths } from "../graph/relations.js";
-import { refreshMemberDigests } from "../graph/map.js";
 import { likeEscape } from "../lib/sql.js";
 
 export interface FileMove {
@@ -108,8 +107,13 @@ export function correlateMoves(inputs: MoveInputs): FileMove[] {
  * pass — a scan runs no analyzers, so "fixed" would be untrue. Their ids are
  * fingerprints over the path, so the next analyzer run re-keys them through
  * `record.ts`, which reads the move recorded here.
+ *
+ * Returns the components whose membership this touched. Their digests cannot
+ * be recomputed yet: the old path is still `present = 1` until the removal
+ * pass runs, so a prefix pattern would hash both locations at once. The caller
+ * re-baselines them once the inventory is final.
  */
-export function applyMove(db: Db, runId: number, move: FileMove): void {
+export function applyMove(db: Db, runId: number, move: FileMove): string[] {
   db.run("UPDATE files SET moved_to = ? WHERE path = ?", [move.to, move.from]);
   db.run(
     `INSERT OR REPLACE INTO file_moves(run_id, from_path, to_path, evidence, moved_at)
@@ -124,17 +128,20 @@ export function applyMove(db: Db, runId: number, move: FileMove): void {
 
   db.run("UPDATE OR REPLACE memory_anchors SET path = ? WHERE path = ?", [move.to, move.from]);
 
-  // `components.member_digest` hashes member paths, so moving only the
-  // snapshot left the box permanently drifted while `mapDrift` compared the
-  // moved snapshot with current files and found nothing to name — drift with
-  // an empty changed-file list, which nobody can act on. Recomputing the
-  // aggregate from the moved snapshot keeps the two consistent.
-  const affected = db.all<{ component_id: string }>(
-    "SELECT DISTINCT component_id FROM component_snapshot WHERE path = ?",
-    [move.from],
-  );
+  // `components.member_digest` hashes member paths, so moving the snapshot
+  // without re-baselining the aggregate leaves the box permanently drifted
+  // while `mapDrift` finds no member changed — drift with an empty changed-file
+  // list, which nobody can act on. Which components those are is only knowable
+  // from the old path, so collect them here and let the caller recompute.
+  const affected = db
+    .all<{ component_id: string }>(
+      `SELECT DISTINCT component_id FROM component_snapshot WHERE path = ?1
+        UNION
+       SELECT DISTINCT component_id FROM component_members WHERE pattern = ?1`,
+      [move.from],
+    )
+    .map((row) => row.component_id);
   db.run("UPDATE OR REPLACE component_snapshot SET path = ? WHERE path = ?", [move.to, move.from]);
-  for (const component of affected) refreshMemberDigests(db, component.component_id);
   db.run("UPDATE OR REPLACE node_tags SET path = ? WHERE path = ?", [move.to, move.from]);
   db.run("UPDATE OR REPLACE explorations SET path = ? WHERE path = ?", [move.to, move.from]);
 
@@ -161,6 +168,8 @@ export function applyMove(db: Db, runId: number, move: FileMove): void {
     move.to,
     move.from,
   ]);
+
+  return affected;
 }
 
 /**

@@ -354,6 +354,44 @@ describe("files that move keep the knowledge written about them", () => {
     expect(relationsFor(db, "src/lib/digest.ts")).toHaveLength(1);
   }, 30_000);
 
+  it.each([
+    ["a prefix pattern", "src/lib/"],
+    ["an exact path", "src/lib/hash.ts"],
+  ])("does not leave a box holding a moved file drifting over %s", async (_label, member) => {
+    // The box's own aggregate hashes member paths, so re-baselining it against
+    // a state the transaction has not finished producing — the old path still
+    // present, or the membership pattern not yet rewritten — leaves it drifted
+    // with no file to name, which nobody can act on and only a manual redraw
+    // clears.
+    root = await makeProject(PROJECT);
+    await initRepository(root);
+    await scan(root, { kind: "full" });
+    let db = await getDb(root);
+    describeComponent(db, { name: "Library", members: [member] });
+    finalizeMap(db, { acknowledgeUnassigned: ["src/api/caller.ts", "package.json"] });
+    expect(mapDrift(db).clean).toBe(true);
+
+    await git(root, "mv", "src/lib/hash.ts", "src/lib/digest.ts");
+    await writeFiles(root, {
+      "src/api/caller.ts":
+        'import { hash } from "../lib/digest.js";\n\nexport function handle(input: string): string {\n  return hash(input);\n}\n',
+    });
+    const result = await scan(root, { kind: "incremental" });
+    db = await getDb(root);
+
+    expect(result.filesMoved).toBe(1);
+    expect(mapDrift(db).components).toEqual([]);
+
+    // A real edit at the new path still drifts it, and names the file.
+    await writeFile(
+      join(root, "src/lib/digest.ts"),
+      "export function hash(value: string): string {\n  return value.trim();\n}\n",
+    );
+    await scan(root, { kind: "incremental" });
+    db = await getDb(root);
+    expect(mapDrift(db).components[0]?.changedFiles).toEqual(["src/lib/digest.ts"]);
+  }, 30_000);
+
   it("keeps recorded contract dependencies pointing at a moved file", async () => {
     // A symbol key embeds its path, so a dependency recorded against the old
     // one matches nothing afterwards — leaving the box drifted forever while

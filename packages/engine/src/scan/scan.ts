@@ -16,6 +16,7 @@ import { collectFiles, type ParsedSource } from "./source.js";
 import { canonicalWorkspaceRoot, workspaceIdentityKey } from "../lib/workspace-path.js";
 import { sourceSignature } from "./signature.js";
 import { applyMove, correlateMoves } from "./moves.js";
+import { refreshMemberDigests } from "../graph/map.js";
 import { setInputPolicyRelaxed } from "../daemon/watcher.js";
 
 /**
@@ -379,7 +380,10 @@ async function doScan(projectRoot: string, options: ScanOptions = {}): Promise<S
 
     // Knowledge follows confirmed moves before the old path is retired, so an
     // anchor is carried across rather than left pointing at a tombstone.
-    for (const move of moves) applyMove(db, runId, move);
+    const movedComponents = new Set<string>();
+    for (const move of moves) {
+      for (const id of applyMove(db, runId, move)) movedComponents.add(id);
+    }
 
     // Files that disappeared: keep the row for history, retire their graph and
     // close any findings that pointed at them. Present callers were re-parsed
@@ -396,6 +400,12 @@ async function doScan(projectRoot: string, options: ScanOptions = {}): Promise<S
         [runId, path],
       );
     }
+
+    // Only now is the inventory final: the old paths are retired and the
+    // membership patterns rewritten. Re-baselining a box any earlier hashes a
+    // state that does not survive this transaction, which would leave it
+    // drifted forever with no file to name.
+    for (const id of movedComponents) refreshMemberDigests(db, id);
 
     // Why each absent path is absent. Replaced wholesale, which is sound
     // because every refresh — including a watch refresh — is a full re-walk,

@@ -275,7 +275,6 @@ pub fn symbol_key(path: &str, kind: &str, name: &str, scope: &str, ordinal: u32)
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use crate::parse::{parse, Engines};
 
     fn syntax(source: &str) -> String {
