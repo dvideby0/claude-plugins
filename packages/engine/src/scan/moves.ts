@@ -16,6 +16,7 @@
 import type { Db } from "../db/db.js";
 import type { SourceFile } from "./source.js";
 import { renameRelationPaths } from "../graph/relations.js";
+import { componentContains } from "../graph/map.js";
 import { likeEscape } from "../lib/sql.js";
 
 export interface FileMove {
@@ -141,7 +142,6 @@ export function applyMove(db: Db, runId: number, move: FileMove): string[] {
       [move.from],
     )
     .map((row) => row.component_id);
-  db.run("UPDATE OR REPLACE component_snapshot SET path = ? WHERE path = ?", [move.to, move.from]);
   db.run("UPDATE OR REPLACE node_tags SET path = ? WHERE path = ?", [move.to, move.from]);
   db.run("UPDATE OR REPLACE explorations SET path = ? WHERE path = ?", [move.to, move.from]);
 
@@ -163,13 +163,33 @@ export function applyMove(db: Db, runId: number, move: FileMove): string[] {
 
   // Only an exact-path membership follows. A prefix like `src/auth/` becoming
   // `src/identity/` is a directory move somebody should re-author deliberately,
-  // not something to rewrite underneath them.
+  // not something to rewrite underneath them. Done before the snapshot below,
+  // so membership already reflects where the file ended up.
   db.run("UPDATE OR REPLACE component_members SET pattern = ? WHERE pattern = ?", [
     move.to,
     move.from,
   ]);
 
-  return affected;
+  // A box only carries the snapshot forward for a file it still contains.
+  //
+  // Moving a file *out* of a box is a loss the box has to report, exactly as a
+  // delete does. Rewriting the snapshot regardless re-baselined the aggregate
+  // against a membership the file had left, so a component could lose its only
+  // member and say nothing at all — its summary still describing code it no
+  // longer holds. Leaving the old row means retirement makes it absent from
+  // `membersOf`, the digest drifts, and `mapDrift` names it as removed.
+  const retained: string[] = [];
+  for (const componentId of affected) {
+    if (!componentContains(db, componentId, move.to)) continue;
+    db.run(
+      `UPDATE OR REPLACE component_snapshot SET path = ?
+        WHERE path = ? AND component_id = ?`,
+      [move.to, move.from, componentId],
+    );
+    retained.push(componentId);
+  }
+
+  return retained;
 }
 
 /**

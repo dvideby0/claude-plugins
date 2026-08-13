@@ -376,13 +376,24 @@ impl InputPolicy {
         let last = segments.len().saturating_sub(1);
 
         for (index, segment) in segments.iter().enumerate() {
-            // A trailing segment is the entry itself. Only treat it as a
-            // directory rule when the caller says it is one; otherwise
-            // `.mcp.json` and `dist.ts` would be excluded as directories.
+            // A trailing segment is the entry itself, so a directory rule
+            // applies to it only when it really is a directory — otherwise
+            // `dist.ts` would be excluded as a build directory.
+            //
+            // `Unknown` is the watcher's rename case, where the entry is gone
+            // and cannot be stated. Named-directory rules still apply there: a
+            // *file* called `node_modules` or `target` has no extension and is
+            // excluded anyway, so nothing indexable is lost — while treating
+            // one as unclassified made `rm -rf node_modules` fire a rename that
+            // re-walked the whole repository to learn nothing.
             let is_interior = index < last;
-            let directory_rule = is_interior || kind == EntryKind::Directory;
+            let named_directory_rule =
+                is_interior || kind == EntryKind::Directory || kind == EntryKind::Unknown;
+            // The dot rule is not extended the same way: `.mcp.json` is an
+            // indexed input and the watcher must keep seeing it.
+            let hidden_rule = is_interior || kind == EntryKind::Directory;
 
-            if directory_rule {
+            if named_directory_rule {
                 if APP_OWNED_DIRS.contains(segment) {
                     return Decision::excluded(
                         Reason::AppOwnedArtifact,
@@ -400,9 +411,9 @@ impl InputPolicy {
                 if IGNORED_DIRS.contains(segment) {
                     return Decision::excluded(Reason::IgnoredDirectory, *segment, path);
                 }
-                if segment.starts_with('.') && *segment != ".github" {
-                    return Decision::excluded(Reason::HiddenPath, *segment, path);
-                }
+            }
+            if hidden_rule && segment.starts_with('.') && *segment != ".github" {
+                return Decision::excluded(Reason::HiddenPath, *segment, path);
             }
         }
 
@@ -669,6 +680,21 @@ mod tests {
 
         // The watcher cannot always tell, and a rename must survive that.
         assert!(policy.decide(".mcp.json", EntryKind::Unknown).included());
+
+        // A bare directory name is the watcher's rename case. Treating it as
+        // an unclassified file made `rm -rf node_modules` re-walk the whole
+        // repository; a real file with that name has no extension and is
+        // excluded regardless.
+        for name in ["node_modules", "dist", "target", ".venv", "sdlc-audit"] {
+            assert!(
+                !policy.decide(name, EntryKind::Unknown).included(),
+                "{name} should be excluded even when the caller cannot classify it",
+            );
+        }
+        assert_eq!(
+            policy.decide("node_modules", EntryKind::Unknown).reason,
+            Reason::IgnoredDirectory
+        );
 
         fs::remove_dir_all(root).expect("remove fixture");
     }

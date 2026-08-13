@@ -56,6 +56,11 @@ const slug = (name: string): string =>
  * Both are rewritten together: leaving one behind is what turns a rename into
  * permanent drift that names no file.
  */
+/** Whether a path is still covered by a box's membership patterns. */
+export function componentContains(db: Db, componentId: string, path: string): boolean {
+  return membersOf(db, componentId).files.includes(path);
+}
+
 export function refreshMemberDigests(db: Db, componentId: string): void {
   db.run(
     `UPDATE components

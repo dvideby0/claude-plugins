@@ -414,6 +414,41 @@ describe("files that move keep the knowledge written about them", () => {
     expect(mapDrift(db).components[0]?.changedFiles).toEqual(["src/lib/digest.ts"]);
   }, 30_000);
 
+  it("reports a box that lost a file to a move, exactly as a delete would", async () => {
+    // A move out of a box is a loss the box has to report. Carrying the
+    // snapshot across regardless re-baselined the aggregate against a
+    // membership the file had already left, so a component could lose its only
+    // member and say nothing — its summary still describing code it no longer
+    // holds, with no signal anywhere.
+    root = await makeProject(PROJECT);
+    await initRepository(root);
+    await scan(root, { kind: "full" });
+    let db = await getDb(root);
+    describeComponent(db, { name: "Library", members: ["src/lib/"] });
+    describeComponent(db, { name: "API", members: ["src/api/"] });
+    finalizeMap(db, { acknowledgeUnassigned: ["package.json"] });
+    expect(mapDrift(db).clean).toBe(true);
+
+    await git(root, "mv", "src/lib/hash.ts", "src/api/hash.ts");
+    await writeFiles(root, {
+      "src/api/caller.ts":
+        'import { hash } from "./hash.js";\n\nexport function handle(input: string): string {\n  return hash(input);\n}\n',
+    });
+    const result = await scan(root, { kind: "incremental" });
+    db = await getDb(root);
+
+    expect(result.filesMoved).toBe(1);
+    const drift = mapDrift(db);
+    const byName = Object.fromEntries(
+      drift.components.map((component) => [component.name, component.changedFiles]),
+    );
+    // The box that lost it says so, exactly as it would for a delete.
+    expect(byName.Library).toEqual(["src/lib/hash.ts (removed)"]);
+    // The box that gained it says so too. `caller.ts` is listed as well
+    // because this test edits its import.
+    expect(byName.API).toContain("src/api/hash.ts (added)");
+  }, 30_000);
+
   it("keeps recorded contract dependencies pointing at a moved file", async () => {
     // A symbol key embeds its path, so a dependency recorded against the old
     // one matches nothing afterwards — leaving the box drifted forever while
