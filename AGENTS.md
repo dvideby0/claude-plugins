@@ -2,11 +2,14 @@
 
 Before significant product or architecture work, read:
 
-1. [`docs/PRODUCT_VISION.md`](docs/PRODUCT_VISION.md)
-2. [`docs/CURRENT_STATE_AUDIT.md`](docs/CURRENT_STATE_AUDIT.md)
-3. [`docs/BACKLOG.md`](docs/BACKLOG.md)
-4. [`docs/PROVIDER_STRATEGY.md`](docs/PROVIDER_STRATEGY.md)
-5. [`docs/PRIOR_ART.md`](docs/PRIOR_ART.md) when evaluating an architectural dependency or approach
+1. [`CONVENTIONS.md`](CONVENTIONS.md) — the rules this codebase has been burned by; it gates code changes where the rest gate product changes
+2. [`docs/PRODUCT_VISION.md`](docs/PRODUCT_VISION.md)
+3. [`docs/CURRENT_STATE_AUDIT.md`](docs/CURRENT_STATE_AUDIT.md)
+4. [`docs/BACKLOG.md`](docs/BACKLOG.md)
+5. [`docs/PROVIDER_STRATEGY.md`](docs/PROVIDER_STRATEGY.md)
+6. [`docs/PRIOR_ART.md`](docs/PRIOR_ART.md) when evaluating an architectural dependency or approach
+
+Everything else is indexed in [`docs/README.md`](docs/README.md).
 
 The stable boundary is that SDLC is a standalone, local-first code-intelligence application and knowledge engine. The desktop app is a first-class product; Claude and Codex plugins, skills, and MCP connections are thin clients. Keep deterministic facts, inferred relations, runtime observations, human knowledge, and LLM-derived interpretations distinguishable and evidence-backed.
 
