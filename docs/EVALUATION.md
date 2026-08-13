@@ -50,6 +50,23 @@ changes zero meanings, and stales zero entries. Before syntax signatures those
 numbers were the same, and every artifact anchored to the file needed
 re-checking for a change that altered nothing.
 
+A second probe measures the other half — how much work a scan avoids when
+nothing changed at all. On an untouched rescan the report states how many files
+were read, how many were taken on the filesystem's word, how many were read
+anyway to check that word, and whether any of those checks failed. On the
+TypeScript fixtures a warm rescan now reads zero files, verifies four and
+samples one, with no mismatch, in 4.5 ms against 28 ms cold. Measured on this
+repository the same rescan reads zero of 219 files in 162 ms against 638 ms
+cold, with identical symbol, reference and edge counts.
+
+The harness ages each fixture copy before scanning it, and that is load-bearing
+rather than incidental. A copy is written and scanned inside the same second,
+which puts every file in the racy window: the walk correctly refuses to record
+a baseline for a file that might still be being written, so without ageing the
+warm scan re-reads everything and the probe reports zero of everything. That is
+a property of the harness, and publishing the number it produced would have
+said nothing.
+
 Exact SCIP occurrence ranges are not reimplemented by SDLC. Fixture source
 uses the upstream
 [`scip test` file format](https://github.com/scip-code/scip/blob/v0.9.0/docs/test_file_format.md),

@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { appendFile, cp, mkdtemp, realpath, rm, stat, writeFile } from "node:fs/promises";
+import { appendFile, cp, mkdtemp, readdir, realpath, rm, stat, utimes, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve, sep } from "node:path";
@@ -76,6 +76,26 @@ export interface IncrementalInvalidation {
   scope: string;
 }
 
+/**
+ * What a rescan of an unchanged repository actually did.
+ *
+ * The invalidation probe above measures how far a change propagates. This
+ * measures the other half — how much work a scan avoids when nothing changed
+ * at all — because a fast path with no number attached is a claim rather than
+ * a result. `read + verified + sampled` is every file, so a skip can never go
+ * unaccounted for, and `mismatches` above zero means the filesystem identity
+ * was caught disagreeing with the contents and the run was redone in full.
+ */
+export interface IncrementalWalk {
+  probe: "unchanged rescan";
+  filesTotal: number;
+  filesRead: number;
+  filesVerifiedWithoutReading: number;
+  filesSampled: number;
+  mismatches: number;
+  scope: string;
+}
+
 export interface OfficialScipTest {
   status: "passed" | "failed" | "unavailable";
   command: string | null;
@@ -104,6 +124,7 @@ export interface ProviderEvaluationReport {
   timings: EvaluationTimings;
   /** Null for providers whose probe does not run through the native scan. */
   invalidation: IncrementalInvalidation | null;
+  walk: IncrementalWalk | null;
   storage: {
     workspaceDbBytes: number;
     providerArtifactBytes: number | null;
@@ -279,6 +300,26 @@ async function officialScipTest(
   };
 }
 
+/**
+ * Move a freshly copied fixture's timestamps into the past.
+ *
+ * A copy is written and scanned within the same second, which puts every file
+ * inside the racy window: the walk correctly refuses to record a baseline for
+ * a file that might still be being written, so the warm scan re-reads
+ * everything and the incremental measurement reports zero of everything. That
+ * is a property of the harness, not of the product, and leaving it in place
+ * would mean publishing a number that says nothing.
+ */
+async function settleFixture(root: string): Promise<void> {
+  const past = new Date(Date.now() - 60_000);
+  const entries = await readdir(root, { withFileTypes: true, recursive: true });
+  for (const entry of entries) {
+    if (!entry.isFile()) continue;
+    await utimes(join(entry.parentPath ?? entry.path, entry.name), past, past);
+  }
+  await utimes(root, past, past);
+}
+
 /** Run one provider in an isolated process so its peak RSS is meaningful. */
 export async function runEvaluationWorker(
   provider: EvaluationProvider,
@@ -300,6 +341,7 @@ export async function runEvaluationWorker(
   let batch: FactBatch;
   let timings: EvaluationTimings;
   let invalidation: IncrementalInvalidation | null = null;
+  let walk: IncrementalWalk | null = null;
   let official: OfficialScipTest | null = null;
   let scipCounts: ProviderEvaluationReport["scipCounts"] = null;
   const providerFailures: string[] = [];
@@ -314,12 +356,22 @@ export async function runEvaluationWorker(
     const artifacts = await mkdtemp(join(tmpdir(), `sdlc-eval-artifacts-${provider}-`));
     cleanupArtifacts = artifacts;
     await cp(fixture, project, { recursive: true });
+    await settleFixture(project);
 
     if (provider === "native-tree-sitter") {
       const { projectLegacyFacts } = await import("../facts/legacy.js");
       const cold = await timed(() => scan(project, { full: true, kind: "evaluation-cold" }));
       sourceEngine = cold.value.engine;
       const warm = await timed(() => scan(project, { kind: "evaluation-warm" }));
+      walk = {
+        probe: "unchanged rescan",
+        filesTotal: warm.value.filesTotal,
+        filesRead: warm.value.filesRead,
+        filesVerifiedWithoutReading: warm.value.filesVerified,
+        filesSampled: warm.value.filesSampled,
+        mismatches: warm.value.freshnessDistrusted === null ? 0 : 1,
+        scope: "second scan of an untouched fixture",
+      };
       await appendFile(resolveWorkspacePath(project, oracle.change.path), oracle.change.append);
       const changed = await timed(() => scan(project, { kind: "evaluation-one-file-change" }));
       const db = await getDb(project);
@@ -618,6 +670,7 @@ export async function runEvaluationWorker(
       scores,
       timings,
       invalidation,
+      walk,
       storage: { workspaceDbBytes, providerArtifactBytes },
       memory: {
         runnerPeakRssBytes: process.resourceUsage().maxRSS * 1024,

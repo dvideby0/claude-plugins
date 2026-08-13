@@ -148,6 +148,28 @@ The same rule applies to rolling counts up a tree: union the sets, never sum
 the counts, unless the children are provably disjoint. Boxes are allowed to
 overlap.
 
+## A stat key is evidence of identity, not of content
+
+The walk skips reading a file whose device, inode, size, modification and change
+times match what the last scan recorded. That is a good trade and it is not a
+proof: `cp -p`, `rsync -a`, a restore from backup and an editor's save-by-rename
+each preserve some of those fields while replacing the bytes, which is why the
+key uses all of them rather than the obvious size-and-mtime pair.
+
+Three rules come with it, and none is optional. Record how a fact was
+established, so a file nobody read stays distinguishable from a file confirmed
+unchanged — "a tool that could not run is a gap, not a pass" applies to a file
+nobody looked at too. Sample: read a bounded rotating slice of what you would
+have skipped and check the key still agrees with the contents. And when it does
+not, escalate rather than annotate — every other skip in that run rested on the
+same assumption, so redo the run and say why it cost more.
+
+The matching trap is on the other side. A file may be skipped only if nothing
+*else* in the run has invalidated it. A caller whose reference target was just
+deleted has to be re-parsed even though it did not change, and that is only
+known after the walk has already skipped it. Anything discovered mid-run that
+invalidates an untouched file needs a way to rebuild that file by name.
+
 ## A handler must be bound where the element actually is
 
 `on()` scoped its query to the view. The drawer hangs off `<body>`, so every
