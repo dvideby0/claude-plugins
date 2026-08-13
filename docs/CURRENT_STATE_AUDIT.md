@@ -1,36 +1,18 @@
 # Current-state audit
 
-Audit date: 2026-08-05. This describes the work-in-progress working tree, not just the last committed revision.
+> [Documentation hub](README.md) · [SDLC](../README.md)
 
-Architecture correction, 2026-08-06: the existing TypeScript enrichment remains
-a prototype, not a production semantic-indexing foundation. A bespoke expansion
-of its project-resolution and freshness machinery was removed before commit.
-Future precise references and deeper program analysis follow the
-[provider-first strategy](PROVIDER_STRATEGY.md): import maintained SCIP,
-compiler/language-server, or Code Property Graph outputs and concentrate SDLC
-work on orchestration, evidence-backed fusion, retrieval, and product workflows.
+**Audit date:** 2026-08-05 · **Supersedes:** the previous audit of this tree.
 
-Implementation update, 2026-08-10: the official SCIP TypeScript indexer is now
-available through a bounded evaluation path. Its protobuf output is decoded and
-hashed in Rust, its artifacts live in app-owned storage, and its capabilities
-and comparison results appear in the desktop. It now runs against an app-owned
-source snapshot that must match the deterministic index generation, records a
-per-input manifest, verifies the input view after execution, and marks retained
-output stale when the indexed source generation changes. Dependency and
-out-of-tree compiler reads are not yet attested, so output remains partial and
-unverified rather than exact. The output remains an evaluation and does not
-replace current syntax/reference facts. Joern remains capability-detected and
-unbundled. A digest-pinned, opt-in container spike now measures its CPG against
-the LangGraph flow oracle; it is an evaluation path, not a production provider.
+This is an assessment, not a history. It answers "how good is this right now",
+per capability, against the work-in-progress working tree rather than the last
+committed revision. It is re-run and **replaced in place**; dated outcomes
+belong in [`CHANGELOG.md`](CHANGELOG.md), and the reasoning behind a choice
+belongs in [`DECISIONS.md`](DECISIONS.md).
 
-Implementation update, 2026-08-11: the weaker TypeScript repository walker and
-WASM parser fallback were retired after the Rust core reached every supported
-desktop target and produced better reference facts. Rust now owns the single
-production source inventory, classification, hashing, and syntax boundary;
-watch refreshes and deterministic content analyzers call its Rust-owned path
-and inventory APIs. A
-missing platform binary is reported as a broken installation rather than
-silently changing fact coverage.
+Changes since this audit date are recorded in
+[`CHANGELOG.md`](CHANGELOG.md) — read both until the next audit replaces this
+one.
 
 ## Executive assessment
 

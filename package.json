@@ -18,7 +18,8 @@
     "eval": "npm run build -w @sdlc/protocol && npm run build -w @sdlc/scan-core && npm run build -w @sdlc/engine && npm run eval -w @sdlc/engine --",
     "eval:joern": "npm run build -w @sdlc/protocol && npm run build -w @sdlc/engine && npm run eval:joern -w @sdlc/engine --",
     "daemon": "npm run start -w @sdlc/engine",
-    "desktop": "npm run start -w @sdlc/desktop"
+    "desktop": "npm run start -w @sdlc/desktop",
+    "docs:check": "node scripts/check-docs.mjs"
   },
   "devDependencies": {
     "@types/node": "^22.15.21",

@@ -1,11 +1,39 @@
 # Conventions
 
+> [Agent guide](AGENTS.md) · [Documentation hub](docs/README.md)
+
 Rules this codebase has actually been burned by. Each one exists because
 something broke, and most are also recorded as memories so they surface through
 `context` and `brief` without anyone having to read this file.
 
 That duplication is deliberate: a file has to be found and trusted, and it goes
 stale silently. The store is the primary; this is the readable summary.
+
+Read it top to bottom before a substantial change — the rules are short and the
+incidents behind them are the point. Jump to one:
+
+- [Never assume the root](#never-assume-the-root)
+- [A tool that could not run is a gap, not a pass](#a-tool-that-could-not-run-is-a-gap-not-a-pass)
+- [Schema changes need a migration](#schema-changes-need-a-migration)
+- [Repository inventory has one implementation](#repository-inventory-has-one-implementation)
+- [Only the repository's own content decides what is source](#only-the-repositorys-own-content-decides-what-is-source)
+- [Invalidate on meaning, anchor on bytes](#invalidate-on-meaning-anchor-on-bytes)
+- [Record the vocabulary, not just the shape](#record-the-vocabulary-not-just-the-shape)
+- [Blast radius excludes the file itself](#blast-radius-excludes-the-file-itself)
+- [Say what did not happen](#say-what-did-not-happen)
+- [Errors should say what to do](#errors-should-say-what-to-do)
+- [Derived sets get one definition](#derived-sets-get-one-definition)
+- [A stat key is evidence of identity, not of content](#a-stat-key-is-evidence-of-identity-not-of-content)
+- [A handler must be bound where the element actually is](#a-handler-must-be-bound-where-the-element-actually-is)
+- [Never strip JSONC comments with a regex](#never-strip-jsonc-comments-with-a-regex)
+- [Check exit codes, not just output](#check-exit-codes-not-just-output)
+- [The engine's event loop is the product](#the-engines-event-loop-is-the-product)
+- [Writes are synchronous inside a transaction](#writes-are-synchronous-inside-a-transaction)
+- [electron-builder and npm workspaces do not mix unattended](#electron-builder-and-npm-workspaces-do-not-mix-unattended)
+
+Where a rule and a decision record overlap: this file keeps the imperative and
+the incident that proves it, and [`docs/DECISIONS.md`](docs/DECISIONS.md) keeps
+the alternatives and why they lost.
 
 ## Never assume the root
 
@@ -50,6 +78,26 @@ the migration ledger, and retains the latest validated standalone backup for
 that target version before changing the store. A destructive migration needs
 its own preservation and rollback test; do not hide it inside the legacy
 v1-v16 convergence path.
+
+Four guarantees around that must hold, because each one is how a store survives
+a bad upgrade:
+
+- **Integrity is checked either side.** `quick_check` runs before and after
+  migration, so structural corruption is detected rather than migrated forward.
+- **The backup is a real online backup.** SQLite's backup API captures a
+  consistent image including committed WAL pages, normalized into one standalone
+  database, validated and permission-restricted before anything changes.
+- **A newer or conflicting store is rejected without being touched** — in
+  particular without changing its journal mode, so an older build cannot damage
+  a store written by a newer one just by opening it.
+- **A failed migration rolls back and keeps its pre-migration image.** Both DDL
+  and version metadata revert; retrying the same target version replaces the
+  older image only once the new snapshot is complete and validated.
+
+A generally corrupted store is never silently replaced from an older backup —
+losing newer human knowledge is worse than presenting an explicit recovery
+choice. Why SQLite owns all of this rather than a bespoke engine is in
+[`docs/DECISIONS.md`](docs/DECISIONS.md#native-sqlite-through-rusqlite-inside-the-existing-rust-module).
 
 ## Repository inventory has one implementation
 
@@ -249,20 +297,6 @@ runtime code remains in the packaged desktop even though it disappeared from
 
 ## Working on this repository
 
-```bash
-npm run build && npm test -w @sdlc/engine
-cargo test --manifest-path packages/scan-core/Cargo.toml
-cargo clippy --manifest-path packages/scan-core/Cargo.toml --all-targets -- -D warnings
-node scripts/smoke.mjs                    # end to end through the bridge
-```
-
-Root `npm test` runs the engine suite only — it does not touch Rust, so the
-`cargo` lines are not optional. And read the *warnings*, not only the errors: a
-fix that was a dead store shipped from here because the build output was
-filtered for `error`.
-
-These now run on every platform in CI rather than Linux alone, which is how a
-path-confinement rule that only worked on Unix was found.
-
-A schema change additionally needs a run against an **existing** store, not
-just a fresh one. That is the case `CREATE TABLE IF NOT EXISTS` hides.
+The build, test, lint, smoke and documentation commands — and the reasons none
+of them are optional — live in [`AGENTS.md`](AGENTS.md#build-test-and-run),
+which both harnesses load by name.

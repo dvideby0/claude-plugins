@@ -1,5 +1,7 @@
 # Code-intelligence evaluation
 
+> [Documentation hub](README.md) · [SDLC](../README.md)
+
 Status: executable symbol/reference and retrieval corpora, measured HTTP flow
 slice, and bounded Joern flow spike, 2026-08-12.
 
@@ -31,6 +33,39 @@ can be selected explicitly:
 ```bash
 npm run --silent eval -- --require-scip-cli --scip-cli /path/to/scip
 ```
+
+## Evaluating a provider in the app
+
+The checked-in corpus below is separate from the desktop's live comparison.
+In the app, **Settings** shows the available code-intelligence providers. After
+adding and indexing a TypeScript/JavaScript project, its **Overview** offers
+**Evaluate SCIP**, which compares the current prototype's document, symbol and
+reference coverage against the bundled official SCIP indexer.
+
+That comparison is an evaluation signal, not a precision score. The Rust core
+copies the indexed source generation into an app-owned input view and records an
+attested manifest before SCIP runs; the result is marked stale once the source
+index changes. Installed dependencies and other compiler inputs outside that
+source view are not yet fenced or manifested, so results stay explicitly partial
+and unverified rather than being promoted as exact. They do not replace the
+project's trusted facts.
+
+Repositories without a TypeScript config are evaluated through an app-owned
+inferred config; evaluation never creates a `tsconfig.json` in the source
+repository, and the upstream `--infer-tsconfig` flag is never invoked. If the
+upstream indexer skips one of several project configs, the usable comparison is
+retained and labeled **partial** rather than presented as a complete success. JavaScript projects using `jsconfig.json` are discovered as
+well; invalid configs and oversized files are reported rather than silently
+broadening or completing the evaluation. Solution-style roots remain supported,
+with SCIP — not SDLC — resolving their referenced project configs under the
+provider's process bounds.
+
+Tree-sitter remains available if SCIP fails. Joern is shown only when its
+`joern-parse` command is installed; detection does not yet enable or bundle the
+planned control/data-flow adapter.
+
+The route behind the button is
+[`POST /api/workspaces/:id/providers/scip-typescript/evaluate`](reference/http-api.md#providers-and-findings).
 
 ## What is measured now
 

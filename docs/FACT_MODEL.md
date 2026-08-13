@@ -1,5 +1,7 @@
 # Provider-neutral fact contract
 
+> [Documentation hub](README.md) · [SDLC](../README.md)
+
 Status: schema version 1, introduced 2026-08-10.
 
 ## Purpose and boundary

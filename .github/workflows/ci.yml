@@ -6,6 +6,20 @@ on:
   pull_request:
 
 jobs:
+  # The docs are a hub-and-leaf tree that only discipline keeps honest. This
+  # needs nothing but a checkout, so it fails in seconds rather than after the
+  # native matrix.
+  docs:
+    name: docs
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: check documentation structure
+        run: node scripts/check-docs.mjs
+
   # The scan core is native, so it is built per platform and published as a
   # prebuilt artifact. Nobody installing the app should need a Rust toolchain.
   native:
