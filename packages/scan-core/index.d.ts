@@ -213,8 +213,23 @@ export interface NativeFile {
   bytes: number
   contentSha: string
   isTest: boolean
-  /** False for files no grammar covers, or that were skipped as noise. */
+  /**
+   * False for files no grammar covers, or that were skipped as noise. A
+   * property of the file, not of this run: it stays true for a file that was
+   * verified rather than read, which therefore carries no symbols.
+   */
   parsed: boolean
+  /**
+   * How this entry was established: `read` or `verified`. The one field that
+   * separates "this file has no symbols" from "this run did not look".
+   */
+  freshness: string
+  /**
+   * The filesystem's identity for this file when it can serve as a baseline
+   * for a later scan, and absent when it cannot. Absent never means
+   * unchanged — it means the next scan has to read the file to find out.
+   */
+  statKey?: string
   /**
    * The file's meaning with comments and formatting removed. Empty where no
    * grammar covers the file, which callers read as "not applicable".
@@ -268,6 +283,24 @@ export interface NativeScan {
   gitignoreApplied: boolean
   walkMs: number
   parseMs: number
+  /** Files read, taken on the filesystem's word, and checked anyway. */
+  filesRead: number
+  filesVerified: number
+  filesSampled: number
+  /**
+   * Files whose recorded identity matched while their contents had moved,
+   * and still matched when checked again straight afterwards. Above zero
+   * means this filesystem's identity cannot be trusted here, and the walk
+   * has already redone the run reading everything.
+   */
+  freshnessMismatches: number
+  /**
+   * Sampled files written between the stat and the read. Ordinary timing
+   * against a live editor: the fresh contents are used, no key is recorded
+   * for them, and nothing is distrusted. Nothing is redone — the file was
+   * read in the same pass.
+   */
+  freshnessRaced: number
 }
 export interface NativeSourceFile {
   path: string
@@ -292,8 +325,17 @@ export interface NativePathDecision {
    */
   policyInput: boolean
 }
-/** Walk and parse a repository. Both phases use every core, off the event loop. */
-export declare function scanRepo(root: string): Promise<NativeScan>
+/**
+ * Walk and parse a repository. Both phases use every core, off the event loop.
+ *
+ * `baseline_json` is what the store owner recorded about these files last
+ * time, and passing it opts into skipping the read for any file the
+ * filesystem says is unchanged. It is produced by `NativeDatabase.fileBaseline`
+ * and is opaque to the caller: the shape, the comparison and the decision all
+ * live here, so a second implementation of the freshness rule cannot appear on
+ * the other side of the boundary. Omit it for a full scan.
+ */
+export declare function scanRepo(root: string, baselineJson?: string | undefined | null): Promise<NativeScan>
 /**
  * Read staged, unstaged, renamed, and untracked paths through Git porcelain.
  * Failure is returned as explicit degraded state so retrieval still works.
@@ -332,6 +374,19 @@ export interface NativeMatch {
  * grammar each file needs.
  */
 export declare function searchStructural(root: string, query: string, languages?: Array<string> | undefined | null, limit?: number | undefined | null, textFilter?: string | undefined | null): Promise<Array<NativeMatch>>
+/**
+ * Re-read and parse named files, bypassing the walk and any baseline.
+ *
+ * The companion to an incremental scan. A scan only learns which unchanged
+ * files it must rebuild anyway — the callers of something that was deleted —
+ * after the walk has already skipped them, and their stored references have
+ * been dropped by then. Asking for those paths by name rebuilds them without
+ * giving up the fast path for everything else.
+ * `ignore_gitignore` mirrors a walk that had to relax that rule, for the same
+ * reason `source_path_decision` takes it: a decision made under a different
+ * policy from the one that built the inventory is not the same decision.
+ */
+export declare function parseRepoPaths(root: string, paths: Array<string>, ignoreGitignore?: boolean | undefined | null): Promise<Array<NativeFile>>
 /** Read the bounded source inventory for deterministic content analyzers. */
 export declare function readRepoFiles(root: string): Promise<Array<NativeSourceFile>>
 /** One directly persisted SQLite connection, owned by the engine process. */
@@ -345,6 +400,24 @@ export declare class NativeDatabase {
   migrate(projectRoot: string, backupDir: string): Promise<void>
   executeBatch(sql: string): void
   run(sql: string, paramsJson: string): void
+  /**
+   * What the last scan recorded about each present file, for the walk.
+   *
+   * Produced here rather than assembled by the caller so the query, the
+   * shape and the comparison all stay on this side of the boundary. The
+   * caller forwards the string to `scanRepo` without reading it; it cannot
+   * grow a second opinion about what "unchanged" means, which is the same
+   * reason the input policy answers the walk and the watcher from one place.
+   *
+   * Rows without a `stat_key` are omitted: an absent key is not a baseline.
+   *
+   * `lastRun` is a counter that advances by one per baseline, used only to
+   * rotate the verification sample. It is deliberately not the run id: the
+   * runs table is also advanced by analyzer runs, so scans would see a
+   * stride of two or more, and any stride sharing a factor with the sampling
+   * period leaves a fixed share of files that are never checked at all.
+   */
+  fileBaseline(): string
   all(sql: string, paramsJson: string): string
   /**
    * Ranked lexical retrieval over deterministic facts and authored

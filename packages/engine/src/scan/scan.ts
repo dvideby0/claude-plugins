@@ -5,14 +5,15 @@
  * symbols, edges and findings. Only changed files are re-parsed.
  */
 
+import { statSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { Db } from "../db/db.js";
 import { getDb } from "../db/db.js";
-import { createResolver, parseTsAliases, type TsPathAlias } from "./resolve.js";
+import { parseTsAliases, resolutionInputs, type TsPathAlias } from "./resolve.js";
 import { collectGit } from "./git.js";
 import { TYPED_SPECIFIER } from "../graph/typed-contract.js";
-import { collectFiles, type ParsedSource } from "./source.js";
+import { collectFiles, parseSourcePaths, type ParsedSource } from "./source.js";
 import { canonicalWorkspaceRoot, workspaceIdentityKey } from "../lib/workspace-path.js";
 import { sourceSignature } from "./signature.js";
 import { applyMove, correlateMoves } from "./moves.js";
@@ -29,8 +30,16 @@ import { setInputPolicyRelaxed } from "../daemon/watcher.js";
  * entry points" rather than "this index predates them".
  *
  * When the stored version is behind, the next scan is promoted to a full one.
+ *
+ * 20: Python docstrings became prose, and every node gained one uniform
+ * encoding, so `syntax_sha`, `interface_sha` and `body_sha` moved. The promoted
+ * rescan recomputes them. Note the one-time cost this imposes on an existing
+ * index: artifacts anchored to those files drift once, for a change in how
+ * signatures are computed rather than a change in the code. Carrying recorded
+ * signatures forward where `content_sha` is unchanged would remove that for
+ * this bump and every later one; it is deliberately not done here.
  */
-export const EXTRACTION_VERSION = 19;
+export const EXTRACTION_VERSION = 20;
 
 export interface ScanOptions {
   /** Re-parse every file, ignoring content hashes. */
@@ -60,14 +69,55 @@ export interface ScanResult {
    * between re-reading a file and invalidating everything anchored to it.
    */
   filesSyntaxChanged: number;
-  /** Set when the walk relaxed a rule rather than report an empty repository. */
+  /**
+   * Anything about this scan's inputs the caller should be told. Today that is
+   * a `.gitignore` some of whose rules could not be read — a warning, since the
+   * rest still apply — or one the walk had to abandon entirely rather than
+   * report an empty repository, or a filesystem identity caught disagreeing
+   * with the contents, or a file that needed rebuilding and could not be
+   * re-read. Deliberately one field: a caller should not have to know the list
+   * to notice that something about this scan's inputs was not ordinary.
+   */
   inputDiagnostic: string | null;
+  /**
+   * How the walk established each file: read, taken on the filesystem's word,
+   * or read anyway to check that word. `filesRead + filesVerified +
+   * filesSampled` is `filesTotal`, so a fast path is never unaccounted for.
+   */
+  filesRead: number;
+  filesVerified: number;
+  filesSampled: number;
+  /**
+   * Sampled files written between the stat and the read. Their fresh contents
+   * are used and no key is recorded, so the next scan reads them again. They
+   * prove nothing about the filesystem and do not distrust the workspace.
+   */
+  filesRacedDuringScan: number;
+  /**
+   * Sampled files whose recorded identity matched while their contents did
+   * not, and still matched a moment later. Above zero means the walk has
+   * already redone this run reading everything.
+   */
+  filesFreshnessMismatched: number;
+  /** Set once this workspace's filesystem identity has been caught lying. */
+  freshnessDistrusted: string | null;
   /** Renames confirmed well enough to carry authored knowledge across. */
   filesMoved: number;
+  /**
+   * Findings closed because their file stopped being indexed while still
+   * existing. Counted apart from fixed ones: a scan runs no analyzers, so
+   * nobody checked whether these are still true.
+   */
+  findingsRetired: number;
   /** The bundled Rust source engine. */
   engine: "native";
   /** True when the index was rebuilt because it predated the current extractor. */
   upgraded: boolean;
+}
+
+/** `?, ?, ?` for an `IN` list, so paths stay bound rather than interpolated. */
+function placeholders(values: string[]): string {
+  return values.map(() => "?").join(", ");
 }
 
 async function loadAliases(projectRoot: string): Promise<TsPathAlias[]> {
@@ -110,11 +160,11 @@ async function doScan(projectRoot: string, options: ScanOptions = {}): Promise<S
   const runId = await startRun(db, options.kind ?? "scan", git.sha);
 
   // Promote to a full scan when the index was built by an older extractor.
+  // Decided before the walk, not after it: a full scan is expressed by giving
+  // the walk no baseline, so it has to be known before the walk starts.
   const storedVersion = Number(
     db.get<{ value: string }>("SELECT value FROM meta WHERE key = 'extraction_version'")?.value ?? 0,
   );
-  const { files, engine, exclusions, exclusionSummary, diagnostic, gitignoreApplied } =
-    await collectFiles(projectRoot);
   const storedEngine =
     db.get<{ value: string }>("SELECT value FROM meta WHERE key = 'extraction_engine'")?.value ??
     "unknown";
@@ -122,14 +172,61 @@ async function doScan(projectRoot: string, options: ScanOptions = {}): Promise<S
   // references. Rebuild them once through the sole production source engine.
   const stale = storedVersion < EXTRACTION_VERSION || storedEngine !== "native";
   const full = options.full || stale;
+
+  // A workspace whose filesystem has been caught claiming an unchanged file
+  // stays on the slow path. One demonstration that the key can lie is enough:
+  // there is no reason to believe the next scan is the one where it tells the
+  // truth, and every skip after that would be a guess.
+  // An explicit full scan clears it — but not here. The marker is dropped at
+  // the end, after the walk and the write transaction have both completed.
+  // Clearing it up front would mean a full scan that failed halfway left the
+  // workspace trusting a filesystem nothing had re-checked, and the next
+  // incremental scan would resume the fast path on the old baseline. Failing
+  // between the commit and the clear leaves a completed full scan still
+  // distrusted, which is the harmless direction.
+  //
+  // The clear is safe because it is not a pardon: the next incremental scan
+  // samples again and distrusts the workspace again if the filesystem is still
+  // lying. Without it a workspace that moved to a different disk could never
+  // earn the fast path back.
+  const distrusted = options.full
+    ? null
+    : (db.get<{ value: string }>(
+        "SELECT value FROM meta WHERE key = 'walk_freshness_distrusted'",
+      )?.value ?? null);
+
+  const {
+    files,
+    engine,
+    exclusions,
+    exclusionSummary,
+    diagnostic,
+    gitignoreApplied,
+    filesRead,
+    filesVerified,
+    filesSampled,
+    freshnessMismatches,
+    freshnessRaced,
+  } = await collectFiles(projectRoot, full || distrusted ? null : db.fileBaseline());
   const aliases = await loadAliases(projectRoot);
 
   const previous = new Map(
     db
-      .all<{ path: string; content_sha: string; syntax_sha: string | null }>(
-        "SELECT path, content_sha, syntax_sha FROM files WHERE present = 1",
-      )
+      .all<{
+        path: string;
+        content_sha: string;
+        syntax_sha: string | null;
+        relation_set_sha: string | null;
+      }>("SELECT path, content_sha, syntax_sha, relation_set_sha FROM files WHERE present = 1")
       .map((row) => [row.path, row]),
+  );
+
+  /** Prior resolutions for files whose relation set did not move. */
+  const carried = new Map<string, Map<string, { dstPath: string | null; external: string | null }>>();
+
+  // Captured before the write pass overwrites them.
+  const previousRelationSet = new Map(
+    [...previous].map(([path, row]) => [path, row.relation_set_sha]),
   );
 
   const walked = new Set(files.map((file) => file.path));
@@ -160,25 +257,83 @@ async function doScan(projectRoot: string, options: ScanOptions = {}): Promise<S
     }
   }
 
+  // Which of the vanished paths are still sitting on disk. The file being gone
+  // and the file being no longer indexed look identical from the inventory, and
+  // a stat is the one signal that separates them without depending on the
+  // bounded exclusion sample. A move lands here too, with its old path already
+  // gone, so it takes the deleted branch after `applyMove` has carried the
+  // knowledge across.
+  //
+  // It has to be a file, not merely something at that path. A directory that
+  // replaced it, or a case-only rename landing on a case-insensitive
+  // filesystem where the old spelling still resolves, would otherwise be
+  // reported as "the file is still there" for a file that is gone.
+  const stillPresentButUnindexed = new Set(
+    removed.filter(
+      (path) => statSync(join(projectRoot, path), { throwIfNoEntry: false })?.isFile() ?? false,
+    ),
+  );
+
   const seen = new Set<string>();
   const languages: Record<string, number> = {};
   let filesChanged = 0;
   let filesParsed = 0;
+  let findingsRetired = 0;
+
+  // A file may be skipped only if nothing else in this run has invalidated it.
+  //
+  // A reference is owned by its caller, so when a target disappears the
+  // unchanged caller is rebuilt to keep the unresolved row, which can resolve
+  // again if the target returns. That set is only known after the walk — it
+  // depends on what turned out to be missing — so an incremental walk has
+  // already verified those callers and returned no parse output for them,
+  // while the removal pass below is about to delete their inbound references.
+  // Without this they would degrade until the next full scan, and nothing
+  // anywhere would report a problem. Re-read exactly those paths by name.
+  const missingParse = files.filter(
+    (file) => invalidatedSources.has(file.path) && file.parseable && file.parsed === null,
+  );
+  const rebuilt = await parseSourcePaths(
+    projectRoot,
+    missingParse.map((file) => file.path),
+    // Under the policy the walk actually applied. A repository whose catch-all
+    // `.gitignore` made the walk relax is indexed under the relaxed rule, and
+    // the strict policy would reject every path here — rebuilding nothing and
+    // silently dropping the references this pass exists to keep.
+    !gitignoreApplied,
+  );
+  // A requested rebuild that comes back with nothing means those references
+  // are about to be deleted with nothing to reinsert. That is the failure this
+  // pass exists to prevent, so it is reported rather than left to be noticed
+  // as a missing call months later.
+  const unrebuilt = missingParse.filter((file) => !rebuilt.has(file.path));
+  const rebuildDiagnostic =
+    unrebuilt.length === 0
+      ? null
+      : `${unrebuilt.length} file(s) needed rebuilding because something they reference was ` +
+        `deleted, and could not be re-read: ${unrebuilt
+          .slice(0, 5)
+          .map((file) => file.path)
+          .join(", ")}. Their references to the deleted files are lost until the next full scan.`;
 
   // Rust has already walked and parsed before the transaction opens. Select
   // the changed parse results here so the write pass remains synchronous.
   const parsed = new Map<string, ParsedSource>();
+  // References are produced by the parse but written from their own list, so a
+  // rebuilt file has to contribute both. Reading `file.refs` alone would delete
+  // a verified caller's references and insert nothing in their place.
+  const refsByPath = new Map(files.map((file) => [file.path, file.refs]));
   for (const file of files) {
-    // A reference is owned by its caller. If its target disappears, rebuild
-    // that unchanged caller now so the unresolved row survives and can resolve
-    // again when the target returns. Deleting the inbound row permanently lost
-    // the call until a full scan or an unrelated caller edit.
     const changed =
       full ||
       previous.get(file.path)?.content_sha !== file.contentSha ||
       invalidatedSources.has(file.path);
-    if (!changed || !file.parsed) continue;
-    parsed.set(file.path, file.parsed);
+    if (!changed) continue;
+    const rebuiltSource = rebuilt.get(file.path);
+    if (rebuiltSource) refsByPath.set(file.path, rebuiltSource.refs);
+    const source = file.parsed ?? rebuiltSource?.parsed;
+    if (!source) continue;
+    parsed.set(file.path, source);
   }
 
   // Which files changed in a way anything anchored to them should care about.
@@ -209,12 +364,16 @@ async function doScan(projectRoot: string, options: ScanOptions = {}): Promise<S
         `INSERT INTO files(path, lang, loc, bytes, content_sha, syntax_sha, relation_set_sha,
                            churn, is_test, parsed,
                            ref_coverage, ref_generation, ref_source_signature, present,
-                           first_seen_run, last_seen_run)
-         VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, 1, ?, ?)
+                           first_seen_run, last_seen_run,
+                           stat_key, freshness_basis, last_read_run)
+         VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, 1, ?, ?, ?, ?, ?)
          ON CONFLICT(path) DO UPDATE SET
            lang = excluded.lang, loc = excluded.loc, bytes = excluded.bytes,
            content_sha = excluded.content_sha, churn = excluded.churn,
            is_test = excluded.is_test,
+           stat_key = excluded.stat_key,
+           freshness_basis = excluded.freshness_basis,
+           last_read_run = COALESCE(excluded.last_read_run, files.last_read_run),
            -- Only a re-parse produces these. An unchanged file keeps the ones
            -- it already has rather than having them overwritten with nulls.
            syntax_sha = CASE WHEN ? = 1 THEN excluded.syntax_sha ELSE files.syntax_sha END,
@@ -234,10 +393,23 @@ async function doScan(projectRoot: string, options: ScanOptions = {}): Promise<S
           result?.relationSetSha ?? null,
           git.churn.get(file.path) ?? 0,
           file.isTest ? 1 : 0,
-          file.parsed ? 1 : 0,
+          // Whether a grammar covers the file, which is a property of the file.
+          // Not `parsed !== null`: once a scan can skip an unchanged file this
+          // column would start reporting every skipped source file as unparsed.
+          file.parseable ? 1 : 0,
           referenceCoverage,
           runId,
           runId,
+          file.statKey,
+          // A file rebuilt by the targeted pass had its bytes read this run,
+          // whatever the walk did, so it must not be recorded as taken on the
+          // filesystem's word — the evidence sentence would say it was not read
+          // again, which is untrue for exactly these rows.
+          rebuilt.has(file.path) ? "read" : file.freshness,
+          // The run that last read the bytes. A verified file keeps the one it
+          // already had, so "established at run 41, confirmed at run 57" stays
+          // true rather than collapsing into "read at 57".
+          file.freshness !== "verified" || rebuilt.has(file.path) ? runId : null,
           refreshed ? 1 : 0,
           refreshed ? 1 : 0,
           refreshed ? 1 : 0,
@@ -249,6 +421,25 @@ async function doScan(projectRoot: string, options: ScanOptions = {}): Promise<S
       if (!result) continue;
       filesChanged++;
       filesParsed++;
+
+      // A re-parsed file's rows are about to be deleted and reinserted with a
+      // null destination, so they need resolving again whether or not anything
+      // about the file moved. What the relation-set signature buys is that
+      // when it has not moved, the specifier set is identical and the answers
+      // are the ones already stored — so they are kept rather than recomputed.
+      if (previousRelationSet.get(file.path) === result.relationSetSha) {
+        carried.set(
+          file.path,
+          new Map(
+            db
+              .all<{ specifier: string; dst_path: string | null; external: string | null }>(
+                "SELECT specifier, dst_path, external FROM edges WHERE src_path = ?",
+                [file.path],
+              )
+              .map((row) => [row.specifier, { dstPath: row.dst_path, external: row.external }]),
+          ),
+        );
+      }
 
       db.run("DELETE FROM symbols WHERE path = ?", [file.path]);
       db.run("DELETE FROM edges WHERE src_path = ?", [file.path]);
@@ -289,7 +480,7 @@ async function doScan(projectRoot: string, options: ScanOptions = {}): Promise<S
         );
       }
 
-      for (const reference of file.refs) {
+      for (const reference of refsByPath.get(file.path) ?? []) {
         db.run(
           `INSERT OR REPLACE INTO refs(src_path, src_line, src_column, name, specifier, dst_path)
            VALUES(?, ?, ?, ?, ?, NULL)`,
@@ -395,10 +586,25 @@ async function doScan(projectRoot: string, options: ScanOptions = {}): Promise<S
       db.run("DELETE FROM refs WHERE src_path = ?", [path]);
       db.run("DELETE FROM refs WHERE dst_path = ?", [path]);
       db.run("DELETE FROM execution_entries WHERE path = ?", [path]);
-      db.run(
-        "UPDATE findings SET status = 'fixed', fixed_in_run = ? WHERE path = ? AND status IN ('open','regressed')",
-        [runId, path],
-      );
+      // A path can leave the inventory two ways, and they mean opposite things
+      // to somebody reading a finding. The file being gone is the only one that
+      // can be reported as fixed: no analyzer ran in this scan, so if the file
+      // is still sitting there and we simply stopped looking at it, "fixed" is
+      // a claim nobody made. Retired says what actually happened.
+      if (stillPresentButUnindexed.has(path)) {
+        findingsRetired += db.count(
+          "SELECT COUNT(*) AS n FROM findings WHERE path = ? AND status IN ('open','regressed')",
+          [path],
+        );
+        db.run("UPDATE findings SET status = 'retired' WHERE path = ? AND status IN ('open','regressed')", [
+          path,
+        ]);
+      } else {
+        db.run(
+          "UPDATE findings SET status = 'fixed', fixed_in_run = ? WHERE path = ? AND status IN ('open','regressed')",
+          [runId, path],
+        );
+      }
     }
 
     // Only now is the inventory final: the old paths are retired and the
@@ -433,14 +639,61 @@ async function doScan(projectRoot: string, options: ScanOptions = {}): Promise<S
       );
     }
 
+    // **Invariant R.** `resolve` reads exactly three things: the path it is
+    // resolving from, the specifier, and the set of indexed paths plus the
+    // alias table. So a stored `(dst_path, external)` is still correct if and
+    // only if its `(src_path, specifier)` is unchanged *and* those inputs are
+    // identical to the ones in force when it was written.
+    //
+    // That second half is why the gate is a conjunction and not a per-file
+    // check. Resolution is a property of the whole repository, and it is not
+    // monotone in the inventory: `tryPythonPackage` takes the shortest suffix
+    // match and `tryFile` tries extensions in order, so adding one file can
+    // silently retarget an edge that was already resolved — not merely fix an
+    // unresolved one. "On an addition, re-resolve only the null rows" is
+    // therefore unsound, and is deliberately not what this does.
+    //
+    // When the inputs are identical, the only rows that can need a new value
+    // are the ones this run re-parsed and re-inserted. Everything else was
+    // resolved against the same inputs and is provably still correct.
+    const { resolver, identity } = resolutionInputs(seen, aliases);
+    const storedIdentity =
+      db.get<{ value: string }>("SELECT value FROM meta WHERE key = 'resolution_inputs_sha'")
+        ?.value ?? null;
+    const inputsUnchanged = !full && storedIdentity !== null && storedIdentity === identity;
+
+    // Scoped to the files this run re-parsed, because those are the only rows
+    // that were deleted and reinserted without a destination. Everything else
+    // was resolved against these same inputs and still holds.
+    // Every scoped path becomes a bind variable, and SQLite takes at most
+    // 32766 of them. A mass reformat in a very large repository could exceed
+    // that, and the throw would roll the transaction back — including the
+    // content hashes — so the next scan would re-parse the same set and fail
+    // the same way, wedged until somebody forced a full scan. Above the cap the
+    // whole-table pass costs about the same anyway, so it just runs.
+    const scopeCap = 4_000;
+    const reparsed = inputsUnchanged ? [...parsed.keys()] : null;
+    const needResolve = reparsed !== null && reparsed.length <= scopeCap ? reparsed : null;
+    const scope = needResolve === null ? "" : ` WHERE src_path IN (${placeholders(needResolve)})`;
+    const scopeParams = needResolve ?? [];
+
     // Re-resolve every edge: a newly added file can resolve an import that was
     // external on the previous run.
-    const resolver = createResolver(seen, aliases);
-    const edges = db.all<{ src_path: string; specifier: string }>(
-      "SELECT src_path, specifier FROM edges",
-    );
+    const edges =
+      needResolve?.length === 0
+        ? []
+        : db.all<{ src_path: string; specifier: string }>(
+            `SELECT src_path, specifier FROM edges${scope}`,
+            scopeParams,
+          );
     for (const edge of edges) {
-      const { dstPath, external } = resolver.resolve(edge.src_path, edge.specifier);
+      // `relation_set_sha` finally has a reader. Where the file's sorted set of
+      // specifiers is byte-identical to the recorded one and the resolver's
+      // inputs have not moved, the answer cannot have changed either, so it is
+      // restored rather than recomputed.
+      const kept = carried.get(edge.src_path)?.get(edge.specifier);
+      const { dstPath, external } =
+        kept && inputsUnchanged ? kept : resolver.resolve(edge.src_path, edge.specifier);
       db.run("UPDATE edges SET dst_path = ?, external = ? WHERE src_path = ? AND specifier = ?", [
         dstPath,
         external,
@@ -453,10 +706,16 @@ async function doScan(projectRoot: string, options: ScanOptions = {}): Promise<S
     // the type-resolved ones, which already carry a real target. Passing those
     // through the import resolver nulls them out, silently undoing the typed
     // pass on the next scan.
-    const references = db.all<{ src_path: string; specifier: string }>(
-      "SELECT DISTINCT src_path, specifier FROM refs WHERE specifier != ? AND specifier NOT LIKE ?",
-      [TYPED_SPECIFIER, `${TYPED_SPECIFIER}:%`],
-    );
+    const references =
+      needResolve?.length === 0
+        ? []
+        : db.all<{ src_path: string; specifier: string }>(
+            `SELECT DISTINCT src_path, specifier FROM refs
+              WHERE specifier != ? AND specifier NOT LIKE ?${
+                needResolve === null ? "" : ` AND src_path IN (${placeholders(needResolve)})`
+              }`,
+            [TYPED_SPECIFIER, `${TYPED_SPECIFIER}:%`, ...scopeParams],
+          );
     for (const reference of references) {
       const { dstPath } = resolver.resolve(reference.src_path, reference.specifier);
       db.run("UPDATE refs SET dst_path = ? WHERE src_path = ? AND specifier = ?", [
@@ -466,9 +725,22 @@ async function doScan(projectRoot: string, options: ScanOptions = {}): Promise<S
       ]);
     }
 
+    // Recorded inside the transaction, not beside `source_signature` outside
+    // it. Written outside, a rolled back scan would leave `meta` asserting a
+    // resolution that never happened, and the next scan would skip re-resolving
+    // rows that were never resolved in the first place.
+    db.run("INSERT OR REPLACE INTO meta(key, value) VALUES('resolution_inputs_sha', ?)", [
+      identity,
+    ]);
+
     // The innermost enclosing declaration is the caller. Destination ids use
     // typed declaration lines where available, so duplicate method names stay
     // distinct instead of collapsing to path + name.
+    //
+    // Deliberately not scoped by the gate above. Its correct scope is the
+    // re-parsed files plus every file that is the destination of a reference,
+    // which is a different and larger analysis; folding it in here would double
+    // the risk for a second win. Measured and left as the next slice.
     db.refreshReferenceIdentity();
   });
 
@@ -488,6 +760,28 @@ async function doScan(projectRoot: string, options: ScanOptions = {}): Promise<S
   db.run("INSERT OR REPLACE INTO meta(key, value) VALUES('source_signature', ?)", [
     sourceSignature(files),
   ]);
+  // Persisted for the same reason the relaxed input policy is: a daemon
+  // restart would otherwise go back to trusting a filesystem this workspace
+  // has already watched lie about an unchanged file.
+  //
+  // A file written between the stat and the read is counted apart and does not
+  // reach here. It proves nothing about the filesystem, it happens routinely to
+  // a watcher-driven scan racing an editor save, and treating it as proof would
+  // cost a workspace its fast path permanently on the strength of timing.
+  if (freshnessMismatches > 0) {
+    db.run("INSERT OR REPLACE INTO meta(key, value) VALUES('walk_freshness_distrusted', ?)", [
+      diagnostic ?? "A file's recorded filesystem identity matched while its contents had changed.",
+    ]);
+  } else if (options.full) {
+    // Cleared only now, having actually read everything. A full scan that
+    // failed before reaching this point leaves the marker in place, so the next
+    // scan still knows not to trust this filesystem.
+    //
+    // Alongside the other meta writes rather than inside the transaction: they
+    // all describe the scan that just finished, and none of them is a fact a
+    // reader of the graph depends on being written atomically with it.
+    db.run("DELETE FROM meta WHERE key = 'walk_freshness_distrusted'");
+  }
   // Watch decisions must match the inventory this scan actually produced, not
   // the strict policy it had to abandon. A malformed rule still leaves the
   // rest applied, so only an abandoned matcher relaxes the watcher too.
@@ -525,7 +819,15 @@ async function doScan(projectRoot: string, options: ScanOptions = {}): Promise<S
       .reduce((total, count) => total + count.paths, 0),
     filesSyntaxChanged: syntaxChanged.size,
     filesMoved: moves.length,
-    inputDiagnostic: diagnostic,
+    findingsRetired,
+    filesRead,
+    filesVerified,
+    filesSampled,
+    filesRacedDuringScan: freshnessRaced,
+    filesFreshnessMismatched: freshnessMismatches,
+    freshnessDistrusted:
+      freshnessMismatches > 0 ? (diagnostic ?? "The freshness key was wrong.") : distrusted,
+    inputDiagnostic: [diagnostic, rebuildDiagnostic].filter(Boolean).join(" ") || null,
     engine,
     upgraded: stale,
   };

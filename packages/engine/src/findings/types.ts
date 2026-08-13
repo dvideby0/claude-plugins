@@ -12,7 +12,15 @@ export const CATEGORIES = [
   "documentation",
 ] as const;
 export const SOURCES = ["linter", "typecheck", "secrets", "deps", "graph", "llm"] as const;
-export const STATUSES = ["open", "fixed", "regressed", "accepted", "false_positive"] as const;
+export const STATUSES = [
+  "open",
+  "fixed",
+  "regressed",
+  "accepted",
+  "false_positive",
+  /** Closed because its file left the index, not because anybody checked it. */
+  "retired",
+] as const;
 
 export type Severity = (typeof SEVERITIES)[number];
 export type Confidence = (typeof CONFIDENCES)[number];

@@ -19,6 +19,36 @@ const PROJECT = {
     'import { hash } from "../lib/hash.js";\n\nexport function handle(input: string): string {\n  return hash(input);\n}\n',
 };
 
+const PYTHON_PROJECT = {
+  "pkg/__init__.py": "",
+  "pkg/hash.py": "def hash_value(value):\n    return value\n",
+  "pkg/caller.py":
+    "from pkg.hash import hash_value\n\n\ndef handle(text):\n    return hash_value(text)\n",
+};
+
+/** The Python arm of the fixture above, anchored to `pkg/hash.py`. */
+async function authorPythonKnowledge(root: string) {
+  const db = await getDb(root);
+  describeComponent(db, { name: "Library", members: ["pkg/hash.py"] });
+  describeFlow(db, {
+    name: "Hashing",
+    steps: [{ label: "hash the value", path: "pkg/hash.py" }],
+  });
+  relate(db, {
+    kind: "calls",
+    srcPath: "pkg/hash.py",
+    label: "hashes input",
+    evidence: "return value",
+  });
+  remember(db, {
+    kind: "decision",
+    title: "Hashing is identity for now",
+    anchors: [{ path: "pkg/hash.py" }],
+  });
+  markExplored(db, "pkg/hash.py", 1);
+  return db;
+}
+
 /** Everything a person can author about one file, in one place. */
 async function authorKnowledgeAbout(root: string, path: string) {
   const db = await getDb(root);
@@ -83,6 +113,59 @@ describe("invalidation follows meaning, not bytes", () => {
     expect(memory?.anchors[0]).toMatchObject({ stale: false });
     // The reason says what happened, not merely that nothing did.
     expect(memory?.anchors[0]?.freshness.reason).toContain("only in comments or formatting");
+  });
+
+  it("leaves everything anchored to a Python file standing when only its docstrings change", async () => {
+    // Python puts its prose inside the code rather than in comments, so
+    // without this a Python repository never got the guarantee above.
+    root = await makeProject(PYTHON_PROJECT);
+    await scan(root, { kind: "full" });
+    let db = await authorPythonKnowledge(root);
+    finalizeMap(db, { acknowledgeUnassigned: ["pkg/caller.py", "pkg/__init__.py"] });
+    expect(mapDrift(db).clean).toBe(true);
+
+    await writeFile(
+      join(root, "pkg/hash.py"),
+      '"""Hashing helpers."""\n\n\ndef hash_value(value):\n    """Return the value unchanged."""\n    return value\n',
+    );
+    const result = await scan(root, { kind: "incremental" });
+    db = await getDb(root);
+
+    expect(result.filesChanged).toBe(1);
+    expect(result.filesSyntaxChanged).toBe(0);
+    // Genuinely re-parsed — the declaration moved three lines down. A rule
+    // that skipped the file entirely would also report zero meaning changes.
+    expect(
+      db.get<{ start_line: number }>(
+        "SELECT start_line FROM symbols WHERE path = 'pkg/hash.py' AND name = 'hash_value'",
+      )?.start_line,
+    ).toBe(4);
+
+    expect(mapDrift(db).clean).toBe(true);
+    expect(relationsFor(db, "pkg/hash.py")[0]).toMatchObject({
+      stale: false,
+      freshness: { state: "current", basis: "syntax" },
+    });
+  });
+
+  it("drifts everything anchored to a Python file when the code beside the docstring changes", async () => {
+    // The control for the test above. On its own, a passing docstring test
+    // proves only that something stopped hashing.
+    root = await makeProject(PYTHON_PROJECT);
+    await scan(root, { kind: "full" });
+    let db = await authorPythonKnowledge(root);
+    finalizeMap(db, { acknowledgeUnassigned: ["pkg/caller.py", "pkg/__init__.py"] });
+
+    await writeFile(
+      join(root, "pkg/hash.py"),
+      '"""Hashing helpers."""\n\n\ndef hash_value(value):\n    """Return the value unchanged."""\n    return value.strip()\n',
+    );
+    const result = await scan(root, { kind: "incremental" });
+    db = await getDb(root);
+
+    expect(result.filesChanged).toBe(1);
+    expect(result.filesSyntaxChanged).toBe(1);
+    expect(mapDrift(db).clean).toBe(false);
   });
 
   it("agrees across every reader that a comment-only edit changed nothing", async () => {

@@ -113,8 +113,26 @@ export interface SourceFile {
   bytes: number;
   contentSha: string;
   isTest: boolean;
+  /**
+   * Whether a grammar covers this file at all — a property of the file, not of
+   * this run. Kept apart from `parsed`, which says whether this run actually
+   * produced output for it. Once a scan can skip reading an unchanged file the
+   * two diverge, and conflating them would flip `files.parsed` to 0 for every
+   * skipped source file.
+   */
+  parseable: boolean;
   parsed: ParsedSource | null;
   refs: SourceRef[];
+  /**
+   * The filesystem's identity for this file, or null when it cannot serve as a
+   * baseline for a later scan. Null never means unchanged.
+   */
+  statKey: string | null;
+  /**
+   * Whether this scan read the file or trusted the filesystem's word that it
+   * had not changed.
+   */
+  freshness: "read" | "verified" | "sampled";
 }
 
 export interface SourceTextFile {
@@ -172,6 +190,10 @@ interface NativeFile {
   contentSha: string;
   isTest: boolean;
   parsed: boolean;
+  /** How this entry was established: `read` or `verified`. */
+  freshness: string;
+  /** Absent when the observation cannot serve as a baseline for a later scan. */
+  statKey?: string;
   syntaxSha: string;
   relationSetSha: string;
   symbols: Array<{
@@ -291,7 +313,13 @@ export interface NativeSnapshotManifest {
 }
 
 export interface NativeCore {
-  scanRepo(root: string): Promise<{
+  /**
+   * `baseline` is `NativeDatabase.fileBaseline()` output, forwarded verbatim.
+   * Passing it lets the walk skip reading files the filesystem says are
+   * unchanged. Omit it for a full scan. Deliberately opaque: the shape and the
+   * comparison live in Rust so there is only one definition of "unchanged".
+   */
+  scanRepo(root: string, baseline?: string): Promise<{
     files: NativeFile[];
     exclusions: SourceExclusion[];
     exclusionSummary: ExclusionCount[];
@@ -299,9 +327,20 @@ export interface NativeCore {
     gitignoreApplied: boolean;
     walkMs: number;
     parseMs: number;
+    filesRead: number;
+    filesVerified: number;
+    filesSampled: number;
+    freshnessMismatches: number;
+    freshnessRaced: number;
   }>;
   /** Read source text through the same bounded inventory policy used by scans. */
   readRepoFiles(root: string): Promise<SourceTextFile[]>;
+  /** Re-read and parse named files, bypassing the walk and any baseline. */
+  parseRepoPaths(
+    root: string,
+    paths: string[],
+    ignoreGitignore?: boolean,
+  ): Promise<NativeFile[]>;
   /**
    * Ask the repository input policy about one path, and why.
    *
@@ -394,6 +433,42 @@ export async function readSourceFiles(projectRoot: string): Promise<SourceTextFi
   return requireNative().readRepoFiles(projectRoot);
 }
 
+/**
+ * Re-read and parse named files, bypassing the walk and any baseline.
+ *
+ * For the files an incremental scan must rebuild even though nothing about
+ * them changed — the callers of something that was deleted. That set is only
+ * known once the walk has finished and already skipped them.
+ */
+export async function parseSourcePaths(
+  projectRoot: string,
+  paths: string[],
+  ignoreGitignore = false,
+): Promise<Map<string, { parsed: ParsedSource; refs: SourceRef[] }>> {
+  if (paths.length === 0) return new Map();
+  const files = await requireNative().parseRepoPaths(projectRoot, paths, ignoreGitignore);
+  return new Map(
+    files
+      .filter((file) => file.parsed)
+      .map((file) => [
+        file.path,
+        {
+          // Refs travel beside the parse output rather than inside it, so a
+          // caller rebuilding a file has to carry both or its references are
+          // deleted and never written back.
+          refs: file.refs,
+          parsed: {
+            symbols: file.symbols as ParsedSymbol[],
+            imports: file.imports,
+            executionEntries: file.executionEntries,
+            syntaxSha: file.syntaxSha,
+            relationSetSha: file.relationSetSha,
+          },
+        },
+      ]),
+  );
+}
+
 export interface CollectResult {
   files: SourceFile[];
   /** Recorded decisions to keep paths out, so absence is never unexplained. */
@@ -409,14 +484,39 @@ export interface CollectResult {
   engine: "native";
   walkMs: number;
   parseMs: number;
+  /** What the walk read, took the filesystem's word for, and checked anyway. */
+  filesRead: number;
+  filesVerified: number;
+  filesSampled: number;
+  /**
+   * Files whose recorded identity matched while their contents had moved, and
+   * still matched on a second look. Above zero means the walk has already
+   * redone this run reading everything, and that this workspace must stop
+   * trusting the key.
+   */
+  freshnessMismatches: number;
+  /**
+   * Sampled files written between the stat and the read. Their fresh contents
+   * are used and no key is recorded for them, so the next scan reads them
+   * again. Nothing is redone and nothing is distrusted.
+   */
+  freshnessRaced: number;
 }
 
-export async function collectFiles(projectRoot: string): Promise<CollectResult> {
-  const result = await requireNative().scanRepo(projectRoot);
+export async function collectFiles(
+  projectRoot: string,
+  baseline?: string | null,
+): Promise<CollectResult> {
+  const result = await requireNative().scanRepo(projectRoot, baseline ?? undefined);
   return {
     engine: "native",
     walkMs: result.walkMs,
     parseMs: result.parseMs,
+    filesRead: result.filesRead,
+    filesVerified: result.filesVerified,
+    filesSampled: result.filesSampled,
+    freshnessMismatches: result.freshnessMismatches,
+    freshnessRaced: result.freshnessRaced,
     exclusions: result.exclusions,
     exclusionSummary: result.exclusionSummary,
     diagnostic: result.diagnostic ?? null,
@@ -428,7 +528,13 @@ export async function collectFiles(projectRoot: string): Promise<CollectResult> 
       bytes: file.bytes,
       contentSha: file.contentSha,
       isTest: file.isTest,
-      parsed: file.parsed
+      parseable: file.parsed,
+      statKey: file.statKey ?? null,
+      // Only a file this run actually read has parse output. A verified file
+      // was not read at all, and a sampled one was read purely to check its
+      // key, so neither carries symbols — and treating their empty lists as a
+      // parse result would delete the symbols they still correctly have.
+      parsed: file.freshness === "read" && file.parsed
         ? {
             symbols: file.symbols as ParsedSymbol[],
             imports: file.imports,
@@ -437,7 +543,9 @@ export async function collectFiles(projectRoot: string): Promise<CollectResult> 
             relationSetSha: file.relationSetSha,
           }
         : null,
-      refs: file.parsed ? file.refs : [],
+      refs: file.freshness === "read" && file.parsed ? file.refs : [],
+      freshness:
+        file.freshness === "verified" || file.freshness === "sampled" ? file.freshness : "read",
     })),
   };
 }

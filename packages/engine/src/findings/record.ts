@@ -121,6 +121,8 @@ export function recordFindings(
 
     // Seen before: refresh position and severity, and reopen if it had been
     // marked fixed. Human decisions (accepted / false_positive) are sticky.
+    // A retired finding deliberately does not regress: nothing ever fixed it,
+    // its file just stopped being indexed, so coming back makes it open again.
     const reopened = existing.status === "fixed";
     const nextStatus =
       existing.status === "accepted" || existing.status === "false_positive"

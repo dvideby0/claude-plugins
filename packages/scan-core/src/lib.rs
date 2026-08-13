@@ -23,6 +23,7 @@ use rayon::prelude::*;
 use std::path::Path;
 
 mod database;
+mod freshness;
 mod git_changes;
 mod http_flow;
 mod input_policy;
@@ -155,8 +156,17 @@ pub struct NativeFile {
     pub bytes: u32,
     pub content_sha: String,
     pub is_test: bool,
-    /// False for files no grammar covers, or that were skipped as noise.
+    /// False for files no grammar covers, or that were skipped as noise. A
+    /// property of the file, not of this run: it stays true for a file that was
+    /// verified rather than read, which therefore carries no symbols.
     pub parsed: bool,
+    /// How this entry was established: `read` or `verified`. The one field that
+    /// separates "this file has no symbols" from "this run did not look".
+    pub freshness: String,
+    /// The filesystem's identity for this file when it can serve as a baseline
+    /// for a later scan, and absent when it cannot. Absent never means
+    /// unchanged — it means the next scan has to read the file to find out.
+    pub stat_key: Option<String>,
     /// The file's meaning with comments and formatting removed. Empty where no
     /// grammar covers the file, which callers read as "not applicable".
     pub syntax_sha: String,
@@ -206,6 +216,20 @@ pub struct NativeScan {
     pub gitignore_applied: bool,
     pub walk_ms: u32,
     pub parse_ms: u32,
+    /// Files read, taken on the filesystem's word, and checked anyway.
+    pub files_read: u32,
+    pub files_verified: u32,
+    pub files_sampled: u32,
+    /// Files whose recorded identity matched while their contents had moved,
+    /// and still matched when checked again straight afterwards. Above zero
+    /// means this filesystem's identity cannot be trusted here, and the walk
+    /// has already redone the run reading everything.
+    pub freshness_mismatches: u32,
+    /// Sampled files written between the stat and the read. Ordinary timing
+    /// against a live editor: the fresh contents are used, no key is recorded
+    /// for them, and nothing is distrusted. Nothing is redone — the file was
+    /// read in the same pass.
+    pub freshness_raced: u32,
 }
 
 #[napi(object)]
@@ -244,28 +268,44 @@ fn require_dir(root: &str) -> Result<()> {
     }
 }
 
-fn scan_sync(root: &str) -> NativeScan {
+fn scan_sync(root: &str, baseline: Option<freshness::FileBaseline>) -> NativeScan {
     let path = Path::new(root);
 
     let started = std::time::Instant::now();
     let policy = input_policy::InputPolicy::for_root(path);
-    let outcome = walk::walk(path, &policy);
+    let mode = match &baseline {
+        Some(baseline) => walk::WalkMode::Incremental(baseline),
+        None => walk::WalkMode::ReadAll,
+    };
+    let outcome = walk::walk(path, &policy, mode);
     let walk_ms = started.elapsed().as_millis() as u32;
 
     let started = std::time::Instant::now();
     let files: Vec<NativeFile> = outcome
         .files
         .par_iter()
-        .map_init(parse::Engines::new, |engines, file| {
+        .map_init(parse::Engines::new, native_file)
+        .collect();
+    let parse_ms = started.elapsed().as_millis() as u32;
+    assemble_scan(files, outcome, walk_ms, parse_ms)
+}
+
+/// Parse one walked file into the shape the Node boundary consumes.
+///
+/// Shared with the targeted re-parse so a file rebuilt on its own cannot come
+/// back in a different shape from the same file rebuilt by a full pass.
+fn native_file(engines: &mut parse::Engines, file: &walk::Scanned) -> NativeFile {
             // The input policy already decided whether this file is evidence;
             // re-deriving it here is how the two used to disagree.
             let parseable =
                 file.parseable && parse::grammar_for(&file.path, file.lang).is_some();
 
-            let parsed = if parseable {
-                parse::parse(engines, &file.path, file.lang, &file.content)
-            } else {
-                parse::Parsed::default()
+            // A file the walk verified without reading has no text to parse,
+            // and its stored symbols are still correct. This is where the saved
+            // work actually is: the read is one cost, the parse is the larger.
+            let parsed = match file.content.as_deref() {
+                Some(content) if parseable => parse::parse(engines, &file.path, file.lang, content),
+                _ => parse::Parsed::default(),
             };
 
             NativeFile {
@@ -276,6 +316,8 @@ fn scan_sync(root: &str) -> NativeScan {
                 content_sha: file.content_sha.clone(),
                 is_test: file.is_test,
                 parsed: parseable,
+                freshness: file.freshness.key().to_string(),
+                stat_key: file.stat_key.clone(),
                 syntax_sha: parsed.syntax_sha.clone(),
                 relation_set_sha: parsed.relation_set_sha.clone(),
                 symbols: parsed
@@ -371,10 +413,14 @@ fn scan_sync(root: &str) -> NativeScan {
                     })
                     .collect(),
             }
-        })
-        .collect();
-    let parse_ms = started.elapsed().as_millis() as u32;
+}
 
+fn assemble_scan(
+    files: Vec<NativeFile>,
+    outcome: walk::WalkOutcome,
+    walk_ms: u32,
+    parse_ms: u32,
+) -> NativeScan {
     NativeScan {
         files,
         exclusions: outcome
@@ -396,6 +442,11 @@ fn scan_sync(root: &str) -> NativeScan {
                 recorded: count.recorded,
             })
             .collect(),
+        files_read: outcome.freshness.read,
+        files_verified: outcome.freshness.verified,
+        files_sampled: outcome.freshness.sampled,
+        freshness_mismatches: outcome.freshness.mismatches,
+        freshness_raced: outcome.freshness.raced,
         diagnostic: outcome.diagnostic,
         gitignore_applied: outcome.gitignore_applied,
         walk_ms,
@@ -405,6 +456,8 @@ fn scan_sync(root: &str) -> NativeScan {
 
 pub struct ScanTask {
     root: String,
+    /// Taken by `compute`, which runs once.
+    baseline: Option<freshness::FileBaseline>,
 }
 
 #[napi]
@@ -413,7 +466,7 @@ impl Task for ScanTask {
     type JsValue = NativeScan;
 
     fn compute(&mut self) -> Result<Self::Output> {
-        Ok(scan_sync(&self.root))
+        Ok(scan_sync(&self.root, self.baseline.take()))
     }
 
     fn resolve(&mut self, _env: Env, output: Self::Output) -> Result<Self::JsValue> {
@@ -422,10 +475,21 @@ impl Task for ScanTask {
 }
 
 /// Walk and parse a repository. Both phases use every core, off the event loop.
+///
+/// `baseline_json` is what the store owner recorded about these files last
+/// time, and passing it opts into skipping the read for any file the
+/// filesystem says is unchanged. It is produced by `NativeDatabase.fileBaseline`
+/// and is opaque to the caller: the shape, the comparison and the decision all
+/// live here, so a second implementation of the freshness rule cannot appear on
+/// the other side of the boundary. Omit it for a full scan.
 #[napi(ts_return_type = "Promise<NativeScan>")]
-pub fn scan_repo(root: String) -> Result<AsyncTask<ScanTask>> {
+pub fn scan_repo(root: String, baseline_json: Option<String>) -> Result<AsyncTask<ScanTask>> {
     require_dir(&root)?;
-    Ok(AsyncTask::new(ScanTask { root }))
+    let baseline = match baseline_json {
+        Some(json) => Some(freshness::parse_baseline(&json)?),
+        None => None,
+    };
+    Ok(AsyncTask::new(ScanTask { root, baseline }))
 }
 
 pub struct GitChangesTask {
@@ -530,7 +594,8 @@ fn search_sync(
     }
     let root_path = Path::new(root);
     let policy = input_policy::InputPolicy::for_root(root_path);
-    let files = walk::walk(root_path, &policy).files;
+    // Structural search reads the text of every file, so it asks for it.
+    let files = walk::walk(root_path, &policy, walk::WalkMode::ReadAll).files;
     let needle = text_filter.map(str::to_lowercase);
     // Each file and the shared aggregate are capped. A broad query must never
     // allocate one result per identifier only to truncate after collection.
@@ -547,10 +612,16 @@ fn search_sync(
         .par_iter()
         .filter(|file| wanted.iter().any(|lang| lang == file.lang) && file.parseable)
         .for_each(|file| {
+            // Always present for the mode above. Skipping rather than
+            // substituting an empty string keeps a later mode change from
+            // quietly reporting no matches in every file.
+            let Some(content) = file.content.as_deref() else {
+                return;
+            };
             let hits = parse::search(
                 &file.path,
                 file.lang,
-                &file.content,
+                content,
                 query,
                 needle.as_deref(),
                 cap,
@@ -666,15 +737,19 @@ impl Task for ReadRepoFilesTask {
     fn compute(&mut self) -> Result<Self::Output> {
         let root = Path::new(&self.root);
         let policy = input_policy::InputPolicy::for_root(root);
-        Ok(walk::walk(root, &policy)
+        Ok(walk::walk(root, &policy, walk::WalkMode::ReadAll)
             .files
             .into_iter()
-            .map(|file| NativeSourceFile {
-                path: file.path,
-                lang: file.lang.to_string(),
-                content_sha: file.content_sha,
-                is_test: file.is_test,
-                content: file.content,
+            // The content analyzers exist to look at the bytes, so a file
+            // without them is not something to pass on as empty.
+            .filter_map(|file| {
+                Some(NativeSourceFile {
+                    path: file.path,
+                    lang: file.lang.to_string(),
+                    content_sha: file.content_sha,
+                    is_test: file.is_test,
+                    content: file.content?,
+                })
             })
             .collect())
     }
@@ -682,6 +757,64 @@ impl Task for ReadRepoFilesTask {
     fn resolve(&mut self, _env: Env, output: Self::Output) -> Result<Self::JsValue> {
         Ok(output)
     }
+}
+
+pub struct ParsePathsTask {
+    root: String,
+    paths: Vec<String>,
+    ignore_gitignore: bool,
+}
+
+#[napi]
+impl Task for ParsePathsTask {
+    type Output = Vec<NativeFile>;
+    type JsValue = Vec<NativeFile>;
+
+    fn compute(&mut self) -> Result<Self::Output> {
+        let root = Path::new(&self.root);
+        // The same policy the walk actually applied, not the strict one. A
+        // repository whose catch-all `.gitignore` made the walk relax is
+        // indexed under the relaxed rule, and asking the strict policy here
+        // would reject every path — returning nothing, rebuilding nothing, and
+        // losing exactly the references this task exists to preserve.
+        let policy = if self.ignore_gitignore {
+            input_policy::InputPolicy::path_only()
+        } else {
+            input_policy::InputPolicy::for_root(root)
+        };
+        Ok(walk::read_paths(root, &policy, &self.paths)
+            .par_iter()
+            .map_init(parse::Engines::new, native_file)
+            .collect())
+    }
+
+    fn resolve(&mut self, _env: Env, output: Self::Output) -> Result<Self::JsValue> {
+        Ok(output)
+    }
+}
+
+/// Re-read and parse named files, bypassing the walk and any baseline.
+///
+/// The companion to an incremental scan. A scan only learns which unchanged
+/// files it must rebuild anyway — the callers of something that was deleted —
+/// after the walk has already skipped them, and their stored references have
+/// been dropped by then. Asking for those paths by name rebuilds them without
+/// giving up the fast path for everything else.
+/// `ignore_gitignore` mirrors a walk that had to relax that rule, for the same
+/// reason `source_path_decision` takes it: a decision made under a different
+/// policy from the one that built the inventory is not the same decision.
+#[napi(ts_return_type = "Promise<Array<NativeFile>>")]
+pub fn parse_repo_paths(
+    root: String,
+    paths: Vec<String>,
+    ignore_gitignore: Option<bool>,
+) -> Result<AsyncTask<ParsePathsTask>> {
+    require_dir(&root)?;
+    Ok(AsyncTask::new(ParsePathsTask {
+        root,
+        paths,
+        ignore_gitignore: ignore_gitignore.unwrap_or(false),
+    }))
 }
 
 /// Read the bounded source inventory for deterministic content analyzers.

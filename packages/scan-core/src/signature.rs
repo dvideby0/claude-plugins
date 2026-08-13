@@ -17,6 +17,7 @@
 //! a stale line number as current is a worse failure than over-invalidating,
 //! because it is silent.
 
+use crate::parse::Grammar;
 use sha2::{Digest, Sha256};
 use tree_sitter::Node;
 
@@ -24,7 +25,10 @@ use tree_sitter::Node;
 /// distinguishable from a clean one that happens to hash the same.
 const ERROR_MARKER: &[u8] = b"\x01?";
 
-fn finish(hasher: Sha256) -> String {
+/// The crate's one convention for turning a digest into a stored signature:
+/// lowercase hex, truncated to 16 characters. Shared so a second hash cannot
+/// pick a different width and make two stored signatures incomparable.
+pub(crate) fn finish(hasher: Sha256) -> String {
     hasher
         .finalize()
         .iter()
@@ -50,7 +54,15 @@ fn finish(hasher: Sha256) -> String {
 ///
 /// `skip` prunes one subtree by id, which is how an interface signature
 /// excludes its own body without needing a field list per node kind.
-fn hash_tokens(root: Node, bytes: &[u8], skip: Option<usize>, hasher: &mut Sha256) {
+///
+/// `grammar` decides whether the Python docstring rule applies. It is threaded
+/// rather than inferred from node kinds because the shapes collide: `module` is
+/// also a tree-sitter-typescript kind, and a TypeScript directive prologue
+/// (`"use strict"`, `"use client"`) is likewise a string expression statement at
+/// the top of its enclosing block. Those are instructions to the compiler and
+/// the server, so a rule generalised across grammars by shape alone would make
+/// them invisible to every artifact anchored to the file.
+fn hash_tokens(root: Node, bytes: &[u8], skip: Option<usize>, grammar: Grammar, hasher: &mut Sha256) {
     enum Step<'tree> {
         Enter(Node<'tree>),
         /// Closing a node, so nesting depth is part of the hash rather than
@@ -73,26 +85,31 @@ fn hash_tokens(root: Node, bytes: &[u8], skip: Option<usize>, hasher: &mut Sha25
         if skip == Some(node.id()) || (node.is_extra() && !semantic_extra(node, bytes)) {
             continue;
         }
+        // Skipped whole, the way `is_extra` drops a comment: a docstring is
+        // Python's comment, and its statement wrapper carries nothing else.
+        if grammar == Grammar::Python && python_docstring(node, bytes) {
+            continue;
+        }
         if node.is_error() || node.is_missing() {
             hasher.update(ERROR_MARKER);
         }
 
         hasher.update(node.kind().as_bytes());
         let children = node.child_count();
-        if children == 0 {
-            hasher.update(b"\0");
+        // One encoding for every node, whether or not it has children. Two
+        // encodings meant a container that lost all of its children to a skip
+        // hashed differently from one that never had any — so an empty
+        // `__init__.py` gaining a docstring moved the signature while every
+        // other file's did not.
+        hasher.update(b"(");
+        if children == 0 && node.is_named() {
             // An anonymous leaf's kind *is* its text (`{`, `=>`, `,`), so only
             // named leaves need the source slice.
-            if node.is_named() {
-                if let Ok(text) = node.utf8_text(bytes) {
-                    hasher.update(text.as_bytes());
-                }
+            if let Ok(text) = node.utf8_text(bytes) {
+                hasher.update(text.as_bytes());
             }
-            hasher.update(b"\n");
-            continue;
         }
-
-        hasher.update(b"(");
+        hasher.update(b"\0");
         stack.push(Step::Exit);
         for index in (0..children).rev() {
             if let Some(child) = node.child(index) {
@@ -125,15 +142,104 @@ fn semantic_extra(node: Node, bytes: &[u8]) -> bool {
         || text.contains("noqa")
 }
 
-/// The file's meaning, invariant to comments and formatting.
+/// A `str` constant in one of the three positions Python assigns to `__doc__`.
 ///
-/// Known limitation: a Python docstring is a `string` expression statement,
-/// not a comment, so editing one does move this signature. Conservative in the
-/// safe direction — it over-invalidates rather than under-invalidates — and it
-/// is pinned by a test so it stays a known limit rather than a surprise.
-pub fn file_syntax_sha(root: Node, bytes: &[u8]) -> String {
+/// This is prose in the same sense a comment is, so it is dropped for the same
+/// reason. The rule is deliberately narrow, because a string is an ordinary
+/// value everywhere else and dropping one that carries meaning would report a
+/// real change as no change — the silent direction:
+///
+/// - the statement holds exactly one `string` and nothing else;
+/// - it sits directly under `module`, or under the `block` of a
+///   `function_definition` or `class_definition`;
+/// - it is that parent's first statement, ignoring comments, because Python
+///   only binds `__doc__` from the first one;
+/// - the literal is a real `str` — an f-string executes code and a `bytes`
+///   literal does not become `__doc__` at all.
+///
+/// Two limits are deliberate and pinned by tests rather than left to be
+/// rediscovered: an implicitly concatenated docstring (`"a" "b"`) keeps being
+/// hashed, and a Sphinx attribute docstring is not a docstring here because
+/// Python does not make it one.
+fn python_docstring(node: Node, bytes: &[u8]) -> bool {
+    if node.kind() != "expression_statement" {
+        return false;
+    }
+
+    let mut cursor = node.walk();
+    let mut statements = node.named_children(&mut cursor).filter(|child| !child.is_extra());
+    let Some(literal) = statements.next() else {
+        return false;
+    };
+    if statements.next().is_some() || literal.kind() != "string" || !plain_str(literal, bytes) {
+        return false;
+    }
+
+    let Some(parent) = node.parent() else {
+        return false;
+    };
+    let bound_to_doc = match parent.kind() {
+        "module" => true,
+        "block" => matches!(
+            parent.parent().map(|owner| owner.kind()),
+            Some("function_definition" | "class_definition")
+        ),
+        _ => false,
+    };
+    if !bound_to_doc || !is_first_statement(parent, node) {
+        return false;
+    }
+
+    // A doctest is executable: `pytest --doctest-modules` runs it, and
+    // `doctest.testmod` is a supported way to ship tests. Same reasoning as
+    // `semantic_extra` — an instruction is not prose, whatever it looks like.
+    literal
+        .utf8_text(bytes)
+        .is_ok_and(|text| !text.contains(">>>"))
+}
+
+/// A `str` literal with no prefix that changes what it is.
+///
+/// `r`/`u` still produce a `str`, so they stay prose. `f` executes the
+/// expressions inside it and `b` produces bytes, which Python never binds to
+/// `__doc__`. The `interpolation` child is checked as well as the prefix so an
+/// f-string is caught from either direction.
+fn plain_str(literal: Node, bytes: &[u8]) -> bool {
+    let mut cursor = literal.walk();
+    for child in literal.children(&mut cursor) {
+        match child.kind() {
+            "interpolation" => return false,
+            "string_start" => {
+                let Ok(text) = child.utf8_text(bytes) else {
+                    return false;
+                };
+                let prefix = text.trim_end_matches(['"', '\'']);
+                if !prefix.chars().all(|mark| matches!(mark, 'r' | 'R' | 'u' | 'U')) {
+                    return false;
+                }
+            }
+            _ => {}
+        }
+    }
+    true
+}
+
+/// Whether `node` is the first thing `parent` actually executes.
+///
+/// Comments are named *and* extra in tree-sitter, so "first named child" would
+/// let a commented file take a different path from an uncommented one.
+fn is_first_statement(parent: Node, node: Node) -> bool {
+    let mut cursor = parent.walk();
+    let first = parent
+        .named_children(&mut cursor)
+        .find(|child| !child.is_extra());
+    first.is_some_and(|first| first.id() == node.id())
+}
+
+/// The file's meaning, invariant to comments and formatting.
+pub fn file_syntax_sha(root: Node, bytes: &[u8], grammar: Grammar) -> String {
     let mut hasher = Sha256::new();
-    hash_tokens(root, bytes, None, &mut hasher);
+    hash_tokens(root, bytes, None, grammar, &mut hasher);
     finish(hasher)
 }
 
@@ -211,15 +317,15 @@ pub fn interface_with_visibility(interface: &str, exported: bool, default_export
 /// exported constant — hashes whole, because for those the body *is* the
 /// contract. Its body signature is `None`; a signature that does not apply is
 /// recorded as absent, never as an invented hash.
-pub fn symbol_signatures(node: Node, bytes: &[u8]) -> (String, Option<String>) {
+pub fn symbol_signatures(node: Node, bytes: &[u8], grammar: Grammar) -> (String, Option<String>) {
     let body = body_node(node);
 
     let mut interface = Sha256::new();
-    hash_tokens(node, bytes, body.map(|child| child.id()), &mut interface);
+    hash_tokens(node, bytes, body.map(|child| child.id()), grammar, &mut interface);
 
     let body_sha = body.map(|child| {
         let mut hasher = Sha256::new();
-        hash_tokens(child, bytes, None, &mut hasher);
+        hash_tokens(child, bytes, None, grammar, &mut hasher);
         finish(hasher)
     });
 
@@ -285,6 +391,17 @@ mod tests {
     fn python_syntax(source: &str) -> String {
         let mut engines = Engines::new();
         parse(&mut engines, "app.py", "python", source).syntax_sha
+    }
+
+    fn python_interface_of(source: &str, name: &str) -> (String, Option<String>) {
+        let mut engines = Engines::new();
+        let parsed = parse(&mut engines, "app.py", "python", source);
+        let symbol = parsed
+            .symbols
+            .into_iter()
+            .find(|symbol| symbol.name == name)
+            .expect("symbol is extracted");
+        (symbol.interface_sha, symbol.body_sha)
     }
 
     fn interface_of(source: &str, name: &str) -> (String, Option<String>) {
@@ -401,18 +518,161 @@ mod tests {
     }
 
     #[test]
-    fn python_comments_are_excluded_but_docstrings_are_not() {
+    fn python_comments_and_docstrings_are_both_prose() {
         let plain = python_syntax("def run(value):\n    return value\n");
         let commented = python_syntax("# explains itself\ndef run(value):\n    # inside\n    return value\n");
         assert_eq!(plain, commented);
 
-        // A docstring is a string expression statement, not a comment. Editing
-        // one moves the signature — conservative, and deliberately pinned so it
-        // stays a known limit for Python rather than a surprise.
+        // A docstring is not a comment to the grammar, but it is one to a
+        // reader: Python's own convention puts the prose inside the code.
         let documented = python_syntax("def run(value):\n    \"\"\"Explains itself.\"\"\"\n    return value\n");
         let redocumented =
             python_syntax("def run(value):\n    \"\"\"Explains itself differently.\"\"\"\n    return value\n");
-        assert_ne!(documented, redocumented);
+        assert_eq!(plain, documented);
+        assert_eq!(documented, redocumented);
+
+        // Every position Python binds `__doc__` from, including an added one.
+        let module = python_syntax("\"\"\"The module.\"\"\"\ndef run(value):\n    return value\n");
+        assert_eq!(plain, module);
+
+        let bare_class = python_syntax("class Cart:\n    def add(self, item):\n        return item\n");
+        let documented_class = python_syntax(
+            "class Cart:\n    \"\"\"A cart.\"\"\"\n    def add(self, item):\n        \"\"\"Adds.\"\"\"\n        return item\n",
+        );
+        assert_eq!(bare_class, documented_class);
+
+        let bare_async = python_syntax("async def run(value):\n    return value\n");
+        let documented_async =
+            python_syntax("async def run(value):\n    \"\"\"Explains itself.\"\"\"\n    return value\n");
+        assert_eq!(bare_async, documented_async);
+    }
+
+    #[test]
+    fn an_empty_file_gaining_only_prose_does_not_move_the_signature() {
+        // The classic case: an empty `__init__.py` gets a package docstring.
+        // A container that lost every child to a skip has to hash like one
+        // that never had any, or this file alone breaks the guarantee.
+        let empty = python_syntax("");
+        assert_eq!(empty, python_syntax("\"\"\"The package.\"\"\"\n"));
+        assert_eq!(empty, python_syntax("# nothing here yet\n"));
+        assert_eq!(empty, python_syntax("\n\n\n"));
+
+        // Still not a licence to lose real code.
+        assert_ne!(empty, python_syntax("VERSION = \"1.0\"\n"));
+
+        let empty_ts = syntax("");
+        assert_eq!(empty_ts, syntax("// nothing here yet\n"));
+        assert_ne!(empty_ts, syntax("export const version = 1;\n"));
+    }
+
+    #[test]
+    fn a_real_python_edit_still_moves_the_signature() {
+        // The control. Without this, a docstring rule that skipped too much
+        // would pass every assertion above and prove only that hashing broke.
+        let before = python_syntax("def run(value):\n    \"\"\"Explains itself.\"\"\"\n    return value\n");
+        let after =
+            python_syntax("def run(value):\n    \"\"\"Explains itself.\"\"\"\n    return value.strip()\n");
+        assert_ne!(before, after);
+    }
+
+    #[test]
+    fn a_python_string_that_is_not_a_docstring_stays_hashed() {
+        // A value, not prose.
+        let assigned = python_syntax("def run():\n    x = \"a\"\n    return x\n");
+        let reassigned = python_syntax("def run():\n    x = \"b\"\n    return x\n");
+        assert_ne!(assigned, reassigned);
+
+        // Not the first statement, so Python does not bind it to `__doc__`.
+        let trailing = python_syntax("def run():\n    step()\n    \"note\"\n");
+        let retrailed = python_syntax("def run():\n    step()\n    \"other\"\n");
+        assert_ne!(trailing, retrailed);
+
+        // A block that belongs to a statement, not to a definition.
+        let branch = python_syntax("def run(flag):\n    if flag:\n        \"note\"\n");
+        let rebranched = python_syntax("def run(flag):\n    if flag:\n        \"other\"\n");
+        assert_ne!(branch, rebranched);
+
+        // Sphinx attribute docs read like documentation but Python does not
+        // make them `__doc__`. Deliberately out of scope, pinned so it stays a
+        // known limit.
+        let attribute = python_syntax("X = 1\n\"\"\"Documents X.\"\"\"\n");
+        let reattributed = python_syntax("X = 1\n\"\"\"Documents X differently.\"\"\"\n");
+        assert_ne!(attribute, reattributed);
+
+        // Implicit concatenation is the conservative limit: still hashed.
+        let joined = python_syntax("def run():\n    \"a\" \"b\"\n    return 1\n");
+        let rejoined = python_syntax("def run():\n    \"a\" \"c\"\n    return 1\n");
+        assert_ne!(joined, rejoined);
+    }
+
+    #[test]
+    fn a_python_literal_that_executes_or_is_not_str_stays_hashed() {
+        // An f-string in docstring position runs code and leaves `__doc__`
+        // as None; bytes never becomes `__doc__` at all.
+        let interpolated = python_syntax("def run():\n    f\"{compute()}\"\n    return 1\n");
+        let reinterpolated = python_syntax("def run():\n    f\"{other()}\"\n    return 1\n");
+        assert_ne!(interpolated, reinterpolated);
+
+        // No placeholders, so the prefix is the only signal left.
+        let flat = python_syntax("def run():\n    f\"plain\"\n    return 1\n");
+        let reflat = python_syntax("def run():\n    f\"other\"\n    return 1\n");
+        assert_ne!(flat, reflat);
+
+        let raw_bytes = python_syntax("def run():\n    b\"payload\"\n    return 1\n");
+        let other_bytes = python_syntax("def run():\n    b\"other\"\n    return 1\n");
+        assert_ne!(raw_bytes, other_bytes);
+
+        // `r` and `u` still produce a `str`, so they are still prose.
+        let raw = python_syntax("def run():\n    r\"\"\"Explains itself.\"\"\"\n    return 1\n");
+        let reraw = python_syntax("def run():\n    r\"\"\"Explains differently.\"\"\"\n    return 1\n");
+        assert_eq!(raw, reraw);
+    }
+
+    #[test]
+    fn a_doctest_is_an_instruction_not_prose() {
+        // `pytest --doctest-modules` executes this. Same rule as `@ts-nocheck`:
+        // an instruction is hashed however much it looks like prose.
+        let before = python_syntax("def add(a, b):\n    \"\"\"Adds.\n\n    >>> add(1, 1)\n    2\n    \"\"\"\n    return a + b\n");
+        let after = python_syntax("def add(a, b):\n    \"\"\"Adds.\n\n    >>> add(1, 2)\n    3\n    \"\"\"\n    return a + b\n");
+        assert_ne!(before, after);
+    }
+
+    #[test]
+    fn a_typescript_directive_prologue_is_not_a_docstring() {
+        // Shape-identical to a Python module docstring: a string expression
+        // statement first in its block. It changes where the module runs, so
+        // this is the test that stops the rule being generalised by shape.
+        let client = syntax("\"use client\";\nexport const value = 1;\n");
+        let server = syntax("\"use server\";\nexport const value = 1;\n");
+        let plain = syntax("export const value = 1;\n");
+        assert_ne!(client, server);
+        assert_ne!(client, plain);
+
+        let strict = syntax("export function run() {\n  \"use strict\";\n  return 1;\n}\n");
+        let loose = syntax("export function run() {\n  return 1;\n}\n");
+        assert_ne!(strict, loose);
+    }
+
+    #[test]
+    fn a_python_method_docstring_does_not_move_its_class_contract() {
+        // `body_is_contract` hashes a whole class, so a docstring anywhere
+        // inside it reaches the class's interface signature — and from there
+        // every component drawn against that class.
+        let before = python_interface_of(
+            "class Cart:\n    \"\"\"A cart.\"\"\"\n    def add(self, item):\n        \"\"\"Adds an item.\"\"\"\n        return item\n",
+            "Cart",
+        );
+        let redocumented = python_interface_of(
+            "class Cart:\n    \"\"\"A shopping cart.\"\"\"\n    def add(self, item):\n        \"\"\"Adds one item.\"\"\"\n        return item\n",
+            "Cart",
+        );
+        assert_eq!(before.0, redocumented.0);
+
+        let resigned = python_interface_of(
+            "class Cart:\n    \"\"\"A cart.\"\"\"\n    def add(self, item, quantity):\n        \"\"\"Adds an item.\"\"\"\n        return item\n",
+            "Cart",
+        );
+        assert_ne!(before.0, resigned.0);
     }
 
     #[test]

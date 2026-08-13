@@ -148,6 +148,38 @@ The same rule applies to rolling counts up a tree: union the sets, never sum
 the counts, unless the children are provably disjoint. Boxes are allowed to
 overlap.
 
+## A stat key is evidence of identity, not of content
+
+The walk skips reading a file whose recorded filesystem identity still matches.
+On Unix that is device, inode, size, modification and change times. On Windows
+the key is weaker and leans harder on sampling — not because NTFS lacks the
+equivalents, which it has, but because Rust's `std` does not expose them on
+stable. That distinction matters: attributing a toolchain limit to the operating
+system is how a doc stops being true when the toolchain moves.
+
+Which is also why the rule is written as "the recorded identity" rather than as
+a field list. A field list gets read on the platform where those fields do not
+exist, and that is how a doc comes to describe a key nobody built.
+
+It is a good trade and it is not a proof: `cp -p`, `rsync -a`, a restore from
+backup and an editor's save-by-rename each preserve some of those fields while
+replacing the bytes, which is why the key uses every one it can get rather than
+the obvious size-and-mtime pair.
+
+Three rules come with it, and none is optional. Record how a fact was
+established, so a file nobody read stays distinguishable from a file confirmed
+unchanged — "a tool that could not run is a gap, not a pass" applies to a file
+nobody looked at too. Sample: read a bounded rotating slice of what you would
+have skipped and check the key still agrees with the contents. And when it does
+not, escalate rather than annotate — every other skip in that run rested on the
+same assumption, so redo the run and say why it cost more.
+
+The matching trap is on the other side. A file may be skipped only if nothing
+*else* in the run has invalidated it. A caller whose reference target was just
+deleted has to be re-parsed even though it did not change, and that is only
+known after the walk has already skipped it. Anything discovered mid-run that
+invalidates an untouched file needs a way to rebuild that file by name.
+
 ## A handler must be bound where the element actually is
 
 `on()` scoped its query to the view. The drawer hangs off `<body>`, so every
@@ -219,8 +251,18 @@ runtime code remains in the packaged desktop even though it disappeared from
 
 ```bash
 npm run build && npm test -w @sdlc/engine
+cargo test --manifest-path packages/scan-core/Cargo.toml
+cargo clippy --manifest-path packages/scan-core/Cargo.toml --all-targets -- -D warnings
 node scripts/smoke.mjs                    # end to end through the bridge
 ```
+
+Root `npm test` runs the engine suite only — it does not touch Rust, so the
+`cargo` lines are not optional. And read the *warnings*, not only the errors: a
+fix that was a dead store shipped from here because the build output was
+filtered for `error`.
+
+These now run on every platform in CI rather than Linux alone, which is how a
+path-confinement rule that only worked on Unix was found.
 
 A schema change additionally needs a run against an **existing** store, not
 just a fresh one. That is the case `CREATE TABLE IF NOT EXISTS` hides.

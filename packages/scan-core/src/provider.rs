@@ -1392,7 +1392,9 @@ fn stage_source_sync(
     // The same input policy the scan used. A provider staged from a different
     // file set could not be compared with the index it is meant to evaluate.
     let policy = crate::input_policy::InputPolicy::for_root(root);
-    let files = crate::walk::walk(root, &policy).files;
+    // Reads every file: the whole point is to compare the bytes with what the
+    // index recorded, which a verified-without-reading entry cannot do.
+    let files = crate::walk::walk(root, &policy, crate::walk::WalkMode::ReadAll).files;
     let signature = source_signature(&files);
     if signature != expected_signature {
         return Err(Error::new(
@@ -1413,7 +1415,7 @@ fn stage_source_sync(
     let total_bytes = files
         .iter()
         .try_fold(0u64, |total, file| {
-            total.checked_add(file.content.len() as u64)
+            total.checked_add(file.content.as_deref().map_or(0, str::len) as u64)
         })
         .ok_or_else(|| {
             Error::new(
@@ -1456,7 +1458,17 @@ fn stage_source_sync(
                 .write(true)
                 .create_new(true)
                 .open(target)?;
-            output.write_all(file.content.as_bytes())?;
+            let Some(content) = file.content.as_deref() else {
+                // Unreachable while the walk above says `ReadAll`, and an
+                // error rather than an empty file if that ever changes: a
+                // snapshot silently missing a file's contents would be
+                // attested as if it were the real source.
+                return Err(std::io::Error::other(format!(
+                    "The staged walk returned no contents for {}.",
+                    file.path
+                )));
+            };
+            output.write_all(content.as_bytes())?;
         }
         Ok(())
     })();
@@ -2135,7 +2147,7 @@ mod tests {
             .expect("write source fixture");
 
         let policy = crate::input_policy::InputPolicy::for_root(&root);
-        let walked = crate::walk::walk(&root, &policy).files;
+        let walked = crate::walk::walk(&root, &policy, crate::walk::WalkMode::ReadAll).files;
         let signature = source_signature(&walked);
         let staged = stage_source_sync(
             root.to_str().expect("utf8 root"),

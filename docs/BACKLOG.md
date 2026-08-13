@@ -299,13 +299,50 @@ the watcher, a malformed one is reported rather than discarded, truncated
 component dependencies report as partial, and Git renames are read from
 NUL-delimited porcelain so quoted paths still match the inventory.
 
-Open: a Python docstring is a string expression, not a comment, so editing one
-still moves the syntax signature. The relation-set signature is recorded but not
-yet used to skip whole-repository edge re-resolution. Prompt, model and
-semantic-result signatures have storage but no producer — that belongs to
-SEM-001. Repository walking is still not incremental: every scan re-reads and
-re-hashes every file. Findings on paths a new rule excludes are still closed as
-`fixed` rather than retired, which this change makes visible.
+Progress (2026-08-13, incremental walking and the last correctness gaps): the
+walk now takes a baseline and skips the read for any file whose recorded
+filesystem identity still matches. The key is a digest of device, inode, size,
+modification and change times, compared for equality only — not size and
+modification time, because `cp -p`, `rsync -a`, `tar -xm` and restoring from a
+backup all preserve those while replacing the contents. A file whose
+modification time is not strictly earlier than the walk that saw it records no
+key at all, which is Git's index racy-clean rule moved to write time. Schema
+v25 stores the key beside how each file's facts were established — read,
+verified, or sampled — so a file nobody read stays distinguishable from a file
+confirmed unchanged, and the file view can say which. A bounded rotating sample
+of the files that would have been skipped is read anyway and compared; a single
+disagreement redoes the whole run reading everything and permanently drops that
+workspace back to the slow path. Measured on this repository: a warm rescan
+reads none of 219 files in 162 ms against 638 ms cold, with identical symbol,
+reference and edge counts. What did not get faster is worth naming — every path
+is still visited and stat'ed, which is how a deletion is noticed, and the
+per-file upsert still runs. The saving is the read, the UTF-8 decode, the
+content hash and the parse.
+
+Edge and reference re-resolution is no longer a whole-table pass. It is scoped
+to the files a run re-parsed whenever the resolver's inputs — the set of indexed
+paths and the alias table — are byte-identical to the ones in force when the
+stored destinations were written; anything else falls back to the full pass,
+because resolution is not monotone in the inventory and adding one file can
+retarget an already-resolved edge. `relation_set_sha` finally has a reader:
+where a re-parsed file's sorted specifier set is unchanged, its prior answers
+are restored rather than recomputed. A gated run and a `full: true` run are
+tested to agree after a scripted sequence of adds, deletes, renames and alias
+changes.
+
+A Python docstring is now prose, so editing one no longer drifts every artifact
+anchored to its file — including through a class, whose whole body is its
+contract. Doctests stay hashed, because `pytest --doctest-modules` runs them.
+A finding whose file left the index because a rule started excluding it is
+`retired` rather than `fixed`: a scan runs no analyzers, so nobody checked it.
+
+Open: prompt, model and semantic-result signatures have storage but no producer
+— that belongs to SEM-001. `refreshReferenceIdentity` still runs unscoped; its
+correct scope is the re-parsed files plus every file that is the destination of
+a reference, which is a larger analysis than the resolution gate. The Windows
+freshness key is weaker than the Unix one, having neither a `ctime` with the
+Unix meaning nor a stable file index, and leans on sampling to make up the
+difference.
 
 ## P1 — first differentiated product slice
 

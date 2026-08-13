@@ -127,6 +127,32 @@ describe("finding lifecycle", () => {
     expect(db.get<{ status: string }>("SELECT status FROM findings")?.status).toBe("regressed");
   });
 
+  it("does not re-close a retired finding as fixed", async () => {
+    // Retired already means closed, and closed for a reason that is not
+    // "somebody fixed it". A later tool run must not launder it into one.
+    root = await makeProject({ "a.ts": "" });
+    const db = await getDb(root);
+
+    recordFindings(db, 1, [finding()]);
+    db.run("UPDATE findings SET status = 'retired'");
+
+    expect(closeStale(db, 2, "eslint/")).toBe(0);
+    expect(db.get<{ status: string }>("SELECT status FROM findings")?.status).toBe("retired");
+  });
+
+  it("reopens a retired finding as open, never as regressed", async () => {
+    // Regressed says it was fixed and came back. Nothing fixed this one.
+    root = await makeProject({ "a.ts": "" });
+    const db = await getDb(root);
+
+    recordFindings(db, 1, [finding()]);
+    db.run("UPDATE findings SET status = 'retired'");
+
+    const seen = recordFindings(db, 2, [finding()]);
+    expect(seen.reopened).toBe(0);
+    expect(db.get<{ status: string }>("SELECT status FROM findings")?.status).toBe("open");
+  });
+
   it("never closes findings belonging to another tool", async () => {
     root = await makeProject({ "a.ts": "" });
     const db = await getDb(root);

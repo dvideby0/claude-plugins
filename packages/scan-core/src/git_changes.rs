@@ -184,19 +184,47 @@ fn bounded_diagnostic(bytes: &[u8]) -> Option<String> {
     })
 }
 
-fn normalized_path(bytes: &[u8]) -> Option<String> {
-    let path = std::str::from_utf8(bytes).ok()?.replace('\\', "/");
-    if path.is_empty()
-        || path.len() > MAX_CHANGE_PATH_BYTES
-        || Path::new(&path).is_absolute()
-        || Path::new(&path)
-            .components()
-            .any(|component| matches!(component, Component::ParentDir | Component::Prefix(_)))
-    {
+/// A path from outside, confined to somewhere inside the workspace.
+///
+/// One definition, shared with the task planner, because two copies of a
+/// confinement rule is two chances to get it wrong on one platform — which is
+/// what happened. `is_absolute` is not the test it looks like: on Windows a
+/// path is absolute only with a drive or UNC prefix, so `/escape.ts` is not
+/// absolute there and slipped straight through a check that rejected it on
+/// Unix. `RootDir` is the component that actually means "rooted", and it means
+/// it everywhere.
+pub(crate) fn confined_relative_path(value: &str) -> Option<String> {
+    let path = value.replace('\\', "/");
+    if path.is_empty() || path.len() > MAX_CHANGE_PATH_BYTES {
         return None;
     }
-    let normalized = path.trim_start_matches("./");
-    (!normalized.is_empty()).then(|| normalized.to_string())
+
+    // Rebuilt from the components that were checked, rather than checked and
+    // then edited as text. Those are two different strings, and the difference
+    // is an escape: `.//escape.ts` parses as a current-directory component
+    // followed by a name — nothing rooted for the check to object to — while
+    // stripping the leading `./` from the text leaves `/escape.ts` behind.
+    // Returning what was inspected is the only version of this with one answer.
+    let mut parts: Vec<&str> = Vec::new();
+    for component in Path::new(&path).components() {
+        match component {
+            Component::Normal(part) => parts.push(part.to_str()?),
+            // `.` is noise wherever it appears, and dropping it here also means
+            // `src/./x.ts` and `src/x.ts` cannot arrive as two different keys
+            // for one file.
+            Component::CurDir => {}
+            // Rooted, above, or a drive: all outside, or naming the workspace
+            // rather than something in it.
+            Component::ParentDir | Component::RootDir | Component::Prefix(_) => return None,
+        }
+    }
+    // Empty means the input named the workspace itself, which is not a change
+    // inside it.
+    (!parts.is_empty()).then(|| parts.join("/"))
+}
+
+fn normalized_path(bytes: &[u8]) -> Option<String> {
+    confined_relative_path(std::str::from_utf8(bytes).ok()?)
 }
 
 fn project_relative_path(bytes: &[u8], repository_prefix: &str) -> Option<String> {
@@ -610,6 +638,75 @@ mod tests {
         assert_eq!(detected, 1);
         assert!(truncated);
         assert_eq!(changes[0].path, "src/inside.ts");
+    }
+
+    #[test]
+    fn a_rooted_path_escapes_on_every_platform_or_none() {
+        // The rule this pins is that confinement does not depend on what the
+        // platform calls "absolute". Windows reserves that for a path with a
+        // drive or UNC prefix, so `/escape.ts` is not absolute there — and an
+        // `is_absolute` check rejected it on Unix while letting it through on
+        // Windows, where these tests had never run.
+        for escaping in [
+            "/escape.ts",
+            "../escape.ts",
+            "src/../../escape.ts",
+            "./../escape.ts",
+        ] {
+            assert_eq!(
+                confined_relative_path(escaping),
+                None,
+                "{escaping} leaves the workspace"
+            );
+        }
+
+        // A backslash is a separator, not a name, so this is the same path.
+        assert_eq!(confined_relative_path("\\escape.ts"), None);
+
+        // Naming the workspace is not naming a change inside it.
+        for root in [".", "./.", "./"] {
+            assert_eq!(confined_relative_path(root), None, "{root} is the root");
+        }
+
+        for inside in ["src/inside.ts", "./src/inside.ts", "inside.ts"] {
+            assert!(
+                confined_relative_path(inside).is_some(),
+                "{inside} stays inside"
+            );
+        }
+        assert_eq!(
+            confined_relative_path("./src/inside.ts").as_deref(),
+            Some("src/inside.ts")
+        );
+        // One key per file: `.` in the middle is dropped rather than preserved.
+        assert_eq!(
+            confined_relative_path("src/./x.ts").as_deref(),
+            Some("src/x.ts")
+        );
+
+        // Whatever comes back is itself confined. Asserting only that rooted
+        // *inputs* are rejected missed that `.//escape.ts` was accepted and
+        // handed back rooted: the check ran on one string and the return value
+        // was built from another.
+        for accepted in [
+            "src/inside.ts",
+            "./src/inside.ts",
+            ".//escape.ts",
+            "././src/x.ts",
+            "src/./x.ts",
+        ] {
+            // Asserted rather than skipped when absent. Letting a missing
+            // result fall through would make the loop vacuous for exactly the
+            // input that motivated it — `.//escape.ts` names a file inside the
+            // workspace and has to stay accepted, just not rooted.
+            let confined = confined_relative_path(accepted)
+                .unwrap_or_else(|| panic!("{accepted} names a file inside the workspace"));
+            assert_eq!(
+                confined_relative_path(&confined).as_deref(),
+                Some(confined.as_str()),
+                "{accepted} produced {confined}, which is not itself confined"
+            );
+        }
     }
 
     #[test]

@@ -345,6 +345,17 @@ export class Db {
   }
 
   /**
+   * What the last scan recorded about each present file, for the walk.
+   *
+   * Forwarded to `scanRepo` without being read here. The query, the shape and
+   * the comparison all live in the native store owner, so this side cannot
+   * grow a second opinion about what "unchanged" means.
+   */
+  fileBaseline(): string {
+    return this.raw.fileBaseline();
+  }
+
+  /**
    * Ranked lexical retrieval across indexed facts and authored knowledge.
    * FTS syntax, ranking weights, and query bounds stay inside the native
    * storage owner rather than being reimplemented by each caller.

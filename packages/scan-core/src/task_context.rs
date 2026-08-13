@@ -11,7 +11,6 @@ use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
-use std::path::{Component, Path};
 
 const INTENTS: &[&str] = &["implement", "debug", "refactor", "review", "understand"];
 const MAX_TASK_BYTES: usize = 512;
@@ -22,7 +21,6 @@ const MAX_MULTI_SIGNAL_BOOST: i64 = 90;
 const REPEATED_PATH_PENALTY: i64 = 120;
 const MAX_CHANGE_INPUTS: usize = 256;
 const MAX_CHANGE_SEEDS: usize = 24;
-const MAX_CHANGE_PATH_BYTES: usize = 4_096;
 const EXPLICIT_FILE_SCORE: i64 = 2_000;
 const EXPLICIT_SYMBOL_SCORE: i64 = 2_040;
 const CHANGE_FILE_SCORE: i64 = 1_180;
@@ -336,19 +334,10 @@ fn positive_line(value: Option<i64>) -> Option<u32> {
 }
 
 fn normalized_change_path(value: &str) -> Option<String> {
-    let value = value.replace('\\', "/");
-    let path = Path::new(&value);
-    if value.is_empty()
-        || value.len() > MAX_CHANGE_PATH_BYTES
-        || path.is_absolute()
-        || path
-            .components()
-            .any(|component| matches!(component, Component::ParentDir | Component::Prefix(_)))
-    {
-        return None;
-    }
-    let normalized = value.trim_start_matches("./");
-    (!normalized.is_empty()).then(|| normalized.to_string())
+    // The same rule the Git adapter applies, from the same place. These two
+    // had drifted into separate copies of one confinement decision, and the
+    // copies disagreed on Windows.
+    crate::git_changes::confined_relative_path(value)
 }
 
 fn parse_change_input(changes_json: Option<&str>) -> Result<ChangeInput> {

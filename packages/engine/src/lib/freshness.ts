@@ -55,6 +55,105 @@ export function currentSignatures(db: Db, path: string): CurrentSignatures {
   };
 }
 
+/** How a file's recorded facts came to be believed. */
+export interface EvidenceBasis {
+  /**
+   * `absent` is not `unrecorded`. The first says no scan ever established
+   * anything about this path; the second says one did, before we started
+   * recording how. Collapsing them let a never-indexed path claim it was
+   * indexed a long time ago.
+   */
+  basis: "read" | "verified" | "sampled" | "unrecorded" | "absent";
+  /** The run that last read the bytes, where that is known. */
+  lastReadRun: number | null;
+  /** The run that last confirmed the file is still there. */
+  lastSeenRun: number | null;
+  /** One sentence, in the same voice as a freshness verdict. */
+  reason: string;
+}
+
+/**
+ * Where a file's facts came from, so "unchanged" can be audited.
+ *
+ * A scan that skips reading a file is making a claim on the filesystem's word
+ * rather than on the bytes. That is a good trade, but it is a different kind of
+ * evidence, and a fast path nobody can inspect would be a new unexplained
+ * source of belief — the thing the input boundary was built to remove.
+ */
+export function fileEvidenceBasis(db: Db, path: string): EvidenceBasis {
+  const row = db.get<{
+    present: number;
+    freshness_basis: string | null;
+    last_read_run: number | null;
+    last_seen_run: number | null;
+  }>("SELECT present, freshness_basis, last_read_run, last_seen_run FROM files WHERE path = ?", [
+    path,
+  ]);
+
+  const lastReadRun = row?.last_read_run ?? null;
+  const lastSeenRun = row?.last_seen_run ?? null;
+  const at = lastReadRun === null ? "an earlier run" : `run ${lastReadRun}`;
+  const confirmedBy = lastSeenRun === null ? "A later scan" : `Run ${lastSeenRun}`;
+
+  // No row, or a row for a path that has left the index. Either way no current
+  // scan established these facts, and describing how one did would be a claim
+  // about a file the inventory does not have.
+  if (!row) {
+    return {
+      basis: "absent",
+      lastReadRun: null,
+      lastSeenRun: null,
+      reason: "This path is not in the index, so no scan established anything about it.",
+    };
+  }
+  if (row.present !== 1) {
+    return {
+      basis: "absent",
+      lastReadRun,
+      lastSeenRun,
+      reason:
+        `This path left the index. What is recorded about it came from ${at} and has ` +
+        "not been confirmed since.",
+    };
+  }
+
+  switch (row.freshness_basis) {
+    case "read":
+      return {
+        basis: "read",
+        lastReadRun,
+        lastSeenRun,
+        reason: `Its contents were read and hashed at ${at}.`,
+      };
+    case "verified":
+      return {
+        basis: "verified",
+        lastReadRun,
+        lastSeenRun,
+        reason:
+          `Its contents were read at ${at}. ${confirmedBy} found the filesystem's ` +
+          "identity for it unchanged — its size and timestamps, and on this platform " +
+          "whatever else identifies a file — and did not read it again.",
+      };
+    case "sampled":
+      return {
+        basis: "sampled",
+        lastReadRun,
+        lastSeenRun,
+        reason:
+          `${confirmedBy} could have skipped this file, and read it anyway to check ` +
+          "that the filesystem's identity for it still matches its contents.",
+      };
+    default:
+      return {
+        basis: "unrecorded",
+        lastReadRun,
+        lastSeenRun,
+        reason: "This file was indexed before how it was read was recorded.",
+      };
+  }
+}
+
 /**
  * The comparison an artifact about meaning should make.
  *

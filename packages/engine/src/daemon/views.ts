@@ -9,6 +9,7 @@
 
 import { componentOf } from "../graph/map.js";
 import type { Db } from "../db/db.js";
+import { fileEvidenceBasis, type EvidenceBasis } from "../lib/freshness.js";
 import { listMemories, type Memory } from "../memory/store.js";
 
 const SOURCE_LANGS = "('typescript','javascript','python')";
@@ -114,6 +115,18 @@ export interface FindingRow {
   description: string;
   suggestion: string | null;
   occurrences: number;
+  /**
+   * For a retired finding, the rule that stopped its file being indexed.
+   * Null when the finding is not retired, or when the bounded record of
+   * excluded paths does not list this one.
+   */
+  excluded: { path: string; directory: boolean; reason: string; detail: string } | null;
+  /**
+   * True when a retired finding's file is indexed again — the rule was lifted
+   * but no analyzer has re-checked the finding yet. It is neither excluded nor
+   * confirmed, and saying either would be wrong.
+   */
+  reindexed: boolean;
 }
 
 export interface FindingsView {
@@ -197,6 +210,21 @@ export function findingsView(db: Db, limit = 200, status = "open"): FindingsView
       description: row.description,
       suggestion: row.suggestion,
       occurrences: row.occurrences,
+      // Only a retired row needs these, and only it pays for the lookups. The
+      // reason lives in `excluded_paths` rather than on the finding, so the
+      // two can never disagree about why a path left. Null is honest: the
+      // recorded sample is bounded, so the rule is sometimes not listed.
+      excluded: row.status === "retired" && row.path ? exclusionForPath(db, row.path) : null,
+      // A retired finding whose file came back is a real and unbounded state:
+      // lifting the rule re-indexes the file, but the finding stays retired
+      // until an analyzer actually runs again. Saying "no longer indexed"
+      // there would be false, so the view reports what is true instead.
+      reindexed:
+        row.status === "retired" && row.path
+          ? db.count("SELECT COUNT(*) AS n FROM files WHERE path = ? AND present = 1", [
+              row.path,
+            ]) > 0
+          : false,
     })),
     total: db.count(`SELECT COUNT(*) AS n FROM findings WHERE ${filter}`, params),
     status,
@@ -252,6 +280,8 @@ export interface FileView {
   findings: FindingRow[];
   /** Which drawn component this file belongs to, if anyone has drawn one. */
   component: { id: string; name: string } | null;
+  /** How this file's facts were established — read, or trusted unchanged. */
+  evidence: EvidenceBasis;
 }
 
 function findingsForPath(db: Db, path: string): FindingRow[] {
@@ -293,6 +323,10 @@ function findingsForPath(db: Db, path: string): FindingRow[] {
       description: row.description,
       suggestion: row.suggestion,
       occurrences: row.occurrences,
+      // This view is filtered to open and regressed findings, so none of them
+      // can be retired and none of them has a rule to name.
+      excluded: null,
+      reindexed: false,
     }));
 }
 
@@ -344,6 +378,10 @@ export function fileView(db: Db, path: string, requestedSymbol?: string): FileVi
     contentSha: file.content_sha,
     churn: file.churn,
     isTest: file.is_test === 1,
+    // Beside the exclusion reason, which answers the neighbouring question of
+    // why a path is absent. Together they explain the whole boundary: what was
+    // left out and why, and what was kept and on what evidence.
+    evidence: fileEvidenceBasis(db, file.path),
     importers: column<string>(
       "SELECT src_path FROM edges WHERE dst_path = ? ORDER BY src_path LIMIT 100",
       [path],
@@ -394,6 +432,9 @@ export function unindexedFindingFileView(
     contentSha: source.contentSha,
     churn: 0,
     isTest: false,
+    // This file is not in the inventory at all, so no scan established
+    // anything about it. The bytes here came from a finding's own record.
+    evidence: fileEvidenceBasis(db, path),
     importers: [],
     imports: [],
     externals: [],

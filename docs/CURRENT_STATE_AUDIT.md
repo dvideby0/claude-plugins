@@ -64,7 +64,7 @@ authoritative relational rows.
 | Precise references | Partial | TypeScript enrichment improves results; official SCIP output can now be evaluated but is not yet imported from an immutable snapshot. |
 | Execution and data flow | Early vertical slice | One measured HTTP adapter produces real entry-to-response paths; the general view remains a heuristic call graph and data flow is not modeled. |
 | Human-readable system map | Promising | Components and ordered flows exist, but they are authored overlays rather than evidence-derived semantic objects. |
-| Incremental recomputation | Explainable, not yet incremental | Syntax and interface signatures separate a change in meaning from a change in bytes, so a comment no longer drifts a map; one Rust policy decides and explains the input boundary. Repository walking still re-reads every file on every scan. |
+| Incremental recomputation | Working, and explainable | Syntax and interface signatures separate a change in meaning from a change in bytes; one Rust policy decides and explains the input boundary. A warm rescan now reads only files whose filesystem identity moved — none of 219 on this repository — checks a rotating sample to confirm the identity still agrees with the contents, records how every file's facts were established, and re-resolves edges only where they can have changed. |
 | Search and context retrieval | Measured experimental vertical slice | The primary brief has Rust-owned lexical/graph/change ranking, bounded source evidence, exact response budgets, and a pinned Aider comparison; broader coverage and task outcomes keep it experimental. |
 | Memories and notes | Basic | Anchored durable notes exist; search, evidence, validation, editing, and fine-grained staleness need work. |
 | Desktop experience | Functional shell | Useful maps and operational views exist, but it is not yet a complete code-intelligence workspace. |
@@ -135,7 +135,7 @@ Important limits:
 
 - Typed enrichment is TypeScript-specific.
 - The stored symbol id still includes source position, so unrelated line movement changes it. Cross-scan comparison now uses `symbol_key`, which does not.
-- “Incremental” currently limits database replacement, but repository walking, hashing, and native parsing are not yet a fine-grained persistent incremental pipeline.
+- Repository walking, hashing and native parsing are now skipped for files whose recorded filesystem identity is unchanged, with a bounded rotating sample re-read to check that identity still matches the contents. Directory traversal and the per-file stat still run on every scan, which is how deletions are noticed.
 - Recursive filesystem watching has platform-dependent behavior and can silently fall back to no watcher.
 
 The provider evaluation layer now packages `@sourcegraph/scip-typescript`,

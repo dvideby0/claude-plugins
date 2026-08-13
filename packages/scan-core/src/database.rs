@@ -17,7 +17,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-const DATABASE_SCHEMA_VERSION: u32 = 24;
+const DATABASE_SCHEMA_VERSION: u32 = 25;
 const FIRST_VERSIONED_SCHEMA: u32 = 17;
 const SCHEMA_V17_SQL: &str = include_str!("database_schema_v17.sql");
 const SCHEMA_V18_SQL: &str = include_str!("database_schema_v18.sql");
@@ -27,6 +27,7 @@ const SCHEMA_V21_SQL: &str = include_str!("database_schema_v21.sql");
 const SCHEMA_V22_SQL: &str = include_str!("database_schema_v22.sql");
 const SCHEMA_V23_SQL: &str = include_str!("database_schema_v23.sql");
 const SCHEMA_V24_SQL: &str = include_str!("database_schema_v24.sql");
+const SCHEMA_V25_SQL: &str = include_str!("database_schema_v25.sql");
 const SEARCH_KINDS: &[&str] = &[
     "file",
     "symbol",
@@ -511,6 +512,9 @@ fn apply_migration(connection: &Connection, version: u32) -> Result<()> {
         24 => connection
             .execute_batch(SCHEMA_V24_SQL)
             .map_err(|error| database_error("Cannot install SQLite schema v24", error)),
+        25 => connection
+            .execute_batch(SCHEMA_V25_SQL)
+            .map_err(|error| database_error("Cannot install SQLite schema v25", error)),
         _ => Err(invalid_argument(format!(
             "No SQLite migration is registered for schema v{version}"
         ))),
@@ -1762,6 +1766,55 @@ impl NativeDatabase {
             .execute(&sql, params_from_iter(params.iter()))
             .map(|_| ())
             .map_err(|error| database_error("SQLite statement failed", error))
+    }
+
+    /// What the last scan recorded about each present file, for the walk.
+    ///
+    /// Produced here rather than assembled by the caller so the query, the
+    /// shape and the comparison all stay on this side of the boundary. The
+    /// caller forwards the string to `scanRepo` without reading it; it cannot
+    /// grow a second opinion about what "unchanged" means, which is the same
+    /// reason the input policy answers the walk and the watcher from one place.
+    ///
+    /// Rows without a `stat_key` are omitted: an absent key is not a baseline.
+    ///
+    /// `lastRun` is a counter that advances by one per baseline, used only to
+    /// rotate the verification sample. It is deliberately not the run id: the
+    /// runs table is also advanced by analyzer runs, so scans would see a
+    /// stride of two or more, and any stride sharing a factor with the sampling
+    /// period leaves a fixed share of files that are never checked at all.
+    #[napi]
+    pub fn file_baseline(&self) -> Result<String> {
+        let connection = self.connection()?;
+        let connection = connection.as_ref().ok_or_else(|| {
+            Error::new(Status::GenericFailure, "SQLite store is closed".to_string())
+        })?;
+        let last_run: i64 = connection
+            .query_row(
+                "SELECT CAST(value AS INTEGER) FROM meta WHERE key = 'walk_sample_round'",
+                [],
+                |row| row.get(0),
+            )
+            // A missing row is round zero, and a failed read is treated the
+            // same rather than aborting the scan: this counter only spreads
+            // the sample across buckets, so restarting it costs at most a
+            // repeat of buckets an earlier round already checked.
+            .unwrap_or(0)
+            + 1;
+        connection
+            .execute(
+                "INSERT OR REPLACE INTO meta(key, value) VALUES('walk_sample_round', ?1)",
+                [last_run.to_string()],
+            )
+            .map_err(|error| database_error("Cannot advance the sampling round", error))?;
+        let files = query_json(
+            connection,
+            "SELECT path, stat_key AS statKey, content_sha AS contentSha, loc
+               FROM files
+              WHERE present = 1 AND stat_key IS NOT NULL",
+            &[],
+        )?;
+        Ok(format!("{{\"lastRun\":{last_run},\"files\":{files}}}"))
     }
 
     #[napi]
