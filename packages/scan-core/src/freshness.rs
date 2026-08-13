@@ -116,10 +116,6 @@ impl FileBaseline {
         let entry = self.entries.get(path)?;
         (entry.stat_key == current).then_some(entry)
     }
-
-    pub fn len(&self) -> usize {
-        self.entries.len()
-    }
 }
 
 /// How many skippable files to check per run, as one in every `period`.

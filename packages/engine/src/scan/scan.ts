@@ -177,15 +177,17 @@ async function doScan(projectRoot: string, options: ScanOptions = {}): Promise<S
   // stays on the slow path. One demonstration that the key can lie is enough:
   // there is no reason to believe the next scan is the one where it tells the
   // truth, and every skip after that would be a guess.
-  // An explicit full scan clears it. That is the recovery the diagnostic
-  // promises, and it is safe because it is not a pardon: the next incremental
-  // scan samples again and re-establishes the distrust immediately if the
-  // filesystem is still lying. The cost of being wrong is one scan, and without
-  // it a workspace that moved to a different disk could never earn back the
-  // fast path.
-  if (options.full) {
-    db.run("DELETE FROM meta WHERE key = 'walk_freshness_distrusted'");
-  }
+  // An explicit full scan clears it — but not here. The marker is only dropped
+  // in the write transaction below, once this scan has actually read
+  // everything. Clearing it up front would mean a full scan that failed
+  // halfway left the workspace trusting a filesystem nothing had re-checked,
+  // and the next incremental scan would resume the fast path on the old
+  // baseline.
+  //
+  // The clear is safe because it is not a pardon: the next incremental scan
+  // samples again and distrusts the workspace again if the filesystem is still
+  // lying. Without it a workspace that moved to a different disk could never
+  // earn the fast path back.
   const distrusted = options.full
     ? null
     : (db.get<{ value: string }>(
@@ -769,6 +771,11 @@ async function doScan(projectRoot: string, options: ScanOptions = {}): Promise<S
     db.run("INSERT OR REPLACE INTO meta(key, value) VALUES('walk_freshness_distrusted', ?)", [
       diagnostic ?? "A file's recorded filesystem identity matched while its contents had changed.",
     ]);
+  } else if (options.full) {
+    // Cleared only now, having actually read everything. A full scan that
+    // failed before reaching this point leaves the marker in place, so the next
+    // scan still knows not to trust this filesystem.
+    db.run("DELETE FROM meta WHERE key = 'walk_freshness_distrusted'");
   }
   // Watch decisions must match the inventory this scan actually produced, not
   // the strict policy it had to abandon. A malformed rule still leaves the

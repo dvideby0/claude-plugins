@@ -247,6 +247,25 @@ pub fn walk(root: &Path, policy: &InputPolicy, mode: WalkMode<'_>) -> WalkOutcom
     reread
 }
 
+/// Whether a failed read means the file is gone, rather than momentarily out of
+/// reach.
+///
+/// Listed the other way round on purpose. The recoverable set cannot be
+/// enumerated: the Windows sharing violation an antivirus or an editor produces
+/// — the exact case the sampled-read fallback exists for — reaches Rust as
+/// `Uncategorized`, which cannot even be named on stable. Naming the kinds that
+/// mean absence and treating everything else as "still there, try again later"
+/// keeps the fallback working on the platform that needs it, and the one thing
+/// it must not do — resurrect a deleted file — is what the list covers.
+fn read_failure_is_absence(error: &std::io::Error) -> bool {
+    matches!(
+        error.kind(),
+        std::io::ErrorKind::NotFound
+            | std::io::ErrorKind::IsADirectory
+            | std::io::ErrorKind::NotADirectory
+    )
+}
+
 /// Whether a sampled disagreement means the key is unreliable.
 ///
 /// `observed` is the identity the walk stat'ed before reading; `current` is the
@@ -513,14 +532,10 @@ fn walk_with(root: &Path, policy: &InputPolicy, mode: &WalkMode<'_>) -> WalkOutc
                     // present with all its facts. So the error kind decides,
                     // and only the ones that mean "still there, cannot read it
                     // right now" take the fallback.
-                    let recoverable = matches!(
-                        read.as_ref().err().map(std::io::Error::kind),
-                        Some(std::io::ErrorKind::PermissionDenied)
-                            | Some(std::io::ErrorKind::Interrupted)
-                            | Some(std::io::ErrorKind::TimedOut)
-                            | Some(std::io::ErrorKind::WouldBlock)
-                            | Some(std::io::ErrorKind::ResourceBusy)
-                    );
+                    let recoverable = read
+                        .as_ref()
+                        .err()
+                        .is_some_and(|error| !read_failure_is_absence(error));
                     if let (true, Some((content_sha, loc))) = (recoverable, &expected_sha) {
                         counts.verified.fetch_add(1, Ordering::Relaxed);
                         let _ = sender.send(Scanned {
@@ -585,7 +600,6 @@ fn walk_with(root: &Path, policy: &InputPolicy, mode: &WalkMode<'_>) -> WalkOutc
                     let held = expected_sha
                         .as_ref()
                         .is_some_and(|(expected, _)| *expected == content_sha);
-                    let stat_key = if raced_key { None } else { stat_key };
                     if sample && held {
                         counts.sampled.fetch_add(1, Ordering::Relaxed);
                         Scanned {
@@ -644,7 +658,10 @@ fn walk_with(root: &Path, policy: &InputPolicy, mode: &WalkMode<'_>) -> WalkOutc
                             content_sha,
                             is_test: decision.is_test,
                             parseable: decision.parseable(),
-                            stat_key,
+                            // Applied here, where the flag has actually been
+                            // set. A binding above the branch that decides it
+                            // reads as if it works and is a dead store.
+                            stat_key: if raced_key { None } else { stat_key },
                             freshness: Freshness::Read,
                             content: Some(content),
                         }
@@ -690,7 +707,7 @@ fn walk_with(root: &Path, policy: &InputPolicy, mode: &WalkMode<'_>) -> WalkOutc
 
 #[cfg(test)]
 mod tests {
-    use super::{key_was_wrong, walk, WalkMode};
+    use super::{key_was_wrong, read_failure_is_absence, walk, WalkMode};
     use crate::freshness::FileBaseline;
     use crate::input_policy::{EntryKind, InputPolicy};
     use std::collections::HashSet;
@@ -762,6 +779,29 @@ mod tests {
         assert_eq!(outcome.freshness.verified, 0);
         assert_eq!(outcome.freshness.sampled, 0);
         assert!(outcome.files.iter().all(|file| file.content.is_some()));
+    }
+
+    #[test]
+    fn only_absence_disqualifies_a_sampled_file_from_keeping_its_facts() {
+        use std::io::{Error, ErrorKind};
+
+        // A sampled file is one we were entitled to skip. A read that fails
+        // because something holds the file leaves its recorded facts standing;
+        // a read that fails because the file is gone must not, or the walk
+        // reports it verified and the scan keeps every symbol it used to have.
+        assert!(read_failure_is_absence(&Error::from(ErrorKind::NotFound)));
+        assert!(read_failure_is_absence(&Error::from(ErrorKind::IsADirectory)));
+        assert!(read_failure_is_absence(&Error::from(ErrorKind::NotADirectory)));
+
+        assert!(!read_failure_is_absence(&Error::from(ErrorKind::PermissionDenied)));
+        assert!(!read_failure_is_absence(&Error::from(ErrorKind::TimedOut)));
+
+        // The one that matters most, and the reason the test is written this
+        // way round: a Windows sharing violation — an antivirus or an editor
+        // holding the file, which is the case the fallback exists for — reaches
+        // Rust as `Uncategorized`, which cannot be named on stable. Enumerating
+        // the recoverable kinds would have excluded exactly it.
+        assert!(!read_failure_is_absence(&Error::from_raw_os_error(32)));
     }
 
     #[test]

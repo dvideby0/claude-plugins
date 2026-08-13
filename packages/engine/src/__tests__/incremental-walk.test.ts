@@ -178,12 +178,14 @@ describe("the walk skips a file the filesystem says did not change", () => {
     );
   });
 
-  it("notices a file deleted between the walk's stat and its read", async () => {
-    // The read-failure fallback keeps a sampled file whose extra read hits a
-    // lock — it is still there, and dropping it would delete its symbols on
-    // the strength of a rotation coin flip. A file that is *gone* is a
-    // different error entirely, and taking the fallback for it would resurrect
-    // it: reported verified, kept present, with every fact it used to have.
+  it("drops a deleted file and its facts", async () => {
+    // Deleted before the walk starts, so this resolves through the ordinary
+    // not-walked-therefore-removed path rather than the sampled-read fallback.
+    // The fallback's own error-kind partition — which is where a deletion could
+    // be mistaken for a lock and the file resurrected — is not reachable from
+    // out here, because it needs the deletion to land between the walk's stat
+    // and its read. That decision is pinned by a unit test in `walk.rs`
+    // instead; this one guards the path a person actually takes.
     root = await makeProject(PROJECT);
     await settle(root, ALL);
     await scan(root, { kind: "full" });
