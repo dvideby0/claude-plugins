@@ -29,8 +29,16 @@ import { setInputPolicyRelaxed } from "../daemon/watcher.js";
  * entry points" rather than "this index predates them".
  *
  * When the stored version is behind, the next scan is promoted to a full one.
+ *
+ * 20: Python docstrings became prose, so every `syntax_sha`, `interface_sha`
+ * and `body_sha` for a Python file changed. The promoted rescan recomputes
+ * them. Note the one-time cost this imposes on an existing index: artifacts
+ * anchored to a Python file with a docstring drift once, for a change in how
+ * signatures are computed rather than a change in the code. Carrying recorded
+ * signatures forward where `content_sha` is unchanged would remove that for
+ * this bump and every later one; it is deliberately not done here.
  */
-export const EXTRACTION_VERSION = 19;
+export const EXTRACTION_VERSION = 20;
 
 export interface ScanOptions {
   /** Re-parse every file, ignoring content hashes. */

@@ -1524,7 +1524,7 @@ pub fn parse(engines: &mut Engines, path: &str, lang: &str, source: &str) -> Par
         let end_line = node.end_position().row as u32 + 1;
         let end_column = node.end_position().column as u32;
 
-        let (interface, body) = crate::signature::symbol_signatures(node, bytes);
+        let (interface, body) = crate::signature::symbol_signatures(node, bytes, grammar);
 
         if label == "variable" {
             let value_kind = node
@@ -1658,7 +1658,7 @@ pub fn parse(engines: &mut Engines, path: &str, lang: &str, source: &str) -> Par
     } else {
         crate::http_flow::extract(path, tree.root_node(), bytes)
     };
-    let syntax_sha = crate::signature::file_syntax_sha(tree.root_node(), bytes);
+    let syntax_sha = crate::signature::file_syntax_sha(tree.root_node(), bytes, grammar);
     let relation_set_sha = crate::signature::relation_set_sha(&imports, &refs);
     Parsed {
         symbols,
