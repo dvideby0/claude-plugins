@@ -1584,11 +1584,15 @@ async function paneFindings(workspace, pane) {
           ${row.suggestion ? `<p><strong>Suggested:</strong> ${esc(row.suggestion)}</p>` : ""}
           ${
             row.status === "retired"
-              ? `<p class="warn">This was not fixed. Its file is no longer indexed${
-                  row.excluded
-                    ? ` — ${esc(row.excluded.detail)} (${esc(row.excluded.reason)})`
-                    : "; the rule that excluded it is not in the recorded sample"
-                }. Nobody re-checked whether it is still true.</p>`
+              ? row.reindexed
+                ? `<p class="warn">This was not fixed. Its file left the index and has since
+                     come back; nothing has re-checked the finding yet, so it stays closed
+                     until an analyzer runs over that file again.</p>`
+                : `<p class="warn">This was not fixed. Its file is no longer indexed${
+                    row.excluded
+                      ? ` — ${esc(row.excluded.detail)} (${esc(row.excluded.reason)})`
+                      : "; the rule that excluded it is not in the recorded sample"
+                  }. Nobody re-checked whether it is still true.</p>`
               : ""
           }
           <div class="sub">

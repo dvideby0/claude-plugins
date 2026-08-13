@@ -121,6 +121,12 @@ export interface FindingRow {
    * excluded paths does not list this one.
    */
   excluded: { path: string; directory: boolean; reason: string; detail: string } | null;
+  /**
+   * True when a retired finding's file is indexed again — the rule was lifted
+   * but no analyzer has re-checked the finding yet. It is neither excluded nor
+   * confirmed, and saying either would be wrong.
+   */
+  reindexed: boolean;
 }
 
 export interface FindingsView {
@@ -204,11 +210,21 @@ export function findingsView(db: Db, limit = 200, status = "open"): FindingsView
       description: row.description,
       suggestion: row.suggestion,
       occurrences: row.occurrences,
-      // Only a retired row needs this, and only it pays for the lookup. The
+      // Only a retired row needs these, and only it pays for the lookups. The
       // reason lives in `excluded_paths` rather than on the finding, so the
       // two can never disagree about why a path left. Null is honest: the
       // recorded sample is bounded, so the rule is sometimes not listed.
       excluded: row.status === "retired" && row.path ? exclusionForPath(db, row.path) : null,
+      // A retired finding whose file came back is a real and unbounded state:
+      // lifting the rule re-indexes the file, but the finding stays retired
+      // until an analyzer actually runs again. Saying "no longer indexed"
+      // there would be false, so the view reports what is true instead.
+      reindexed:
+        row.status === "retired" && row.path
+          ? db.count("SELECT COUNT(*) AS n FROM files WHERE path = ? AND present = 1", [
+              row.path,
+            ]) > 0
+          : false,
     })),
     total: db.count(`SELECT COUNT(*) AS n FROM findings WHERE ${filter}`, params),
     status,
@@ -310,6 +326,7 @@ function findingsForPath(db: Db, path: string): FindingRow[] {
       // This view is filtered to open and regressed findings, so none of them
       // can be retired and none of them has a rule to name.
       excluded: null,
+      reindexed: false,
     }));
 }
 

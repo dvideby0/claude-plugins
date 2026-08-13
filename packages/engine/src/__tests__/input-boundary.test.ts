@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { rm, writeFile } from "node:fs/promises";
+import { mkdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { getDb } from "../db/db.js";
 import { scan } from "../scan/scan.js";
@@ -204,11 +204,44 @@ describe("repository input boundary", () => {
     await rm(join(root, ".gitignore"));
     await scan(root, { kind: "incremental" });
     db = await getDb(root);
+
+    // Between the file returning and an analyzer re-checking it, the finding
+    // is neither excluded nor confirmed. Saying "no longer indexed" here would
+    // be false, and so would naming a rule that no longer applies.
+    const waiting = findingsView(db, 200, "retired").rows[0];
+    expect(waiting).toMatchObject({ reindexed: true, excluded: null });
+
     recordFindings(db, 3, [GENERATED_FINDING]);
     expect(
       db.get<{ status: string }>("SELECT status FROM findings WHERE path = 'generated/client.ts'")
         ?.status,
     ).toBe("open");
+  });
+
+  it("does not call a path still present when a directory took its place", async () => {
+    // `existsSync` answered "is there anything here", which a directory of the
+    // same name satisfies. The file is gone, so its finding is fixed.
+    root = await makeProject({
+      "package.json": "{}",
+      "src/app.ts": "export const app = 1;\n",
+      "generated/client.ts": "export const generated = 3;\n",
+    });
+    await scan(root, { kind: "full" });
+    let db = await getDb(root);
+    recordFindings(db, 1, [GENERATED_FINDING]);
+
+    await rm(join(root, "generated/client.ts"));
+    await mkdir(join(root, "generated/client.ts"), { recursive: true });
+    await writeFile(join(root, "generated/client.ts/index.ts"), "export const moved = 3;\n");
+
+    const result = await scan(root, { kind: "incremental" });
+    db = await getDb(root);
+
+    expect(result.findingsRetired).toBe(0);
+    expect(
+      db.get<{ status: string }>("SELECT status FROM findings WHERE path = 'generated/client.ts'")
+        ?.status,
+    ).toBe("fixed");
   });
 
   it("reports the boundary through the overview the desktop already loads", async () => {

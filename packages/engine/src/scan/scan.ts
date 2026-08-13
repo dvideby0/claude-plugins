@@ -5,7 +5,7 @@
  * symbols, edges and findings. Only changed files are re-parsed.
  */
 
-import { existsSync } from "node:fs";
+import { statSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { Db } from "../db/db.js";
@@ -181,7 +181,16 @@ async function doScan(projectRoot: string, options: ScanOptions = {}): Promise<S
   // bounded exclusion sample. A move lands here too, with its old path already
   // gone, so it takes the deleted branch after `applyMove` has carried the
   // knowledge across.
-  const stillPresentButUnindexed = new Set(removed.filter((path) => existsSync(join(projectRoot, path))));
+  //
+  // It has to be a file, not merely something at that path. A directory that
+  // replaced it, or a case-only rename landing on a case-insensitive
+  // filesystem where the old spelling still resolves, would otherwise be
+  // reported as "the file is still there" for a file that is gone.
+  const stillPresentButUnindexed = new Set(
+    removed.filter(
+      (path) => statSync(join(projectRoot, path), { throwIfNoEntry: false })?.isFile() ?? false,
+    ),
+  );
 
   const seen = new Set<string>();
   const languages: Record<string, number> = {};
