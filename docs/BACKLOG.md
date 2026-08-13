@@ -291,7 +291,9 @@ Comments that are instructions — `@ts-nocheck`, triple-slash references,
 Method keys are scoped to their enclosing declaration. `brief` and the asserted
 overlay compare meaning too, so no two readers disagree about the same
 artifact. Findings move with a renamed file and are re-keyed by the next
-analyzer run instead of being closed as fixed by a scan that ran none. The
+analyzer run — following the whole rename chain, since a file can move more
+than once before an analyzer sees it — instead of being closed as fixed by a
+scan that ran none. The
 size cap is enforced before the read, a relaxed gitignore policy is shared with
 the watcher, a malformed one is reported rather than discarded, truncated
 component dependencies report as partial, and Git renames are read from
