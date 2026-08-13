@@ -184,19 +184,34 @@ fn bounded_diagnostic(bytes: &[u8]) -> Option<String> {
     })
 }
 
-fn normalized_path(bytes: &[u8]) -> Option<String> {
-    let path = std::str::from_utf8(bytes).ok()?.replace('\\', "/");
+/// A path from outside, confined to somewhere inside the workspace.
+///
+/// One definition, shared with the task planner, because two copies of a
+/// confinement rule is two chances to get it wrong on one platform — which is
+/// what happened. `is_absolute` is not the test it looks like: on Windows a
+/// path is absolute only with a drive or UNC prefix, so `/escape.ts` is not
+/// absolute there and slipped straight through a check that rejected it on
+/// Unix. `RootDir` is the component that actually means "rooted", and it means
+/// it everywhere.
+pub(crate) fn confined_relative_path(value: &str) -> Option<String> {
+    let path = value.replace('\\', "/");
     if path.is_empty()
         || path.len() > MAX_CHANGE_PATH_BYTES
-        || Path::new(&path).is_absolute()
-        || Path::new(&path)
-            .components()
-            .any(|component| matches!(component, Component::ParentDir | Component::Prefix(_)))
+        || Path::new(&path).components().any(|component| {
+            matches!(
+                component,
+                Component::ParentDir | Component::RootDir | Component::Prefix(_)
+            )
+        })
     {
         return None;
     }
     let normalized = path.trim_start_matches("./");
     (!normalized.is_empty()).then(|| normalized.to_string())
+}
+
+fn normalized_path(bytes: &[u8]) -> Option<String> {
+    confined_relative_path(std::str::from_utf8(bytes).ok()?)
 }
 
 fn project_relative_path(bytes: &[u8], repository_prefix: &str) -> Option<String> {
@@ -610,6 +625,41 @@ mod tests {
         assert_eq!(detected, 1);
         assert!(truncated);
         assert_eq!(changes[0].path, "src/inside.ts");
+    }
+
+    #[test]
+    fn a_rooted_path_escapes_on_every_platform_or_none() {
+        // The rule this pins is that confinement does not depend on what the
+        // platform calls "absolute". Windows reserves that for a path with a
+        // drive or UNC prefix, so `/escape.ts` is not absolute there — and an
+        // `is_absolute` check rejected it on Unix while letting it through on
+        // Windows, where these tests had never run.
+        for escaping in [
+            "/escape.ts",
+            "../escape.ts",
+            "src/../../escape.ts",
+            "./../escape.ts",
+        ] {
+            assert_eq!(
+                confined_relative_path(escaping),
+                None,
+                "{escaping} leaves the workspace"
+            );
+        }
+
+        // A backslash is a separator, not a name, so this is the same path.
+        assert_eq!(confined_relative_path("\\escape.ts"), None);
+
+        for inside in ["src/inside.ts", "./src/inside.ts", "inside.ts"] {
+            assert!(
+                confined_relative_path(inside).is_some(),
+                "{inside} stays inside"
+            );
+        }
+        assert_eq!(
+            confined_relative_path("./src/inside.ts").as_deref(),
+            Some("src/inside.ts")
+        );
     }
 
     #[test]
