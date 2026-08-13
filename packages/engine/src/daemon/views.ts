@@ -114,6 +114,12 @@ export interface FindingRow {
   description: string;
   suggestion: string | null;
   occurrences: number;
+  /**
+   * For a retired finding, the rule that stopped its file being indexed.
+   * Null when the finding is not retired, or when the bounded record of
+   * excluded paths does not list this one.
+   */
+  excluded: { path: string; directory: boolean; reason: string; detail: string } | null;
 }
 
 export interface FindingsView {
@@ -197,6 +203,11 @@ export function findingsView(db: Db, limit = 200, status = "open"): FindingsView
       description: row.description,
       suggestion: row.suggestion,
       occurrences: row.occurrences,
+      // Only a retired row needs this, and only it pays for the lookup. The
+      // reason lives in `excluded_paths` rather than on the finding, so the
+      // two can never disagree about why a path left. Null is honest: the
+      // recorded sample is bounded, so the rule is sometimes not listed.
+      excluded: row.status === "retired" && row.path ? exclusionForPath(db, row.path) : null,
     })),
     total: db.count(`SELECT COUNT(*) AS n FROM findings WHERE ${filter}`, params),
     status,
@@ -293,6 +304,9 @@ function findingsForPath(db: Db, path: string): FindingRow[] {
       description: row.description,
       suggestion: row.suggestion,
       occurrences: row.occurrences,
+      // This view is filtered to open and regressed findings, so none of them
+      // can be retired and none of them has a rule to name.
+      excluded: null,
     }));
 }
 

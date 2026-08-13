@@ -168,6 +168,10 @@ export function createMcpServer(options: McpServerOptions): McpServer {
             "SELECT COUNT(*) AS n FROM findings WHERE status IN ('open','regressed')",
           ),
           fixedFindings: db.count("SELECT COUNT(*) AS n FROM findings WHERE status = 'fixed'"),
+          // Separate from fixed on purpose: nobody re-checked these, their
+          // file simply stopped being indexed. Folding them into either count
+          // would report work that did not happen.
+          retiredFindings: db.count("SELECT COUNT(*) AS n FROM findings WHERE status = 'retired'"),
           suppressed: db.count("SELECT COUNT(*) AS n FROM suppressions"),
           openBySeverity: Object.fromEntries(bySeverity.map((row) => [row.severity, row.n])),
           lastRun,

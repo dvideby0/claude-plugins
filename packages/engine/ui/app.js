@@ -1498,6 +1498,7 @@ async function paneFindings(workspace, pane) {
       ["open", "Open"],
       ["fixed", "Fixed"],
       ["regressed", "Regressed"],
+      ["retired", "Retired"],
       ["accepted", "Accepted"],
       ["false_positive", "False positive"],
       ["all", "All"],
@@ -1581,6 +1582,15 @@ async function paneFindings(workspace, pane) {
         <div class="fdetail-body">
           ${row.description ? `<p>${esc(row.description)}</p>` : ""}
           ${row.suggestion ? `<p><strong>Suggested:</strong> ${esc(row.suggestion)}</p>` : ""}
+          ${
+            row.status === "retired"
+              ? `<p class="warn">This was not fixed. Its file is no longer indexed${
+                  row.excluded
+                    ? ` — ${esc(row.excluded.detail)} (${esc(row.excluded.reason)})`
+                    : "; the rule that excluded it is not in the recorded sample"
+                }. Nobody re-checked whether it is still true.</p>`
+              : ""
+          }
           <div class="sub">
             ${esc(row.category)} · confidence ${esc(row.confidence)} · found by ${esc(row.source)}
             ${row.occurrences > 1 ? ` · seen ${num(row.occurrences)}×` : ""}

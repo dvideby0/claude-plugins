@@ -145,6 +145,7 @@ function auditReport(db: Db, tasks: Task[]): string {
   );
   const fixed = db.count("SELECT COUNT(*) AS n FROM findings WHERE status = 'fixed'");
   const regressed = db.count("SELECT COUNT(*) AS n FROM findings WHERE status = 'regressed'");
+  const retired = db.count("SELECT COUNT(*) AS n FROM findings WHERE status = 'retired'");
 
   const lines: string[] = ["# Audit", ""];
 
@@ -154,7 +155,9 @@ function auditReport(db: Db, tasks: Task[]): string {
       bySeverity.map((row) => [row.severity, String(row.n)]),
     ),
     "",
-    `Fixed since first run: ${fixed}. Regressed: ${regressed}.`,
+    retired > 0
+      ? `Fixed since first run: ${fixed}. Regressed: ${regressed}. Retired because their file left the index, unchecked: ${retired}.`
+      : `Fixed since first run: ${fixed}. Regressed: ${regressed}.`,
     "",
     "## By category",
     "",

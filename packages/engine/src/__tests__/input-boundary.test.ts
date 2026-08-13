@@ -1,9 +1,10 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { writeFile } from "node:fs/promises";
+import { rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { getDb } from "../db/db.js";
 import { scan } from "../scan/scan.js";
-import { inputBoundaryView, exclusionForPath } from "../daemon/views.js";
+import { recordFindings } from "../findings/record.js";
+import { findingsView, inputBoundaryView, exclusionForPath } from "../daemon/views.js";
 import { cleanup, makeProject, writeFiles } from "./helpers.js";
 
 /**
@@ -22,6 +23,18 @@ const PACKAGING_PROJECT = {
   "dist/bundle.js": "console.log(1);\n",
   "node_modules/pkg/index.ts": "export const dep = 4;\n",
 };
+
+/** A real problem in a file that a later rule stops indexing. */
+const GENERATED_FINDING = {
+  ruleId: "test/generated",
+  category: "correctness",
+  severity: "high",
+  confidence: "high",
+  source: "linter",
+  path: "generated/client.ts",
+  title: "Generated client has a problem",
+  description: "Nobody has looked at this.",
+} as const;
 
 describe("repository input boundary", () => {
   let root: string;
@@ -111,6 +124,91 @@ describe("repository input boundary", () => {
     ).toBe(0);
     expect(db.count("SELECT COUNT(*) AS n FROM symbols WHERE path = 'generated/client.ts'")).toBe(0);
     expect(exclusionForPath(db, "generated/client.ts")?.reason).toBe("generated_output");
+  });
+
+  it("retires a finding on a newly excluded path instead of claiming it was fixed", async () => {
+    // A scan runs no analyzers. Reporting "fixed" here told somebody their
+    // problem had been dealt with, when all that happened is we stopped
+    // looking at the file — which is still sitting there containing it.
+    root = await makeProject({
+      "package.json": "{}",
+      "src/app.ts": "export const app = 1;\n",
+      "generated/client.ts": "export const generated = 3;\n",
+    });
+    await scan(root, { kind: "full" });
+    let db = await getDb(root);
+    recordFindings(db, 1, [GENERATED_FINDING]);
+
+    await writeFile(join(root, ".gitignore"), "generated/\n");
+    const result = await scan(root, { kind: "incremental" });
+    db = await getDb(root);
+
+    expect(result.findingsRetired).toBe(1);
+    expect(
+      db.get<{ status: string; fixed_in_run: number | null }>(
+        "SELECT status, fixed_in_run FROM findings WHERE path = 'generated/client.ts'",
+      ),
+    ).toMatchObject({ status: "retired", fixed_in_run: null });
+
+    // Not counted as fixed by anything a person or an agent reads.
+    expect(db.count("SELECT COUNT(*) AS n FROM findings WHERE status = 'fixed'")).toBe(0);
+    const view = findingsView(db, 200, "retired");
+    expect(view.byStatus.retired).toBe(1);
+    expect(view.rows[0]?.excluded?.reason).toBe("generated_output");
+    expect(findingsView(db, 200, "open").total).toBe(0);
+  });
+
+  it("still closes a finding as fixed when its file was actually deleted", async () => {
+    // The discrimination test. Without it, the change above is unverified:
+    // retiring everything would pass every assertion in it.
+    root = await makeProject({
+      "package.json": "{}",
+      "src/app.ts": "export const app = 1;\n",
+      "generated/client.ts": "export const generated = 3;\n",
+    });
+    await scan(root, { kind: "full" });
+    let db = await getDb(root);
+    recordFindings(db, 1, [GENERATED_FINDING]);
+
+    await rm(join(root, "generated/client.ts"));
+    const result = await scan(root, { kind: "incremental" });
+    db = await getDb(root);
+
+    expect(result.findingsRetired).toBe(0);
+    expect(
+      db.get<{ status: string }>("SELECT status FROM findings WHERE path = 'generated/client.ts'")
+        ?.status,
+    ).toBe("fixed");
+  });
+
+  it("reopens a retired finding as open rather than regressed", async () => {
+    // Regressed means it was fixed and came back. Nothing fixed this one.
+    root = await makeProject({
+      "package.json": "{}",
+      "src/app.ts": "export const app = 1;\n",
+      "generated/client.ts": "export const generated = 3;\n",
+    });
+    await scan(root, { kind: "full" });
+    let db = await getDb(root);
+    recordFindings(db, 1, [GENERATED_FINDING]);
+
+    await writeFile(join(root, ".gitignore"), "generated/\n");
+    await scan(root, { kind: "incremental" });
+    db = await getDb(root);
+    expect(
+      db.get<{ status: string }>("SELECT status FROM findings WHERE path = 'generated/client.ts'")
+        ?.status,
+    ).toBe("retired");
+
+    // The rule is lifted, the file comes back, and the analyzer finds it again.
+    await rm(join(root, ".gitignore"));
+    await scan(root, { kind: "incremental" });
+    db = await getDb(root);
+    recordFindings(db, 3, [GENERATED_FINDING]);
+    expect(
+      db.get<{ status: string }>("SELECT status FROM findings WHERE path = 'generated/client.ts'")
+        ?.status,
+    ).toBe("open");
   });
 
   it("reports the boundary through the overview the desktop already loads", async () => {

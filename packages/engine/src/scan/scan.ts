@@ -5,6 +5,7 @@
  * symbols, edges and findings. Only changed files are re-parsed.
  */
 
+import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { Db } from "../db/db.js";
@@ -72,6 +73,12 @@ export interface ScanResult {
   inputDiagnostic: string | null;
   /** Renames confirmed well enough to carry authored knowledge across. */
   filesMoved: number;
+  /**
+   * Findings closed because their file stopped being indexed while still
+   * existing. Counted apart from fixed ones: a scan runs no analyzers, so
+   * nobody checked whether these are still true.
+   */
+  findingsRetired: number;
   /** The bundled Rust source engine. */
   engine: "native";
   /** True when the index was rebuilt because it predated the current extractor. */
@@ -168,10 +175,19 @@ async function doScan(projectRoot: string, options: ScanOptions = {}): Promise<S
     }
   }
 
+  // Which of the vanished paths are still sitting on disk. The file being gone
+  // and the file being no longer indexed look identical from the inventory, and
+  // a stat is the one signal that separates them without depending on the
+  // bounded exclusion sample. A move lands here too, with its old path already
+  // gone, so it takes the deleted branch after `applyMove` has carried the
+  // knowledge across.
+  const stillPresentButUnindexed = new Set(removed.filter((path) => existsSync(join(projectRoot, path))));
+
   const seen = new Set<string>();
   const languages: Record<string, number> = {};
   let filesChanged = 0;
   let filesParsed = 0;
+  let findingsRetired = 0;
 
   // Rust has already walked and parsed before the transaction opens. Select
   // the changed parse results here so the write pass remains synchronous.
@@ -403,10 +419,25 @@ async function doScan(projectRoot: string, options: ScanOptions = {}): Promise<S
       db.run("DELETE FROM refs WHERE src_path = ?", [path]);
       db.run("DELETE FROM refs WHERE dst_path = ?", [path]);
       db.run("DELETE FROM execution_entries WHERE path = ?", [path]);
-      db.run(
-        "UPDATE findings SET status = 'fixed', fixed_in_run = ? WHERE path = ? AND status IN ('open','regressed')",
-        [runId, path],
-      );
+      // A path can leave the inventory two ways, and they mean opposite things
+      // to somebody reading a finding. The file being gone is the only one that
+      // can be reported as fixed: no analyzer ran in this scan, so if the file
+      // is still sitting there and we simply stopped looking at it, "fixed" is
+      // a claim nobody made. Retired says what actually happened.
+      if (stillPresentButUnindexed.has(path)) {
+        findingsRetired += db.count(
+          "SELECT COUNT(*) AS n FROM findings WHERE path = ? AND status IN ('open','regressed')",
+          [path],
+        );
+        db.run("UPDATE findings SET status = 'retired' WHERE path = ? AND status IN ('open','regressed')", [
+          path,
+        ]);
+      } else {
+        db.run(
+          "UPDATE findings SET status = 'fixed', fixed_in_run = ? WHERE path = ? AND status IN ('open','regressed')",
+          [runId, path],
+        );
+      }
     }
 
     // Only now is the inventory final: the old paths are retired and the
@@ -533,6 +564,7 @@ async function doScan(projectRoot: string, options: ScanOptions = {}): Promise<S
       .reduce((total, count) => total + count.paths, 0),
     filesSyntaxChanged: syntaxChanged.size,
     filesMoved: moves.length,
+    findingsRetired,
     inputDiagnostic: diagnostic,
     engine,
     upgraded: stale,
