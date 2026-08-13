@@ -10,7 +10,7 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { Db } from "../db/db.js";
 import { getDb } from "../db/db.js";
-import { createResolver, parseTsAliases, type TsPathAlias } from "./resolve.js";
+import { parseTsAliases, resolutionInputs, type TsPathAlias } from "./resolve.js";
 import { collectGit } from "./git.js";
 import { TYPED_SPECIFIER } from "../graph/typed-contract.js";
 import { collectFiles, parseSourcePaths, type ParsedSource } from "./source.js";
@@ -95,6 +95,11 @@ export interface ScanResult {
   upgraded: boolean;
 }
 
+/** `?, ?, ?` for an `IN` list, so paths stay bound rather than interpolated. */
+function placeholders(values: string[]): string {
+  return values.map(() => "?").join(", ");
+}
+
 async function loadAliases(projectRoot: string): Promise<TsPathAlias[]> {
   try {
     return parseTsAliases(await readFile(join(projectRoot, "tsconfig.json"), "utf-8"));
@@ -172,10 +177,21 @@ async function doScan(projectRoot: string, options: ScanOptions = {}): Promise<S
 
   const previous = new Map(
     db
-      .all<{ path: string; content_sha: string; syntax_sha: string | null }>(
-        "SELECT path, content_sha, syntax_sha FROM files WHERE present = 1",
-      )
+      .all<{
+        path: string;
+        content_sha: string;
+        syntax_sha: string | null;
+        relation_set_sha: string | null;
+      }>("SELECT path, content_sha, syntax_sha, relation_set_sha FROM files WHERE present = 1")
       .map((row) => [row.path, row]),
+  );
+
+  /** Prior resolutions for files whose relation set did not move. */
+  const carried = new Map<string, Map<string, { dstPath: string | null; external: string | null }>>();
+
+  // Captured before the write pass overwrites them.
+  const previousRelationSet = new Map(
+    [...previous].map(([path, row]) => [path, row.relation_set_sha]),
   );
 
   const walked = new Set(files.map((file) => file.path));
@@ -348,6 +364,25 @@ async function doScan(projectRoot: string, options: ScanOptions = {}): Promise<S
       if (!result) continue;
       filesChanged++;
       filesParsed++;
+
+      // A re-parsed file's rows are about to be deleted and reinserted with a
+      // null destination, so they need resolving again whether or not anything
+      // about the file moved. What the relation-set signature buys is that
+      // when it has not moved, the specifier set is identical and the answers
+      // are the ones already stored — so they are kept rather than recomputed.
+      if (previousRelationSet.get(file.path) === result.relationSetSha) {
+        carried.set(
+          file.path,
+          new Map(
+            db
+              .all<{ specifier: string; dst_path: string | null; external: string | null }>(
+                "SELECT specifier, dst_path, external FROM edges WHERE src_path = ?",
+                [file.path],
+              )
+              .map((row) => [row.specifier, { dstPath: row.dst_path, external: row.external }]),
+          ),
+        );
+      }
 
       db.run("DELETE FROM symbols WHERE path = ?", [file.path]);
       db.run("DELETE FROM edges WHERE src_path = ?", [file.path]);
@@ -547,14 +582,53 @@ async function doScan(projectRoot: string, options: ScanOptions = {}): Promise<S
       );
     }
 
+    // **Invariant R.** `resolve` reads exactly three things: the path it is
+    // resolving from, the specifier, and the set of indexed paths plus the
+    // alias table. So a stored `(dst_path, external)` is still correct if and
+    // only if its `(src_path, specifier)` is unchanged *and* those inputs are
+    // identical to the ones in force when it was written.
+    //
+    // That second half is why the gate is a conjunction and not a per-file
+    // check. Resolution is a property of the whole repository, and it is not
+    // monotone in the inventory: `tryPythonPackage` takes the shortest suffix
+    // match and `tryFile` tries extensions in order, so adding one file can
+    // silently retarget an edge that was already resolved — not merely fix an
+    // unresolved one. "On an addition, re-resolve only the null rows" is
+    // therefore unsound, and is deliberately not what this does.
+    //
+    // When the inputs are identical, the only rows that can need a new value
+    // are the ones this run re-parsed and re-inserted. Everything else was
+    // resolved against the same inputs and is provably still correct.
+    const { resolver, identity } = resolutionInputs(seen, aliases);
+    const storedIdentity =
+      db.get<{ value: string }>("SELECT value FROM meta WHERE key = 'resolution_inputs_sha'")
+        ?.value ?? null;
+    const inputsUnchanged = !full && storedIdentity !== null && storedIdentity === identity;
+
+    // Scoped to the files this run re-parsed, because those are the only rows
+    // that were deleted and reinserted without a destination. Everything else
+    // was resolved against these same inputs and still holds.
+    const needResolve = inputsUnchanged ? [...parsed.keys()] : null;
+    const scope = needResolve === null ? "" : ` WHERE src_path IN (${placeholders(needResolve)})`;
+    const scopeParams = needResolve ?? [];
+
     // Re-resolve every edge: a newly added file can resolve an import that was
     // external on the previous run.
-    const resolver = createResolver(seen, aliases);
-    const edges = db.all<{ src_path: string; specifier: string }>(
-      "SELECT src_path, specifier FROM edges",
-    );
+    const edges =
+      needResolve?.length === 0
+        ? []
+        : db.all<{ src_path: string; specifier: string }>(
+            `SELECT src_path, specifier FROM edges${scope}`,
+            scopeParams,
+          );
     for (const edge of edges) {
-      const { dstPath, external } = resolver.resolve(edge.src_path, edge.specifier);
+      // `relation_set_sha` finally has a reader. Where the file's sorted set of
+      // specifiers is byte-identical to the recorded one and the resolver's
+      // inputs have not moved, the answer cannot have changed either, so it is
+      // restored rather than recomputed.
+      const kept = carried.get(edge.src_path)?.get(edge.specifier);
+      const { dstPath, external } =
+        kept && inputsUnchanged ? kept : resolver.resolve(edge.src_path, edge.specifier);
       db.run("UPDATE edges SET dst_path = ?, external = ? WHERE src_path = ? AND specifier = ?", [
         dstPath,
         external,
@@ -567,10 +641,16 @@ async function doScan(projectRoot: string, options: ScanOptions = {}): Promise<S
     // the type-resolved ones, which already carry a real target. Passing those
     // through the import resolver nulls them out, silently undoing the typed
     // pass on the next scan.
-    const references = db.all<{ src_path: string; specifier: string }>(
-      "SELECT DISTINCT src_path, specifier FROM refs WHERE specifier != ? AND specifier NOT LIKE ?",
-      [TYPED_SPECIFIER, `${TYPED_SPECIFIER}:%`],
-    );
+    const references =
+      needResolve?.length === 0
+        ? []
+        : db.all<{ src_path: string; specifier: string }>(
+            `SELECT DISTINCT src_path, specifier FROM refs
+              WHERE specifier != ? AND specifier NOT LIKE ?${
+                needResolve === null ? "" : ` AND src_path IN (${placeholders(needResolve)})`
+              }`,
+            [TYPED_SPECIFIER, `${TYPED_SPECIFIER}:%`, ...scopeParams],
+          );
     for (const reference of references) {
       const { dstPath } = resolver.resolve(reference.src_path, reference.specifier);
       db.run("UPDATE refs SET dst_path = ? WHERE src_path = ? AND specifier = ?", [
@@ -580,9 +660,22 @@ async function doScan(projectRoot: string, options: ScanOptions = {}): Promise<S
       ]);
     }
 
+    // Recorded inside the transaction, not beside `source_signature` outside
+    // it. Written outside, a rolled back scan would leave `meta` asserting a
+    // resolution that never happened, and the next scan would skip re-resolving
+    // rows that were never resolved in the first place.
+    db.run("INSERT OR REPLACE INTO meta(key, value) VALUES('resolution_inputs_sha', ?)", [
+      identity,
+    ]);
+
     // The innermost enclosing declaration is the caller. Destination ids use
     // typed declaration lines where available, so duplicate method names stay
     // distinct instead of collapsing to path + name.
+    //
+    // Deliberately not scoped by the gate above. Its correct scope is the
+    // re-parsed files plus every file that is the destination of a reference,
+    // which is a different and larger analysis; folding it in here would double
+    // the risk for a second win. Measured and left as the next slice.
     db.refreshReferenceIdentity();
   });
 

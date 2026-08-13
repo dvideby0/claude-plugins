@@ -3,6 +3,8 @@
  * Resolution is purely lexical against the set of scanned files.
  */
 
+import { createHash } from "node:crypto";
+
 export interface Resolver {
   resolve(fromPath: string, specifier: string): { dstPath: string | null; external: string | null };
 }
@@ -114,6 +116,43 @@ export function parseTsAliases(tsconfig: string, baseDirDefault = ""): TsPathAli
     });
   }
   return aliases;
+}
+
+/**
+ * The resolver, together with the identity of everything it reads.
+ *
+ * Returned as one value on purpose. Skipping re-resolution is only sound while
+ * the identity covers every input `resolve` consults, and the way that goes
+ * wrong is for someone to teach the resolver a new input and not know there is
+ * an identity to update. Building both here means adding a parameter to
+ * `createResolver` without adding it below does not compile.
+ *
+ * Note what this is *not*: `sourceSignature` hashes each file's content, so it
+ * moves on every edit and a gate built on it would never fire. What matters to
+ * resolution is which paths exist and what the aliases say — not what is inside
+ * them.
+ */
+export function resolutionInputs(
+  filePaths: Iterable<string>,
+  aliases: TsPathAlias[] = [],
+): { resolver: Resolver; identity: string } {
+  const paths = [...filePaths].sort();
+  const hash = createHash("sha256");
+  for (const path of paths) {
+    hash.update(path);
+    hash.update("\0");
+  }
+  hash.update("");
+  for (const alias of [...aliases].sort((a, b) => a.prefix.localeCompare(b.prefix))) {
+    hash.update(alias.prefix);
+    hash.update("\0");
+    hash.update([...alias.targets].sort().join(","));
+    hash.update("\n");
+  }
+  return {
+    resolver: createResolver(paths, aliases),
+    identity: hash.digest("hex").slice(0, 16),
+  };
 }
 
 export function createResolver(
