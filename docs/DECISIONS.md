@@ -15,6 +15,7 @@ this file. The store is primary; this is the readable summary.
 | [Provider-first code intelligence](#provider-first-code-intelligence) | Accepted | 2026-08-06 |
 | [Native SQLite through rusqlite inside the existing Rust module](#native-sqlite-through-rusqlite-inside-the-existing-rust-module) | Accepted | 2026-08-12 |
 | [First FLOW-001 production slice](#first-flow-001-production-slice) | Accepted | 2026-08-12 |
+| [Completed work leaves the backlog](#completed-work-leaves-the-backlog) | Accepted | 2026-08-13 |
 
 ## Provider-first code intelligence
 
@@ -121,6 +122,44 @@ This is adoption plus narrow product semantics, not a substitute for a general
 CPG: loops and switches are reported as gaps, data flow is unclaimed, and broader
 providers remain subject to the same golden corpus. The measurements behind the
 spike are in [`EVALUATION.md`](EVALUATION.md).
+
+## Completed work leaves the backlog
+
+> **Status:** Accepted · **Decided:** 2026-08-13 · **Recorded:** 2026-08-13
+
+This **reverses** a previously stated principle. `docs/README.md` used to say:
+*"keep completed backlog items as evidence rather than silently rewriting
+history."* The new rule is the opposite — a criterion that is met moves to
+[`CHANGELOG.md`](CHANGELOG.md), and an item whose criteria are all met leaves
+[`BACKLOG.md`](BACKLOG.md) entirely.
+
+The old rule was correct when it was written, because there was nowhere else for
+evidence to go. By 2026-08-13 it had produced the opposite of its intent: the
+outcome of shipped work was being recorded in **three** places at once — 18
+`Progress (...)` paragraphs inside the backlog, dated `Implementation update`
+preambles on the audit, and an `Implementation status` section in the provider
+strategy. The backlog was the highest-churn file in the repository and roughly a
+third history, and at least one item contradicted itself in tone, with acceptance
+criteria saying "must" while its progress paragraph said the same thing remained
+open. A reader could not tell what was still open without diffing two paragraphs
+— which is the silent staleness `CONVENTIONS.md` §Say what did not happen exists
+to forbid.
+
+Alternatives considered:
+
+- **Keep the old rule.** Rejected: it was already failing, and doing nothing
+  meant three homes for one fact.
+- **Delete on ship with no changelog**, letting `CURRENT_STATE_AUDIT.md` carry
+  the shipped narrative. Rejected: the audit answers "how good is this now",
+  which is a different genre from "what changed and when". Its accreting dated
+  preambles were a symptom of being asked to do both.
+- **Delete whole items on ship.** Rejected as too coarse: items here are
+  partially shipped, so this would have erased in-flight evidence. Hence the
+  rule operates at **criterion** granularity.
+
+Nothing is lost by moving history: git holds the diff, the changelog holds the
+outcome, and this file holds the reasoning. The migration was a harvest — no
+changelog entry was invented, and no acceptance criterion was deleted.
 
 ---
 

@@ -7,21 +7,25 @@ coding harness ever spawns.
 
 ## What it owns
 
-Nothing but the hop. It reads the running daemon's port and token from
-`~/.sdlc/daemon.json`, forwards MCP traffic to it over HTTP, and exits. No
-index, no store, no analysis — those are the engine's, so they stay warm between
-sessions and shared across harnesses.
+Nothing but the hop. It looks up the running daemon's port and token in
+`~/.sdlc/daemon.json` and forwards MCP traffic over HTTP. No index, no store, no
+analysis — those are the engine's, so they stay warm between sessions and shared
+across harnesses.
+
+It stays resident for the session rather than exiting after one call, and polls
+so it can raise `tools/list_changed` when the engine's surface changes.
 
 ## Boundaries
 
-- **The port is resolved at spawn time, not at config time.** That is why
-  harness config points at the `~/.sdlc/bin/sdlc-bridge` launcher rather than an
-  HTTP URL: a daemon restart on a different port cannot leave stale config
-  behind.
+- **The daemon is looked up per request, not once at startup.** A restart on a
+  different port is therefore survivable mid-session, and harness config never
+  needs to name a port or a URL.
 - **The launcher is regenerated on every daemon startup**, so it always points at
-  the current install. Pointing harness config straight at a script inside
-  `node_modules` would break on the next upgrade — silently, because a missing
-  MCP server just means the tools quietly stop appearing.
+  the current install. That is why harness config names
+  `~/.sdlc/bin/sdlc-bridge` rather than a script inside `node_modules`: config is
+  written once and read for months, so a path that moves on the next upgrade
+  would break silently — a missing MCP server just means the tools quietly stop
+  appearing.
 
 ## Working on it
 

@@ -190,7 +190,7 @@ everything else reads from it while work is happening.
 | Get context before changing code | `brief`, `context`, `references`, `impact` | [Symbol-level references](docs/ENGINE_DESIGN.md#symbol-level-references) |
 | Follow what actually runs | `flow`, `trace`, `search_code` | [Flow, not just clusters](docs/ENGINE_DESIGN.md#flow-not-just-clusters) · [Search by shape](docs/ENGINE_DESIGN.md#search-by-shape) |
 | Author and maintain the human map | `map`, `map_drift`, `describe_component`, `gaps` | [Two maps](docs/ENGINE_DESIGN.md#two-maps) · [What the map cannot see](docs/ENGINE_DESIGN.md#what-the-map-cannot-see) |
-| Keep knowledge across sessions | `remember`, `recall`, `relate`, `explored` | [Crossing between them](docs/ENGINE_DESIGN.md#crossing-between-them) |
+| Keep knowledge across sessions | `remember`, `recall`, `relate`, `explored` | [What the map cannot see](docs/ENGINE_DESIGN.md#what-the-map-cannot-see) |
 | Audit a repository | the `audit_*` family | [plugins/sdlc/docs/STRATEGY.md](plugins/sdlc/docs/STRATEGY.md) |
 
 A memory carries the content hash of the file it was written against, so a note

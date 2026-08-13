@@ -11,15 +11,17 @@ repository, shipped as a napi `.node` binary.
 - **The walk** — the `ignore` crate, one inclusion decision in `input_policy.rs`
   that both the scan and the watcher ask, and the recorded reason for every
   exclusion.
-- **Parsing** — native tree-sitter with rayon, in `parse.rs`.
+- **Parsing** — native tree-sitter in `parse.rs`, driven in parallel with rayon
+  from `lib.rs`.
 - **Freshness and identity** — `freshness.rs` and `signature.rs`: the filesystem
-  identity key, the syntax and content hashes, and the racy-clean rule.
+  identity key and the racy-clean rule. Content hashing happens during the walk,
+  in `walk.rs`.
 - **The store** — `database.rs` plus the immutable `database_schema_v*.sql`
   files: schema gating, ordered migrations, validated pre-migration backups,
   and the FTS5 access path.
 - **Bounded adapters** — `git_changes.rs` (porcelain v2), `http_flow.rs` (route
   guards and response effects), `task_context.rs` (the `brief` planner),
-  `provider.rs` (SCIP input views and manifests).
+  `provider.rs` (bounded SCIP ingestion, projected into facts).
 
 ## Boundaries
 
@@ -62,5 +64,6 @@ cargo clippy --manifest-path packages/scan-core/Cargo.toml --all-targets -- -D w
 npm run build -w @sdlc/scan-core
 ```
 
-Root `npm test` does not touch Rust. The full verification sequence is in
+Root `npm test` builds this crate but never runs `cargo test` or `clippy`.
+The full verification sequence is in
 [`AGENTS.md`](../../AGENTS.md#build-test-and-run).

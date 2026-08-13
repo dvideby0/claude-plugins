@@ -12,18 +12,23 @@ of a running engine are in `~/.sdlc/daemon.json` — see
 
 ## Authentication
 
-Three checks, in this order, before any handler runs:
+A malformed URL is rejected with `400` before anything else. Then:
 
-1. **Loopback and same-origin.** Every request needs a loopback `Host`, which
+1. **Loopback and same-origin — every request.** A loopback `Host`, which
    defeats DNS rebinding, and a same-origin `Origin`.
-2. **Bearer token.** `/mcp` and everything under `/api/` require the token from
-   `daemon.json`.
-3. **UI bootstrap.** `/` and `/index.html` are exempt from the bearer token,
-   because serving the shell is what delivers the token to the page. They
-   require a one-time navigation credential instead.
+2. **Bearer token — `/mcp` and everything under `/api/`.** The token from
+   `daemon.json`, in an `Authorization: Bearer` header.
+3. **UI bootstrap — `/` and `/index.html`.** The *same* token, accepted either
+   as a bearer header or as a `?token=` query parameter. Electron supplies it on
+   the initial URL because a page cannot set an `Authorization` header for its
+   own navigation; the UI then removes that parameter from browser history
+   before doing anything else. It is not a separate credential, and the server
+   does not treat it as single-use.
 
-A malformed URL is rejected with `400` before any of this. An unknown path
-under `/api/` is `404`.
+Everything else — the UI's static assets — is served after check 1 alone. Token
+comparison is constant-time, so a wrong token leaks nothing through timing.
+
+An unknown path under `/api/` is `404`.
 
 ## Engine
 
@@ -33,7 +38,7 @@ under `/api/` is `404`.
 | `GET /api/status` | Version, start time, pid, bound port, workspace count, and how many roots are being watched |
 | `POST /api/shutdown` | Acknowledges with `202`, then lets the daemon own lock cleanup and termination |
 | `GET /api/providers` | Which code-intelligence providers are detected on this machine |
-| `GET \| POST /api/watch` | Read the watch state, or toggle it with `{ "enabled": boolean }`. Returns the state either way |
+| `/api/watch` | Read the watch state. A `POST` sets it from `{ "enabled": boolean }` — note an empty body enables it. Answers any method, returning the state |
 | `GET /api/search` | Cross-repository search. `q` is required; `kind` selects a facet and defaults to `all`. An unknown kind is `400` |
 
 ## Workspaces
@@ -47,9 +52,13 @@ under `/api/` is `404`.
 | `POST /api/workspaces/:id/stop` | Ask a running index to stop |
 | `GET /api/workspaces/:id/:view` | Read one view of the store |
 
-`:id` is a twelve-character hex workspace id. `:view` is one of `graph`,
-`flow`, `execution-flow`, `map`, `component`, `findings`, `overview`, `file`,
-`memories`, `report` or `review`.
+`:id` is a twelve-character lowercase hex workspace id. `:view` is one of
+`graph`, `flow`, `execution-flow`, `map`, `component`, `findings`, `overview`,
+`file`, `memories` or `report`.
+
+The route pattern also accepts `review`, but no handler reads it, so
+`GET /api/workspaces/:id/review` falls through to `404`. Treat it as
+unimplemented rather than as a view.
 
 ## Providers and findings
 
@@ -79,5 +88,7 @@ directly — they spawn the stdio bridge, which reads the port at spawn time.
 
 ---
 
-Routes are canonical in `packages/engine/src/daemon/http.ts`. Documentation
-placement rules live in the [documentation hub](../README.md).
+Routes are canonical in `packages/engine/src/daemon/http.ts` — nothing checks
+this page against it, so verify against the source when it matters.
+Documentation placement rules live in the
+[documentation hub](../README.md).

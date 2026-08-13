@@ -5,8 +5,10 @@
 Everything the engine owns on disk, how the three processes find each other,
 and the environment variables that move any of it.
 
-The paths are defined once, in `packages/protocol/src/paths.ts`, because the
-engine writes them and the bridge and desktop app read them.
+The shared paths — the state directory itself and everything directly inside it
+— are defined once, in `packages/protocol/src/paths.ts`, because the engine
+writes them and the bridge and desktop app read them. Three entries below are
+built elsewhere and are marked as such.
 
 ## The state directory
 
@@ -16,12 +18,12 @@ Everything lives under `~/.sdlc/`, or `$SDLC_HOME` when set.
 |---|---|
 | `daemon.json` | Port and bearer token of the running engine. Mode 0600, removed on clean shutdown |
 | `daemon.lock` | Atomic cross-process ownership marker, held for the daemon's lifetime |
-| `daemon.log` | What the engine did. The desktop app tails this |
+| `daemon.log` | What the engine did, when it is run headless |
 | `workspaces.json` | The directories the user has allowed the engine to index |
-| `stores/<workspace-id>/audit.db` | Native SQLite code-intelligence store, one per repository |
-| `stores/<workspace-id>/backups/pre-v<version>-<timestamp>.db` | Newest validated standalone recovery image retained for each target schema version |
+| `stores/<workspace-id>/audit.db` | Native SQLite code-intelligence store, one per repository. Path built in `packages/engine/src/db/db.ts` |
+| `stores/<workspace-id>/backups/pre-v<version>-<nonce>.db` | Newest validated standalone recovery image retained per target schema version. Written by `packages/scan-core/src/database.rs` |
 | `providers/` | App-owned inputs, outputs and manifests produced by external analysis providers |
-| `bin/sdlc-bridge` | Launcher a harness spawns, regenerated on every daemon startup |
+| `bin/sdlc-bridge` | Launcher a harness spawns, regenerated on every daemon startup. Built in `packages/engine/src/daemon/launcher.ts`; `sdlc-bridge.cmd` on Windows |
 
 Nothing is written inside the source repository. On first open, an older
 repository-local `sdlc-audit/audit.db` is copied into app-owned storage and
@@ -50,7 +52,7 @@ silently — a missing MCP server just means the tools quietly stop appearing.
 | `SDLC_PORT` | Port the daemon prefers. Defaults to 7420 |
 | `SDLC_WATCH` | `0` disables repository watching. The `/api/watch` toggle does the same at runtime |
 | `SDLC_CONTENT_DIR` | Directory holding the engine's `lang/` and `lenses/` prompt assets. Set this when they are not beside the built engine |
-| `SDLC_PROJECT_ROOT` | Repository the engine should treat as current |
+| `SDLC_PROJECT_ROOT` | Repository the **bridge** reports as current, defaulting to its working directory. Read by `@sdlc/mcp-bridge`, not by the engine |
 | `SDLC_BRIDGE_COMMAND`, `SDLC_BRIDGE_SCRIPT`, `SDLC_BRIDGE_ELECTRON` | Override what the generated launcher runs. Packaging sets these |
 
 Versions and pins are not configuration: they are canonical in `package.json`,
@@ -58,5 +60,6 @@ Versions and pins are not configuration: they are canonical in `package.json`,
 
 ---
 
-Paths are canonical in `packages/protocol/src/paths.ts`. Documentation
-placement rules live in the [documentation hub](../README.md).
+The shared state paths are canonical in `packages/protocol/src/paths.ts`; the
+three derived entries name their own source above. Documentation placement rules
+live in the [documentation hub](../README.md).

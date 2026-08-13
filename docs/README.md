@@ -72,7 +72,7 @@ drifting.
 | Fact | Canonical home | Everywhere else |
 |---|---|---|
 | The MCP tool set and each tool's one-line purpose | `packages/engine/src/mcp/server.ts` | [`reference/mcp-tools.md`](reference/mcp-tools.md) quotes and routes; `../README.md` links, never lists. No doc restates a schema |
-| Daemon HTTP routes and their auth posture | [`reference/http-api.md`](reference/http-api.md) | `daemon/http.ts` implements it; `../README.md` §Security summarizes the posture |
+| Daemon HTTP routes and their auth posture | `packages/engine/src/daemon/http.ts` | [`reference/http-api.md`](reference/http-api.md) describes them; `../README.md` §Security summarizes the posture. Unlike the tool catalog, this one is **not** machine-checked |
 | The plugin command set | each command file's frontmatter `description:` | [`reference/plugin-commands.md`](reference/plugin-commands.md) is the one catalog; both READMEs link to it |
 | `~/.sdlc` layout, ports, token, `SDLC_HOME`, `SDLC_WATCH` | [`reference/state-and-config.md`](reference/state-and-config.md) | `../README.md` keeps the user-facing file table; the plugin README gives one sentence |
 | Scan-core benchmark numbers | [`../packages/scan-core/README.md`](../packages/scan-core/README.md) | `../README.md` says walking and parsing are native and links. No numbers elsewhere |

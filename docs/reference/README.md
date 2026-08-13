@@ -30,8 +30,11 @@ is [`ENGINE_DESIGN.md`](../ENGINE_DESIGN.md); this is what it offers.
 - **Adding a catalog?** Only when a genuinely new surface exists, not when an
   existing one grows.
 
-`node scripts/check-docs.mjs` fails when a catalog and its source disagree, so
-these tables cannot silently drift the way the README's copies did.
+`node scripts/check-docs.mjs` compares the MCP tool catalog against
+`server.ts` and the command catalog against `plugins/sdlc/commands/`, so those
+two cannot silently drift the way the README's copies did. **The HTTP and
+state pages are not machine-checked** — verify them against the source when
+correctness matters.
 
 ---
 

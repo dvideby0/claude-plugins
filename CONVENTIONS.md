@@ -79,6 +79,26 @@ that target version before changing the store. A destructive migration needs
 its own preservation and rollback test; do not hide it inside the legacy
 v1-v16 convergence path.
 
+Four guarantees around that must hold, because each one is how a store survives
+a bad upgrade:
+
+- **Integrity is checked either side.** `quick_check` runs before and after
+  migration, so structural corruption is detected rather than migrated forward.
+- **The backup is a real online backup.** SQLite's backup API captures a
+  consistent image including committed WAL pages, normalized into one standalone
+  database, validated and permission-restricted before anything changes.
+- **A newer or conflicting store is rejected without being touched** — in
+  particular without changing its journal mode, so an older build cannot damage
+  a store written by a newer one just by opening it.
+- **A failed migration rolls back and keeps its pre-migration image.** Both DDL
+  and version metadata revert; retrying the same target version replaces the
+  older image only once the new snapshot is complete and validated.
+
+A generally corrupted store is never silently replaced from an older backup —
+losing newer human knowledge is worse than presenting an explicit recovery
+choice. Why SQLite owns all of this rather than a bespoke engine is in
+[`docs/DECISIONS.md`](docs/DECISIONS.md#native-sqlite-through-rusqlite-inside-the-existing-rust-module).
+
 ## Repository inventory has one implementation
 
 `packages/scan-core` owns walking, source classification, ignore policy,

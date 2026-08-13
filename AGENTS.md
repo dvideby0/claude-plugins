@@ -78,8 +78,9 @@ node scripts/smoke.mjs                    # end to end through the bridge
 node scripts/check-docs.mjs               # documentation structure gate
 ```
 
-Root `npm test` runs the engine suite only — it does not touch Rust, so the
-`cargo` lines are not optional. And read the *warnings*, not only the errors: a
+Root `npm test` runs the engine suite only. It *builds* the Rust core through
+the engine's `pretest`, but it never runs `cargo test` or `clippy`, so those
+lines are not optional. And read the *warnings*, not only the errors: a
 fix that was a dead store shipped from here because the build output was
 filtered for `error`.
 

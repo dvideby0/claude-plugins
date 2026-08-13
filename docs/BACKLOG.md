@@ -106,10 +106,6 @@ Acceptance criteria:
 
 Shipped so far → [CHANGELOG 2026-08-11](CHANGELOG.md#2026-08-11). Remaining criteria above.
 
-Shipped so far → [CHANGELOG 2026-08-11](CHANGELOG.md#2026-08-11). Remaining criteria above.
-
-Shipped so far → [CHANGELOG 2026-08-11](CHANGELOG.md#2026-08-11). Remaining criteria above.
-
 Shipped so far → [CHANGELOG 2026-08-12](CHANGELOG.md#2026-08-12). Remaining criteria above.
 
 ### STORE-001: Move workspace state under app ownership
@@ -124,10 +120,6 @@ Acceptance criteria:
 - The daemon handles schema migration and failed migration recovery.
 - FTS5 is enabled and queried through an internal search interface.
 - Existing prototype stores have either a tested migration or a clearly documented disposable reset path.
-
-Shipped so far → [CHANGELOG 2026-08-12](CHANGELOG.md#2026-08-12). Remaining criteria above.
-
-Shipped so far → [CHANGELOG 2026-08-12](CHANGELOG.md#2026-08-12). Remaining criteria above.
 
 Shipped so far → [CHANGELOG 2026-08-12](CHANGELOG.md#2026-08-12). Remaining criteria above.
 
@@ -267,10 +259,6 @@ Acceptance criteria:
 - Every excerpt or conclusion has a navigable source/fact reference.
 - It beats an Aider-style symbol-map baseline on agreed EVAL-001 scenarios or remains an experimental internal path.
 - The public MCP catalog is reviewed for redundant tools after this query is proven.
-
-Shipped so far → [CHANGELOG 2026-08-12](CHANGELOG.md#2026-08-12). Remaining criteria above.
-
-Shipped so far → [CHANGELOG 2026-08-12](CHANGELOG.md#2026-08-12). Remaining criteria above.
 
 Shipped so far → [CHANGELOG 2026-08-12](CHANGELOG.md#2026-08-12). Remaining criteria above.
 

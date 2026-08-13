@@ -52,9 +52,9 @@ project's trusted facts.
 
 Repositories without a TypeScript config are evaluated through an app-owned
 inferred config; evaluation never creates a `tsconfig.json` in the source
-repository. If the upstream indexer skips one of several project configs, the
-usable comparison is retained and labeled **partial** rather than presented as a
-complete success. JavaScript projects using `jsconfig.json` are discovered as
+repository, and the upstream `--infer-tsconfig` flag is never invoked. If the
+upstream indexer skips one of several project configs, the usable comparison is
+retained and labeled **partial** rather than presented as a complete success. JavaScript projects using `jsconfig.json` are discovered as
 well; invalid configs and oversized files are reported rather than silently
 broadening or completing the evaluation. Solution-style roots remain supported,
 with SCIP — not SDLC — resolving their referenced project configs under the

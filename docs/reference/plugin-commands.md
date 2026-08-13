@@ -22,7 +22,7 @@ The commands need a running engine. Setup is in
 | [`/brainstorm`](../../plugins/sdlc/commands/brainstorm.md) | Think through a design against what this codebase already is and already decided, then record the outcome |
 | [`/grill`](../../plugins/sdlc/commands/grill.md) | Interview the user about a part of the system until the domain model is clear, then record it against the code |
 
-## Changing code
+## Doing the work
 
 | Command | What it does |
 |---|---|

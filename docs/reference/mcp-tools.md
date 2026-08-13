@@ -14,13 +14,12 @@ is [`ENGINE_DESIGN.md`](../ENGINE_DESIGN.md).
 
 | Tool | For |
 |---|---|
-| `brief` | Build a task-first, byte-budgeted briefing from ranked lexical, graph, flow, finding, memory, test, and source evidence. Use before reading broadly |
+| `brief` | Build a task-first, byte-budgeted briefing from ranked lexical, graph, flow, finding, memory, test, and source evidence. Use before reading broadly. The older single-target call still works |
 | `context` | Everything known about a file or symbol before you change it: what it is, what depends on it, open findings, and what previous sessions recorded about it |
-| `search_code` | Search by code shape rather than text: every empty catch block, every bare except, every throw |
 | `cross_search` | Search every repository this engine indexes at once across paths, symbols, components, flows, findings, relations, and memories |
 | `read_file` | Read a bounded, numbered slice of a text file inside the current workspace. Paths that escape through `..` or symlinks are rejected |
 
-## Graph and navigation
+## Navigation and search
 
 | Tool | For |
 |---|---|
@@ -28,7 +27,8 @@ is [`ENGINE_DESIGN.md`](../ENGINE_DESIGN.md).
 | `trace` | Follow the call chain from a symbol — what it calls, transitively, or what calls it |
 | `impact` | What would need re-checking if this file changed: which of its exports are actually used, by which files, and which tests already cover them |
 | `flow` | Evidence-backed execution paths from recognized entries to terminal outcomes and effects |
-| `resolve_types` | Upgrade references from import-resolved to type-resolved using the TypeScript checker. Prototype |
+| `search_code` | Search by code shape rather than text: every empty catch block, every bare except, every throw |
+| `resolve_types` | Upgrade references from import-resolved to type-resolved using the TypeScript checker. Slow — a full type-check — so run it after indexing, not on every change |
 
 ## Map authoring
 
@@ -62,7 +62,7 @@ is [`ENGINE_DESIGN.md`](../ENGINE_DESIGN.md).
 | `audit_run_tools` | Run deterministic analysis: the project's own linters and type checkers, secret scanning, dependency advisories, and import-cycle detection |
 | `audit_plan` | Rank files by risk (blast radius, churn, open findings, test coverage, size) and group them into review units for sub-agents |
 | `audit_context` | Build the review prompt for one unit: rules, findings already known, graph neighbourhood, and source packed to budget |
-| `audit_review` | Run the model review pass in the engine: review each planned unit with a headless coding CLI, then verify every proposed finding against the source before recording it |
+| `audit_review` | Run the model review pass in the engine: review each planned unit with a headless coding CLI, then verify every proposed finding against the source before recording it. **Costs real tokens on the user's own CLI plan — confirm before calling** |
 | `audit_record_findings` | Record review findings. Deduplicated by fingerprint, suppressions applied. The only way agents write findings |
 | `audit_query` | Query the audit store: review rules, symbol definitions, importers, imports, findings, hotspots, external packages, cycles |
 | `audit_suppress` | Mark a finding accepted or a false positive, or silence a rule under a path. Suppressions persist across runs |
