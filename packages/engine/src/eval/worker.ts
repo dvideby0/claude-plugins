@@ -369,7 +369,11 @@ export async function runEvaluationWorker(
         filesRead: warm.value.filesRead,
         filesVerifiedWithoutReading: warm.value.filesVerified,
         filesSampled: warm.value.filesSampled,
-        mismatches: warm.value.freshnessDistrusted === null ? 0 : 1,
+        // The count, not whether a distrust string is set: that string also
+        // survives from an earlier scan, so a workspace already carrying one
+        // would report a mismatch this run did not find — and N of them would
+        // have collapsed to 1.
+        mismatches: warm.value.filesFreshnessMismatched,
         scope: "second scan of an untouched fixture",
       };
       await appendFile(resolveWorkspacePath(project, oracle.change.path), oracle.change.append);

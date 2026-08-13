@@ -69,7 +69,12 @@ export interface ScanResult {
    * between re-reading a file and invalidating everything anchored to it.
    */
   filesSyntaxChanged: number;
-  /** Set when the walk relaxed a rule rather than report an empty repository. */
+  /**
+   * Anything about this scan's inputs the caller should be told: a rule the
+   * walk had to relax rather than report an empty repository, a filesystem
+   * identity caught disagreeing with the contents, or a file that needed
+   * rebuilding and could not be re-read.
+   */
   inputDiagnostic: string | null;
   /**
    * How the walk established each file: read, taken on the filesystem's word,
@@ -81,6 +86,12 @@ export interface ScanResult {
   filesSampled: number;
   /** Sampled files written between the stat and the read, which prove nothing. */
   filesRacedDuringScan: number;
+  /**
+   * Sampled files whose recorded identity matched while their contents did
+   * not, and still matched a moment later. Above zero means the walk has
+   * already redone this run reading everything.
+   */
+  filesFreshnessMismatched: number;
   /** Set once this workspace's filesystem identity has been caught lying. */
   freshnessDistrusted: string | null;
   /** Renames confirmed well enough to carry authored knowledge across. */
@@ -783,6 +794,7 @@ async function doScan(projectRoot: string, options: ScanOptions = {}): Promise<S
     filesVerified,
     filesSampled,
     filesRacedDuringScan: freshnessRaced,
+    filesFreshnessMismatched: freshnessMismatches,
     freshnessDistrusted:
       freshnessMismatches > 0 ? (diagnostic ?? "The freshness key was wrong.") : distrusted,
     inputDiagnostic: [diagnostic, rebuildDiagnostic].filter(Boolean).join(" ") || null,

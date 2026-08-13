@@ -150,11 +150,18 @@ overlap.
 
 ## A stat key is evidence of identity, not of content
 
-The walk skips reading a file whose device, inode, size, modification and change
-times match what the last scan recorded. That is a good trade and it is not a
-proof: `cp -p`, `rsync -a`, a restore from backup and an editor's save-by-rename
-each preserve some of those fields while replacing the bytes, which is why the
-key uses all of them rather than the obvious size-and-mtime pair.
+The walk skips reading a file whose recorded filesystem identity still matches.
+On Unix that is device, inode, size, modification and change times. Windows has
+neither a `ctime` with the Unix meaning nor a stable file index, so its key is
+weaker and leans harder on sampling — which is why the rule is written as "the
+identity" and not as a field list. A field list gets read on the platform where
+those fields do not exist, and that is how a doc comes to describe a key that
+was never built.
+
+It is a good trade and it is not a proof: `cp -p`, `rsync -a`, a restore from
+backup and an editor's save-by-rename each preserve some of those fields while
+replacing the bytes, which is why the key uses every one it can get rather than
+the obvious size-and-mtime pair.
 
 Three rules come with it, and none is optional. Record how a fact was
 established, so a file nobody read stays distinguishable from a file confirmed
