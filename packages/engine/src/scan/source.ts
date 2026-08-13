@@ -113,8 +113,21 @@ export interface SourceFile {
   bytes: number;
   contentSha: string;
   isTest: boolean;
+  /**
+   * Whether a grammar covers this file at all — a property of the file, not of
+   * this run. Kept apart from `parsed`, which says whether this run actually
+   * produced output for it. Once a scan can skip reading an unchanged file the
+   * two diverge, and conflating them would flip `files.parsed` to 0 for every
+   * skipped source file.
+   */
+  parseable: boolean;
   parsed: ParsedSource | null;
   refs: SourceRef[];
+  /**
+   * The filesystem's identity for this file, or null when it cannot serve as a
+   * baseline for a later scan. Null never means unchanged.
+   */
+  statKey: string | null;
 }
 
 export interface SourceTextFile {
@@ -172,6 +185,8 @@ interface NativeFile {
   contentSha: string;
   isTest: boolean;
   parsed: boolean;
+  /** Absent when the observation cannot serve as a baseline for a later scan. */
+  statKey?: string;
   syntaxSha: string;
   relationSetSha: string;
   symbols: Array<{
@@ -428,6 +443,8 @@ export async function collectFiles(projectRoot: string): Promise<CollectResult> 
       bytes: file.bytes,
       contentSha: file.contentSha,
       isTest: file.isTest,
+      parseable: file.parsed,
+      statKey: file.statKey ?? null,
       parsed: file.parsed
         ? {
             symbols: file.symbols as ParsedSymbol[],

@@ -233,12 +233,16 @@ async function doScan(projectRoot: string, options: ScanOptions = {}): Promise<S
         `INSERT INTO files(path, lang, loc, bytes, content_sha, syntax_sha, relation_set_sha,
                            churn, is_test, parsed,
                            ref_coverage, ref_generation, ref_source_signature, present,
-                           first_seen_run, last_seen_run)
-         VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, 1, ?, ?)
+                           first_seen_run, last_seen_run,
+                           stat_key, freshness_basis, last_read_run)
+         VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, 1, ?, ?, ?, ?, ?)
          ON CONFLICT(path) DO UPDATE SET
            lang = excluded.lang, loc = excluded.loc, bytes = excluded.bytes,
            content_sha = excluded.content_sha, churn = excluded.churn,
            is_test = excluded.is_test,
+           stat_key = excluded.stat_key,
+           freshness_basis = excluded.freshness_basis,
+           last_read_run = excluded.last_read_run,
            -- Only a re-parse produces these. An unchanged file keeps the ones
            -- it already has rather than having them overwritten with nulls.
            syntax_sha = CASE WHEN ? = 1 THEN excluded.syntax_sha ELSE files.syntax_sha END,
@@ -258,9 +262,16 @@ async function doScan(projectRoot: string, options: ScanOptions = {}): Promise<S
           result?.relationSetSha ?? null,
           git.churn.get(file.path) ?? 0,
           file.isTest ? 1 : 0,
-          file.parsed ? 1 : 0,
+          // Whether a grammar covers the file, which is a property of the file.
+          // Not `parsed !== null`: once a scan can skip an unchanged file this
+          // column would start reporting every skipped source file as unparsed.
+          file.parseable ? 1 : 0,
           referenceCoverage,
           runId,
+          runId,
+          file.statKey,
+          // Every file is read today. The other bases arrive with skipping.
+          "read",
           runId,
           refreshed ? 1 : 0,
           refreshed ? 1 : 0,

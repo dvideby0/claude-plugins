@@ -9,6 +9,8 @@ import {
   resetDbCache,
 } from "../db/db.js";
 import { canonicalWorkspaceRoot } from "../lib/workspace-path.js";
+import { fileEvidenceBasis } from "../lib/freshness.js";
+import { scan } from "../scan/scan.js";
 import { cleanup, makeProject } from "./helpers.js";
 
 const SCHEMA_VERSION = databaseSchemaVersion();
@@ -106,6 +108,68 @@ describe("database migrations", () => {
       "INSERT INTO refs(src_path, src_line, src_column, name, specifier) VALUES('src/app.ts', 1, 18, 'run', 'typed:x')",
     );
     expect(db.count("SELECT COUNT(*) AS n FROM refs")).toBe(2);
+  });
+
+  it("adds freshness columns to an existing store without claiming anything about it", async () => {
+    // The rule for a schema change: run it against a store that already has
+    // rows, not only a fresh one. A NULL here has to mean "we do not know how
+    // this row was established", never "it was verified unchanged".
+    root = await makeProject({ "package.json": "{}", "src/app.ts": "export const a = 1;\n" });
+    const legacyPath = join(root, "sdlc-audit", "audit.db");
+    await mkdir(join(root, "sdlc-audit"), { recursive: true });
+    const legacy = new NativeDatabase(legacyPath, true);
+    legacy.executeBatch(`CREATE TABLE files (
+      path TEXT PRIMARY KEY,
+      lang TEXT NOT NULL,
+      loc INTEGER NOT NULL DEFAULT 0,
+      bytes INTEGER NOT NULL DEFAULT 0,
+      content_sha TEXT NOT NULL,
+      churn INTEGER NOT NULL DEFAULT 0,
+      is_test INTEGER NOT NULL DEFAULT 0,
+      parsed INTEGER NOT NULL DEFAULT 0,
+      ref_coverage TEXT NOT NULL DEFAULT 'none',
+      present INTEGER NOT NULL DEFAULT 1,
+      first_seen_run INTEGER,
+      last_seen_run INTEGER
+    )`);
+    legacy.run(
+      "INSERT INTO files(path, lang, content_sha, ref_coverage) VALUES('src/app.ts', 'typescript', 'abc', 'typed')",
+      "[]",
+    );
+    legacy.close();
+
+    const db = await getDb(root);
+    const columns = db
+      .all<{ name: string }>("PRAGMA table_info(files)")
+      .map((column) => column.name);
+    for (const added of ["stat_key", "freshness_basis", "last_read_run"]) {
+      expect(columns).toContain(added);
+    }
+
+    // Nothing retroactive: we cannot know how a pre-existing row was read.
+    expect(
+      db.get<{ stat_key: string | null; freshness_basis: string | null }>(
+        "SELECT stat_key, freshness_basis FROM files WHERE path = 'src/app.ts'",
+      ),
+    ).toMatchObject({ stat_key: null, freshness_basis: null });
+    expect(fileEvidenceBasis(db, "src/app.ts").basis).toBe("unrecorded");
+
+    expect(db.count("PRAGMA user_version")).toBe(SCHEMA_VERSION);
+    expect(
+      db.get<{ from_version: number }>(
+        "SELECT from_version FROM schema_migrations WHERE version = 25",
+      ),
+    ).toEqual({ from_version: 24 });
+
+    // The next ordinary scan fills them in — no version bump was needed.
+    await scan(root, { kind: "incremental" });
+    const scanned = await getDb(root);
+    expect(
+      scanned.get<{ stat_key: string | null; freshness_basis: string | null }>(
+        "SELECT stat_key, freshness_basis FROM files WHERE path = 'src/app.ts'",
+      )?.freshness_basis,
+    ).toBe("read");
+    expect(fileEvidenceBasis(scanned, "src/app.ts").reason).toContain("read and hashed");
   });
 
   it("adds per-file compiler generation attestations to existing stores", async () => {

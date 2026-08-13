@@ -9,6 +9,7 @@
 
 import { componentOf } from "../graph/map.js";
 import type { Db } from "../db/db.js";
+import { fileEvidenceBasis, type EvidenceBasis } from "../lib/freshness.js";
 import { listMemories, type Memory } from "../memory/store.js";
 
 const SOURCE_LANGS = "('typescript','javascript','python')";
@@ -263,6 +264,8 @@ export interface FileView {
   findings: FindingRow[];
   /** Which drawn component this file belongs to, if anyone has drawn one. */
   component: { id: string; name: string } | null;
+  /** How this file's facts were established — read, or trusted unchanged. */
+  evidence: EvidenceBasis;
 }
 
 function findingsForPath(db: Db, path: string): FindingRow[] {
@@ -358,6 +361,10 @@ export function fileView(db: Db, path: string, requestedSymbol?: string): FileVi
     contentSha: file.content_sha,
     churn: file.churn,
     isTest: file.is_test === 1,
+    // Beside the exclusion reason, which answers the neighbouring question of
+    // why a path is absent. Together they explain the whole boundary: what was
+    // left out and why, and what was kept and on what evidence.
+    evidence: fileEvidenceBasis(db, file.path),
     importers: column<string>(
       "SELECT src_path FROM edges WHERE dst_path = ? ORDER BY src_path LIMIT 100",
       [path],
@@ -408,6 +415,9 @@ export function unindexedFindingFileView(
     contentSha: source.contentSha,
     churn: 0,
     isTest: false,
+    // This file is not in the inventory at all, so no scan established
+    // anything about it. The bytes here came from a finding's own record.
+    evidence: fileEvidenceBasis(db, path),
     importers: [],
     imports: [],
     externals: [],
