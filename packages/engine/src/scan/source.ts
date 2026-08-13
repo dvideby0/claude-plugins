@@ -495,7 +495,11 @@ export interface CollectResult {
    * trusting the key.
    */
   freshnessMismatches: number;
-  /** Sampled files written mid-scan. The run is redone; nothing is distrusted. */
+  /**
+   * Sampled files written between the stat and the read. Their fresh contents
+   * are used and no key is recorded for them, so the next scan reads them
+   * again. Nothing is redone and nothing is distrusted.
+   */
   freshnessRaced: number;
 }
 

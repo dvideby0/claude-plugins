@@ -296,7 +296,9 @@ export interface NativeScan {
   freshnessMismatches: number
   /**
    * Sampled files written between the stat and the read. Ordinary timing
-   * against a live editor; the run is redone but nothing is distrusted.
+   * against a live editor: the fresh contents are used, no key is recorded
+   * for them, and nothing is distrusted. Nothing is redone — the file was
+   * read in the same pass.
    */
   freshnessRaced: number
 }

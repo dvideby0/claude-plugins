@@ -151,12 +151,15 @@ overlap.
 ## A stat key is evidence of identity, not of content
 
 The walk skips reading a file whose recorded filesystem identity still matches.
-On Unix that is device, inode, size, modification and change times. Windows has
-neither a `ctime` with the Unix meaning nor a stable file index, so its key is
-weaker and leans harder on sampling — which is why the rule is written as "the
-identity" and not as a field list. A field list gets read on the platform where
-those fields do not exist, and that is how a doc comes to describe a key that
-was never built.
+On Unix that is device, inode, size, modification and change times. On Windows
+the key is weaker and leans harder on sampling — not because NTFS lacks the
+equivalents, which it has, but because Rust's `std` does not expose them on
+stable. That distinction matters: attributing a toolchain limit to the operating
+system is how a doc stops being true when the toolchain moves.
+
+Which is also why the rule is written as "the recorded identity" rather than as
+a field list. A field list gets read on the platform where those fields do not
+exist, and that is how a doc comes to describe a key nobody built.
 
 It is a good trade and it is not a proof: `cp -p`, `rsync -a`, a restore from
 backup and an editor's save-by-rename each preserve some of those fields while

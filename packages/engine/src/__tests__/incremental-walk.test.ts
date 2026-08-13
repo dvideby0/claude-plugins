@@ -178,6 +178,57 @@ describe("the walk skips a file the filesystem says did not change", () => {
     );
   });
 
+  it("notices a file deleted between the walk's stat and its read", async () => {
+    // The read-failure fallback keeps a sampled file whose extra read hits a
+    // lock — it is still there, and dropping it would delete its symbols on
+    // the strength of a rotation coin flip. A file that is *gone* is a
+    // different error entirely, and taking the fallback for it would resurrect
+    // it: reported verified, kept present, with every fact it used to have.
+    root = await makeProject(PROJECT);
+    await settle(root, ALL);
+    await scan(root, { kind: "full" });
+
+    await rm(join(root, "src/lib/util.ts"));
+    const result = await scan(root, { kind: "incremental" });
+    const db = await getDb(root);
+
+    expect(result.filesRemoved).toBe(1);
+    expect(
+      db.count("SELECT COUNT(*) AS n FROM files WHERE present = 1 AND path = 'src/lib/util.ts'"),
+    ).toBe(0);
+    expect(db.count("SELECT COUNT(*) AS n FROM symbols WHERE path = 'src/lib/util.ts'")).toBe(0);
+  });
+
+  it("lets a full rescan clear a workspace that was distrusted", async () => {
+    // The diagnostic tells the user this can be cleared, so something has to
+    // clear it. A full scan is a deliberate act and not a pardon: sampling runs
+    // again on the next incremental scan and distrusts the workspace again if
+    // the filesystem is still lying.
+    root = await makeProject(PROJECT);
+    await settle(root, ALL);
+    await scan(root, { kind: "full" });
+    let db = await getDb(root);
+    db.run(
+      "INSERT OR REPLACE INTO meta(key, value) VALUES('walk_freshness_distrusted', 'caught once')",
+    );
+
+    // While distrusted, no baseline is offered and everything is read.
+    const slow = await scan(root, { kind: "incremental" });
+    expect(slow.filesRead).toBe(ALL.length);
+    expect(slow.freshnessDistrusted).toBe("caught once");
+
+    const cleared = await scan(root, { kind: "full", full: true });
+    expect(cleared.freshnessDistrusted).toBeNull();
+    db = await getDb(root);
+    expect(
+      db.count("SELECT COUNT(*) AS n FROM meta WHERE key = 'walk_freshness_distrusted'"),
+    ).toBe(0);
+
+    // And the fast path is available again.
+    const warm = await scan(root, { kind: "incremental" });
+    expect(warm.filesRead).toBe(0);
+  });
+
   it("rebuilds a caller in a repository whose gitignore rule had to be relaxed", async () => {
     // The rebuild asks the input policy whether it may read each path. A
     // repository whose catch-all `.gitignore` forced the walk to relax is

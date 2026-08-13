@@ -1791,10 +1791,14 @@ impl NativeDatabase {
         })?;
         let last_run: i64 = connection
             .query_row(
-                "SELECT COALESCE(CAST(value AS INTEGER), 0) FROM meta WHERE key = 'walk_sample_round'",
+                "SELECT CAST(value AS INTEGER) FROM meta WHERE key = 'walk_sample_round'",
                 [],
                 |row| row.get(0),
             )
+            // A missing row is round zero, and a failed read is treated the
+            // same rather than aborting the scan: this counter only spreads
+            // the sample across buckets, so restarting it costs at most a
+            // repeat of buckets an earlier round already checked.
             .unwrap_or(0)
             + 1;
         connection

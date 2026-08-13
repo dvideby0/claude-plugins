@@ -88,10 +88,11 @@ impl FileBaseline {
     /// lying is discovered by this system rather than by a user wondering why
     /// an answer is wrong.
     ///
-    /// Selection rotates with a counter that advances by one per scan, so
+    /// Selection rotates with a counter that advances by one per baseline, so
     /// consecutive scans take different buckets and every bucket comes round
-    /// within `period` scans. It is deterministic, so a scan can be repeated
-    /// and check the same files.
+    /// within `period` scans. Repeating a scan therefore checks the *next*
+    /// bucket rather than the same one — the rotation is the point, and a scan
+    /// that could be repeated to re-check the same files would defeat it.
     ///
     /// Note what that does and does not promise. Files are spread across
     /// buckets by a hash, so bucket sizes vary and a given scan may sample
@@ -157,7 +158,8 @@ fn stable_hash(path: &str) -> u64 {
     hash
 }
 
-/// Read a baseline produced by the store owner.
+/// Read a baseline produced by the store owner. Its `lastRun` is the rotation
+/// counter, not a run id — see `NativeDatabase::file_baseline`.
 ///
 /// JSON rather than a typed handle because the two live in different napi
 /// objects, and a string the caller only forwards keeps the shape private to

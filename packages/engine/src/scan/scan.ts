@@ -70,10 +70,13 @@ export interface ScanResult {
    */
   filesSyntaxChanged: number;
   /**
-   * Anything about this scan's inputs the caller should be told: a rule the
-   * walk had to relax rather than report an empty repository, a filesystem
-   * identity caught disagreeing with the contents, or a file that needed
-   * rebuilding and could not be re-read.
+   * Anything about this scan's inputs the caller should be told. Today that is
+   * a `.gitignore` some of whose rules could not be read — a warning, since the
+   * rest still apply — or one the walk had to abandon entirely rather than
+   * report an empty repository, or a filesystem identity caught disagreeing
+   * with the contents, or a file that needed rebuilding and could not be
+   * re-read. Deliberately one field: a caller should not have to know the list
+   * to notice that something about this scan's inputs was not ordinary.
    */
   inputDiagnostic: string | null;
   /**
@@ -84,7 +87,11 @@ export interface ScanResult {
   filesRead: number;
   filesVerified: number;
   filesSampled: number;
-  /** Sampled files written between the stat and the read, which prove nothing. */
+  /**
+   * Sampled files written between the stat and the read. Their fresh contents
+   * are used and no key is recorded, so the next scan reads them again. They
+   * prove nothing about the filesystem and do not distrust the workspace.
+   */
   filesRacedDuringScan: number;
   /**
    * Sampled files whose recorded identity matched while their contents did
@@ -170,9 +177,20 @@ async function doScan(projectRoot: string, options: ScanOptions = {}): Promise<S
   // stays on the slow path. One demonstration that the key can lie is enough:
   // there is no reason to believe the next scan is the one where it tells the
   // truth, and every skip after that would be a guess.
-  const distrusted =
-    db.get<{ value: string }>("SELECT value FROM meta WHERE key = 'walk_freshness_distrusted'")
-      ?.value ?? null;
+  // An explicit full scan clears it. That is the recovery the diagnostic
+  // promises, and it is safe because it is not a pardon: the next incremental
+  // scan samples again and re-establishes the distrust immediately if the
+  // filesystem is still lying. The cost of being wrong is one scan, and without
+  // it a workspace that moved to a different disk could never earn back the
+  // fast path.
+  if (options.full) {
+    db.run("DELETE FROM meta WHERE key = 'walk_freshness_distrusted'");
+  }
+  const distrusted = options.full
+    ? null
+    : (db.get<{ value: string }>(
+        "SELECT value FROM meta WHERE key = 'walk_freshness_distrusted'",
+      )?.value ?? null);
 
   const {
     files,

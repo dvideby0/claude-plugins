@@ -226,7 +226,9 @@ pub struct NativeScan {
     /// has already redone the run reading everything.
     pub freshness_mismatches: u32,
     /// Sampled files written between the stat and the read. Ordinary timing
-    /// against a live editor; the run is redone but nothing is distrusted.
+    /// against a live editor: the fresh contents are used, no key is recorded
+    /// for them, and nothing is distrusted. Nothing is redone — the file was
+    /// read in the same pass.
     pub freshness_raced: u32,
 }
 

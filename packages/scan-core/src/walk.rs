@@ -224,13 +224,19 @@ pub fn walk(root: &Path, policy: &InputPolicy, mode: WalkMode<'_>) -> WalkOutcom
 
     let missed = outcome.freshness.mismatches;
     let earlier = outcome.diagnostic.clone();
+    let raced = outcome.freshness.raced;
     let mut reread = inventory(root, policy, &WalkMode::ReadAll);
+    // Carried across, both of them: the ReadAll pass does no sampling, so its
+    // own counts for these are structurally zero and would erase what the first
+    // pass actually found.
     reread.freshness.mismatches = missed;
+    reread.freshness.raced = raced;
     let note = format!(
         "The filesystem's identity for {missed} file(s) matched while their contents had \
          changed, so nothing this filesystem reports about a file being unchanged can be \
          relied on. Every file was read for this scan, and this workspace will keep reading \
-         every file until somebody clears that."
+         every file until a full rescan is asked for, which clears it — and which \
+         re-establishes it on the next scan if the check fails again."
     );
     // Whatever the first pass had to say about the input policy is a separate
     // problem from the key being wrong, and is not dropped for this scan.
@@ -494,13 +500,28 @@ fn walk_with(root: &Path, policy: &InputPolicy, mode: &WalkMode<'_>) -> WalkOutc
                 _ => {
                     let read = std::fs::read(entry.path());
                     // A sampled file is one we were entitled to skip. If the
-                    // extra read fails — an antivirus or editor holding a lock,
-                    // which is routine on Windows, where twice as many files
-                    // are sampled — the file has not gone anywhere and its
-                    // recorded facts still stand. Dropping it here would delete
-                    // its symbols and retire its findings on the strength of a
-                    // transient lock and a rotation coin flip.
-                    if let (Err(_), Some((content_sha, loc))) = (&read, &expected_sha) {
+                    // extra read fails on a lock — an antivirus or an editor
+                    // holding the file, routine on Windows, which samples twice
+                    // as many files — the file is still there and its recorded
+                    // facts still stand. Dropping it would delete its symbols
+                    // and retire its findings on the strength of a transient
+                    // lock and a rotation coin flip.
+                    //
+                    // A file that is *gone*, though, really is gone, and this
+                    // is the one path that would otherwise resurrect it: the
+                    // walk would report it verified, and the scan would keep it
+                    // present with all its facts. So the error kind decides,
+                    // and only the ones that mean "still there, cannot read it
+                    // right now" take the fallback.
+                    let recoverable = matches!(
+                        read.as_ref().err().map(std::io::Error::kind),
+                        Some(std::io::ErrorKind::PermissionDenied)
+                            | Some(std::io::ErrorKind::Interrupted)
+                            | Some(std::io::ErrorKind::TimedOut)
+                            | Some(std::io::ErrorKind::WouldBlock)
+                            | Some(std::io::ErrorKind::ResourceBusy)
+                    );
+                    if let (true, Some((content_sha, loc))) = (recoverable, &expected_sha) {
                         counts.verified.fetch_add(1, Ordering::Relaxed);
                         let _ = sender.send(Scanned {
                             path: path.clone(),
@@ -556,6 +577,7 @@ fn walk_with(root: &Path, policy: &InputPolicy, mode: &WalkMode<'_>) -> WalkOutc
                         content.matches('\n').count() as u32 + 1
                     };
 
+                    let mut raced_key = false;
                     // A sampled file whose contents still match its key needs
                     // nothing rebuilt — the stored facts are correct. What the
                     // read bought is the knowledge that the key is honest. A
@@ -563,6 +585,7 @@ fn walk_with(root: &Path, policy: &InputPolicy, mode: &WalkMode<'_>) -> WalkOutc
                     let held = expected_sha
                         .as_ref()
                         .is_some_and(|(expected, _)| *expected == content_sha);
+                    let stat_key = if raced_key { None } else { stat_key };
                     if sample && held {
                         counts.sampled.fetch_add(1, Ordering::Relaxed);
                         Scanned {
@@ -601,6 +624,15 @@ fn walk_with(root: &Path, policy: &InputPolicy, mode: &WalkMode<'_>) -> WalkOutc
                                 counts.mismatches.fetch_add(1, Ordering::Relaxed);
                             } else {
                                 counts.raced.fetch_add(1, Ordering::Relaxed);
+                                // The key was stat'ed before the write and the
+                                // contents hashed after it, so the pair was
+                                // never true at any instant. Recording it would
+                                // make next scan's baseline claim those bytes
+                                // for that identity — and on a platform whose
+                                // key can be restored, a later mtime-preserving
+                                // write could match it and skip a real change.
+                                // No key: not a baseline, read it next time.
+                                raced_key = true;
                             }
                         }
                         counts.read.fetch_add(1, Ordering::Relaxed);
