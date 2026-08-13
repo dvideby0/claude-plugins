@@ -5,6 +5,7 @@ import { getDb } from "../db/db.js";
 import { scan } from "../scan/scan.js";
 import { describeComponent, describeFlow, finalizeMap, mapDrift } from "../graph/map.js";
 import { markExplored, relate, relationsFor } from "../graph/relations.js";
+import { findGaps } from "../graph/gaps.js";
 import { recall, remember } from "../memory/store.js";
 import { orphanedOverlays } from "../scan/moves.js";
 import { buildTaskContext } from "../plan/task-context.js";
@@ -256,6 +257,27 @@ describe("invalidation follows meaning, not bytes", () => {
     await scan(root, { kind: "incremental" });
     db = await getDb(root);
     expect(relationsFor(db, "src/lib/hash.ts")[0]?.stale).toBe(true);
+  }, 30_000);
+
+  it("still counts a file explored when it was read before signatures existed", async () => {
+    // Coverage collapsing to zero after an upgrade would send the exploration
+    // loop back over files somebody already read — the model cost this work
+    // exists to remove, in the one reader that had not adopted the shared rule.
+    root = await makeProject(PROJECT);
+    await scan(root, { kind: "full" });
+    const db = await authorKnowledgeAbout(root, "src/lib/hash.ts");
+    expect(findGaps(db).coverage.explored).toBe(1);
+
+    db.run("UPDATE explorations SET syntax_sha = NULL");
+    expect(findGaps(db).coverage.explored).toBe(1);
+
+    // A real change still makes it unread.
+    await writeFile(
+      join(root, "src/lib/hash.ts"),
+      "export function hash(value: string): string {\n  return value.trim();\n}\n",
+    );
+    await scan(root, { kind: "incremental" });
+    expect(findGaps(await getDb(root)).coverage.explored).toBe(0);
   }, 30_000);
 
   it("keeps a map drawn before syntax signatures from drifting for no reason", async () => {
