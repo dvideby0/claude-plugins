@@ -96,20 +96,20 @@ fn hash_tokens(root: Node, bytes: &[u8], skip: Option<usize>, grammar: Grammar, 
 
         hasher.update(node.kind().as_bytes());
         let children = node.child_count();
-        if children == 0 {
-            hasher.update(b"\0");
+        // One encoding for every node, whether or not it has children. Two
+        // encodings meant a container that lost all of its children to a skip
+        // hashed differently from one that never had any — so an empty
+        // `__init__.py` gaining a docstring moved the signature while every
+        // other file's did not.
+        hasher.update(b"(");
+        if children == 0 && node.is_named() {
             // An anonymous leaf's kind *is* its text (`{`, `=>`, `,`), so only
             // named leaves need the source slice.
-            if node.is_named() {
-                if let Ok(text) = node.utf8_text(bytes) {
-                    hasher.update(text.as_bytes());
-                }
+            if let Ok(text) = node.utf8_text(bytes) {
+                hasher.update(text.as_bytes());
             }
-            hasher.update(b"\n");
-            continue;
         }
-
-        hasher.update(b"(");
+        hasher.update(b"\0");
         stack.push(Step::Exit);
         for index in (0..children).rev() {
             if let Some(child) = node.child(index) {
@@ -545,6 +545,24 @@ mod tests {
         let documented_async =
             python_syntax("async def run(value):\n    \"\"\"Explains itself.\"\"\"\n    return value\n");
         assert_eq!(bare_async, documented_async);
+    }
+
+    #[test]
+    fn an_empty_file_gaining_only_prose_does_not_move_the_signature() {
+        // The classic case: an empty `__init__.py` gets a package docstring.
+        // A container that lost every child to a skip has to hash like one
+        // that never had any, or this file alone breaks the guarantee.
+        let empty = python_syntax("");
+        assert_eq!(empty, python_syntax("\"\"\"The package.\"\"\"\n"));
+        assert_eq!(empty, python_syntax("# nothing here yet\n"));
+        assert_eq!(empty, python_syntax("\n\n\n"));
+
+        // Still not a licence to lose real code.
+        assert_ne!(empty, python_syntax("VERSION = \"1.0\"\n"));
+
+        let empty_ts = syntax("");
+        assert_eq!(empty_ts, syntax("// nothing here yet\n"));
+        assert_ne!(empty_ts, syntax("export const version = 1;\n"));
     }
 
     #[test]
