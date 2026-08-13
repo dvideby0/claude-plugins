@@ -25,7 +25,10 @@ use tree_sitter::Node;
 /// distinguishable from a clean one that happens to hash the same.
 const ERROR_MARKER: &[u8] = b"\x01?";
 
-fn finish(hasher: Sha256) -> String {
+/// The crate's one convention for turning a digest into a stored signature:
+/// lowercase hex, truncated to 16 characters. Shared so a second hash cannot
+/// pick a different width and make two stored signatures incomparable.
+pub(crate) fn finish(hasher: Sha256) -> String {
     hasher
         .finalize()
         .iter()

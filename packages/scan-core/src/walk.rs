@@ -27,6 +27,9 @@ pub struct Scanned {
     /// False for lockfiles and bundled output, which are inventory but not
     /// evidence. Decided once by the policy rather than re-derived downstream.
     pub parseable: bool,
+    /// The filesystem's identity for this file, or `None` when it cannot serve
+    /// as a baseline for a later scan. See [`crate::freshness`].
+    pub stat_key: Option<String>,
     pub content: String,
 }
 
@@ -156,6 +159,11 @@ pub fn walk(root: &Path, policy: &InputPolicy) -> WalkOutcome {
 }
 
 fn walk_with(root: &Path, policy: &InputPolicy) -> WalkOutcome {
+    // Stamped once, before anything is observed, so a file written during the
+    // walk is compared against a moment that is definitely earlier than its own
+    // modification time. Taking it per file would let a slow walk decide that a
+    // file modified after it started had settled.
+    let started_secs = crate::freshness::now_secs();
     let collector = Arc::new(Mutex::new(Collector::default()));
     // The walker's closures must be `'static`, so the borrow cannot travel.
     // Compile the matcher once and share it rather than rebuilding per entry.
@@ -289,6 +297,7 @@ fn walk_with(root: &Path, policy: &InputPolicy) -> WalkOutcome {
                 content_sha,
                 is_test: decision.is_test,
                 parseable: decision.parseable(),
+                stat_key: crate::freshness::stat_key(&metadata, started_secs),
                 content,
             });
             ignore::WalkState::Continue

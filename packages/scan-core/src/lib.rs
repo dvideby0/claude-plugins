@@ -23,6 +23,7 @@ use rayon::prelude::*;
 use std::path::Path;
 
 mod database;
+mod freshness;
 mod git_changes;
 mod http_flow;
 mod input_policy;
@@ -157,6 +158,10 @@ pub struct NativeFile {
     pub is_test: bool,
     /// False for files no grammar covers, or that were skipped as noise.
     pub parsed: bool,
+    /// The filesystem's identity for this file when it can serve as a baseline
+    /// for a later scan, and absent when it cannot. Absent never means
+    /// unchanged — it means the next scan has to read the file to find out.
+    pub stat_key: Option<String>,
     /// The file's meaning with comments and formatting removed. Empty where no
     /// grammar covers the file, which callers read as "not applicable".
     pub syntax_sha: String,
@@ -276,6 +281,7 @@ fn scan_sync(root: &str) -> NativeScan {
                 content_sha: file.content_sha.clone(),
                 is_test: file.is_test,
                 parsed: parseable,
+                stat_key: file.stat_key.clone(),
                 syntax_sha: parsed.syntax_sha.clone(),
                 relation_set_sha: parsed.relation_set_sha.clone(),
                 symbols: parsed

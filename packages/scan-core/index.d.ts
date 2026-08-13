@@ -216,6 +216,12 @@ export interface NativeFile {
   /** False for files no grammar covers, or that were skipped as noise. */
   parsed: boolean
   /**
+   * The filesystem's identity for this file when it can serve as a baseline
+   * for a later scan, and absent when it cannot. Absent never means
+   * unchanged — it means the next scan has to read the file to find out.
+   */
+  statKey?: string
+  /**
    * The file's meaning with comments and formatting removed. Empty where no
    * grammar covers the file, which callers read as "not applicable".
    */
