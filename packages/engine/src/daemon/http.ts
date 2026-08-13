@@ -47,7 +47,7 @@ import { flowView } from "../graph/flow.js";
 import { componentDetail, systemMap } from "../graph/map.js";
 import { resolveTypesInWorker } from "../graph/typed.js";
 import { terminateProcessTree } from "../lib/exec.js";
-import { WorkspaceWatcher } from "./watcher.js";
+import { setInputPolicyRelaxed, WorkspaceWatcher } from "./watcher.js";
 import { hasTypedConfigChange, WatchRefreshQueue } from "./watch-refresh.js";
 import { WorkspaceRegistry } from "./workspaces.js";
 import {
@@ -386,7 +386,26 @@ export function createHttpServer(options: HttpServerOptions): HttpServerHandle {
     // `discard` is a lifecycle tombstone. Only registry membership—not a late
     // filesystem callback—may make the root eligible for refresh again.
     for (const root of roots) watchRefresh.register(root);
+    // Restore what the last scan of each workspace decided about its input
+    // policy. Watching a relaxed workspace strictly would classify its own
+    // indexed files as generated output and silently stop refreshing them.
+    for (const root of roots) await restoreInputPolicy(root);
     watcher.sync(roots);
+  }
+
+  /** Read a workspace's recorded input policy without forcing a store open. */
+  async function restoreInputPolicy(root: string): Promise<void> {
+    try {
+      const db = await getExistingDb(root);
+      if (!db) return;
+      const relaxed =
+        db.get<{ value: string }>("SELECT value FROM meta WHERE key = 'input_policy_relaxed'")
+          ?.value === "1";
+      setInputPolicyRelaxed(root, relaxed);
+    } catch {
+      // An unopenable store is reported through the workspace status; the
+      // watcher simply keeps the strict default until the next scan.
+    }
   }
 
   async function workspaceStatuses(): Promise<WorkspaceStatus[]> {

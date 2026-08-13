@@ -113,8 +113,13 @@ pub enum EntryKind {
 
 /// The closed set of reasons a path is or is not part of the inventory.
 ///
-/// Rules are evaluated in the order declared here and the first match wins, so
-/// the reason reported for any path is deterministic.
+/// Declaration order is *not* evaluation order — these are stored strings, so
+/// renumbering them to match would change recorded data. `decide` applies the
+/// directory rules to every segment first (app-owned, packaged bundle, ignored
+/// directory, hidden), then the repository's `.gitignore`, then the rules that
+/// need the file itself. The first match wins, so the reason reported for any
+/// path is deterministic; `rule_order_is_deterministic_when_several_rules_match`
+/// pins it.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Reason {
     /// Inside storage this application owns, so indexing it would index itself.

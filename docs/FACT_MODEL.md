@@ -93,9 +93,11 @@ execution entries — compare a comment-invariant syntax signature, so
 reformatting a file does not make a claim about it stale. Artifacts anchored to
 a *line range* keep comparing content, because a comment genuinely moves those
 lines and a stale line number presented as current is a silent error. Every
-verdict carries the reason and the basis actually compared; a file with no
-parser, or a store predating signatures, reports `unverified` rather than
-borrowing a comparison it did not make.
+verdict carries the reason and the basis actually compared. Where either side
+has no syntax signature — a file no parser covers, or an artifact recorded
+before signatures existed — the comparison falls back to content and says so
+through its basis, because identical bytes cannot hide a changed meaning.
+`unverified` is reserved for an artifact that recorded nothing to compare.
 
 Legacy authored relations retain their authored-artifact generation through the
 relation update timestamp. They use a null source signature and remain

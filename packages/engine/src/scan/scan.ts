@@ -491,6 +491,13 @@ async function doScan(projectRoot: string, options: ScanOptions = {}): Promise<S
   // Watch decisions must match the inventory this scan actually produced, not
   // the strict policy it had to abandon. A malformed rule still leaves the
   // rest applied, so only an abandoned matcher relaxes the watcher too.
+  //
+  // Persisted as well as set in memory: a daemon restart would otherwise watch
+  // a relaxed workspace strictly, classify its own indexed files as generated
+  // output, and drop every edit — with no rescan left to heal it.
+  db.run("INSERT OR REPLACE INTO meta(key, value) VALUES('input_policy_relaxed', ?)", [
+    gitignoreApplied ? "0" : "1",
+  ]);
   setInputPolicyRelaxed(projectRoot, !gitignoreApplied);
 
   db.run(

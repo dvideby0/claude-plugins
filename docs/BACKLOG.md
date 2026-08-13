@@ -257,8 +257,10 @@ records the decisions the walk actually made — a pruned directory once, never
 its interior — with true per-reason totals beside a bounded sample, surfaced in
 the existing overview and in a file-view error that names the rule. A catch-all
 `.gitignore` relaxes once with a diagnostic rather than reporting an empty
-repository. Measured on this repository: 218 walked files become 215, and
-`git check-ignore` confirms the delta is exactly the four leaked paths.
+repository. Measured on this repository: of the files that survived the previous policy,
+`git check-ignore` returns exactly four — the packaged-application paths under
+`release/`, including the desktop app's own bundled `preload.cjs` — and nothing
+else. The whole directory is now one recorded decision rather than four.
 
 Schema v24 adds comment-invariant `syntax_sha` per file, `interface_sha` and
 `body_sha` per symbol, a stable `symbol_key` that survives cosmetic edits, a

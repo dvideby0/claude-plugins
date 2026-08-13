@@ -300,8 +300,9 @@ path; generated output is decided by the repository's own committed
 none exists. Schema v23 records those decisions — a pruned directory once
 rather than its whole interior — and the Overview pane shows what was left out
 and which rule left it out, so map coverage now has an explainable denominator.
-Measured here, 218 walked files become 215 and the delta is exactly the four
-leaked paths.
+Measured here, `git check-ignore` over the files that survived the previous
+policy returns exactly four — the packaged-application paths under `release/` —
+and nothing else.
 
 ### Tool integration
 

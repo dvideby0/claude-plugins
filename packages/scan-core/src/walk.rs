@@ -205,7 +205,20 @@ fn walk_with(root: &Path, policy: &InputPolicy) -> WalkOutcome {
             let Ok(entry) = result else {
                 return ignore::WalkState::Continue;
             };
+            // Symlinks and other non-regular entries. The walker does not
+            // follow them — a link out of the repository is not repository
+            // content, and one back into it would index the target twice — but
+            // silently vanishing is what this module exists to stop.
             if !entry.file_type().is_some_and(|t| t.is_file()) {
+                if entry.file_type().is_some_and(|t| t.is_symlink()) {
+                    if let Some(path) = relative_path(&root, entry.path()) {
+                        let decision =
+                            policy.unreadable(&path, "symbolic links are not followed");
+                        if let Ok(mut collector) = collector.lock() {
+                            collector.record(&path, false, &decision);
+                        }
+                    }
+                }
                 return ignore::WalkState::Continue;
             }
 

@@ -171,9 +171,11 @@ function hydrate(rows: Row[]): Relation[] {
     source: row.source,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
-    freshness: verdict(row),
-    // Without a source snapshot the claim was never verifiable as current.
-    stale: verdict(row).state !== "current",
+    ...(() => {
+      const freshness = verdict(row);
+      // Without a source snapshot the claim was never verifiable as current.
+      return { freshness, stale: freshness.state !== "current" };
+    })(),
   }));
 }
 
