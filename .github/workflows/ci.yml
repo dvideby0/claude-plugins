@@ -29,6 +29,11 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
+          # The action installs a minimal profile, which leaves clippy out. It
+          # happens to be on every runner image today, so asking for it changes
+          # nothing until the day an image drops it and the lint step vanishes
+          # into a confusing failure instead of a missing one.
+          components: clippy
       # This job invokes the native build explicitly below. Avoid unrelated
       # workspace install hooks (notably Electron downloads) in the Rust matrix.
       - run: npm ci --ignore-scripts
@@ -41,8 +46,11 @@ jobs:
       - run: cargo test --manifest-path packages/scan-core/Cargo.toml
       # The crate declares `#![deny(clippy::all)]`, which until now nothing
       # checked — so a lint it had already opted into was failing anybody who
-      # ran it locally. `--all-targets` covers the test code too, where the
-      # crate's own attribute does not reach.
+      # ran it locally. `--all-targets` because a bare `cargo clippy` never
+      # compiles the `cfg(test)` code, so none of it is linted at all; the
+      # crate attribute does reach it once it is built. `-D warnings` is for
+      # the plain rustc warnings the attribute says nothing about — a dead
+      # store shipped from this branch as one.
       - run: cargo clippy --manifest-path packages/scan-core/Cargo.toml --all-targets -- -D warnings
       - run: npm run build -w @sdlc/scan-core -- --target ${{ matrix.target }}
       - uses: actions/upload-artifact@v4
