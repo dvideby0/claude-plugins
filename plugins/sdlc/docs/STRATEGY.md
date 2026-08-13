@@ -1,5 +1,7 @@
 # Strategy
 
+> [SDLC plugin](../README.md) · [Documentation hub](../../../docs/README.md)
+
 ## The principle
 
 Deterministic tools produce facts. Models produce judgment. Anything a parser

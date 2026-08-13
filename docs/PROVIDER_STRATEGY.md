@@ -1,5 +1,7 @@
 # Provider-first code intelligence
 
+> [Documentation hub](README.md) · [SDLC](../README.md)
+
 Status: architecture decision, 2026-08-06.
 
 ## Decision
@@ -97,71 +99,12 @@ dependency/read closure, its useful comparison output remains `partial` and
 
 ## Implementation status
 
-As of 2026-08-11, the first evaluation boundary exists:
+Dated provider milestones are recorded in [`CHANGELOG.md`](CHANGELOG.md), and
+how mature each capability is right now is assessed in
+[`CURRENT_STATE_AUDIT.md`](CURRENT_STATE_AUDIT.md). Measured provider results
+are in [`EVALUATION.md`](EVALUATION.md).
 
-- the official `@sourcegraph/scip-typescript` 0.4.0 indexer is bundled for
-  TypeScript and JavaScript evaluation;
-- the app runs it under the existing bounded process supervisor and writes its
-  output and manifest under app-owned provider storage;
-- the Rust native core decodes the official SCIP protobuf, applies a bounded
-  input limit, hashes the artifact, deduplicates documents emitted by
-  overlapping project configs for comparison, and returns aggregates;
-- the same official decoder now exposes a bounded occurrence/relationship
-  projection into the shared fact envelope. It verifies the retained digest,
-  recomputes the durable input manifest, binds the run to its workspace and
-  exact staged project root, confines portable document paths, bounds raw and
-  projected records, scopes conflicting local symbols safely, and preserves
-  ambiguous targets and unknown position encodings rather than guessing. It
-  digest-binds collision-safe manifest spelling for case aliases and accepts
-  local Windows UNC file roots through the maintained Rust URL implementation
-  after a pre-I/O authority check;
-- configless JavaScript/TypeScript evaluation uses an app-owned config built
-  from the deterministic source inventory; it never invokes the upstream
-  `--infer-tsconfig` mode that writes into the source repository;
-- Settings reports provider capabilities and the project Overview can run and
-  inspect a SCIP comparison without replacing the existing syntax facts;
-- the Rust core stages the deterministic source inventory under app ownership,
-  requires it to match the indexed source signature, records a hash manifest,
-  and verifies the input view after SCIP exits; dependency and out-of-tree
-  compiler reads remain unattested, so current output is partial/unverified,
-  later source generations expose it as stale, and only the five most recent artifacts remain;
-- provider discovery, execution, and decode waits honor removal/shutdown
-  cancellation, while successful indexes with skipped project configs remain
-  inspectable but are explicitly labeled `partial`;
-- both `tsconfig.json` and `jsconfig.json` are discovered; invalid configs,
-  oversized-source skips, and mixed valid/invalid project sets are surfaced as
-  failed or partial instead of silently appearing complete, and flag-like legal
-  project paths are passed as paths rather than CLI options;
-- config preflight is bounded and syntax-only; it does not expand TypeScript
-  globs on the daemon thread, and solution-style roots remain intact so the
-  provider can follow custom-named project references itself;
-- Joern capability detection exists and an opt-in, digest-pinned Docker
-  evaluation now runs against the Python/LangGraph flow oracle. The official
-  CPG plus a narrow framework adapter recovers 12/13 reviewed relations and
-  3/4 exact relation-sequence paths with no false positives. The 2.17 GB
-  extracted AMD64-only slim image and required full-GraphSON translation fail
-  desktop packaging criteria, so no Joern production adapter is enabled or
-  bundled;
-- a pinned, development-only SCIP-Python 0.6.6 comparator runs against the
-  Python/LangGraph oracle through the existing Rust SCIP decoder and common
-  fact projection. It reaches 9/9 selected symbols and references, compared
-  with 9/9 symbols and 8/9 references for the native syntax baseline, but emits
-  no entry-to-effect relationships. Its older Pyright fork is not promoted into
-  the desktop provider catalog. The next comparison is whether the proven
-  product-specific LangGraph semantics can use the existing native/SCIP facts
-  without inheriting Joern's packaging and full-graph export costs.
-- the first production FLOW-001 adapter now demonstrates that boundary for
-  explicit TypeScript/JavaScript HTTP route guards. Rust Tree-sitter supplies
-  bounded source structure, existing references resolve imported call targets,
-  and SDLC contributes only route/branch/await/response-effect meaning. It
-  exposes unsupported control as gaps and does not claim universal CFG or data
-  flow. A checked-in HTTP oracle measures the product graph directly; Joern
-  remains the broader-analysis comparator rather than a desktop dependency.
-
-This completes attestation of the repository source view, not full immutable
-provider-input provenance or PROV-001. Dependency/read-closure confinement,
-evaluation across the full golden corpus, native fact persistence, and broader
-query adoption remain open.
+This document states the policy; it does not track its own rollout.
 
 ## Guardrails
 

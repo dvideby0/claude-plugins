@@ -1,5 +1,7 @@
 # Product vision
 
+> [Documentation hub](README.md) · [SDLC](../README.md)
+
 Status: working product direction, captured 2026-08-05.
 
 ## One-sentence definition

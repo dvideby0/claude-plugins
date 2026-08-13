@@ -1,12 +1,17 @@
 # SDLC companion plugin
 
+> [SDLC](../../README.md) · [Documentation hub](../../docs/README.md)
+
 Commands and guidance for the standalone SDLC code-intelligence app.
 
-The plugin is intentionally thin. Repository parsing, durable indexes,
-findings, memories, reports, and model-assisted enrichment live in the local
-SDLC engine installed with the desktop app. Claude Code connects to that one
-long-lived engine through a small MCP bridge, so indexes stay warm and can be
-shared with Codex and the desktop UI.
+The plugin is intentionally thin. Repository parsing, durable indexes, findings,
+memories, reports, and model-assisted enrichment live in the local SDLC engine
+installed with the desktop app. Claude Code connects to that one long-lived
+engine through a small MCP bridge, so indexes stay warm and can be shared with
+Codex and the desktop UI.
+
+Plugins are prompts only. They carry no server and no binaries — the engine
+provides the tools, so the commands stay small and the grounding stays shared.
 
 ## Setup
 
@@ -20,43 +25,32 @@ so rather than installing a second copy of the engine inside the plugin.
 
 ## Commands
 
-| Command | What it does |
-|---|---|
-| `/audit-quick` | Deterministic index, project linters and type checkers, secrets, dependencies, and supply-chain checks |
-| `/audit` | Deterministic audit followed by model review of the highest-risk work units |
-| `/audit-security` | The audit pipeline with a security-focused review lens |
-| `/map` | Build or refresh the human-readable system map |
-| `/enrich` | Investigate deterministic graph gaps and record evidence-backed relations |
+Every command, with what it does, is catalogued in
+[Plugin commands](../../docs/reference/plugin-commands.md). The prompt files in
+[`commands/`](commands/) are the commands themselves.
 
 ## Persistent knowledge
 
-The app keeps each workspace store in
-`~/.sdlc/stores/<workspace-id>/audit.db` (or under `SDLC_HOME`). On first open,
-an older repository-local `sdlc-audit/audit.db` is copied into app-owned storage
-and retained as a recoverable legacy backup. Repeated scans reuse unchanged
-results, finding fingerprints survive line movement, accepted risks and false
-positives remain sticky, and memories can be attached to code with deterministic
-signatures so stale knowledge is visible after changes.
+The app keeps each workspace store under `~/.sdlc/`, outside the source
+repository, so repeated scans reuse unchanged results, finding fingerprints
+survive line movement, accepted risks and false positives stay sticky, and
+memories anchored to code come back flagged when that code changes. The layout
+and the migration guarantees are in
+[State and configuration](../../docs/reference/state-and-config.md).
 
-Before a schema upgrade, the Rust SQLite owner retains the newest validated,
-standalone recovery image for that target version under the workspace store's
-`backups/` directory. Schema changes are transactional; an incompatible newer
-store is left untouched, and a failed migration rolls back instead of
-publishing a partially upgraded index.
-
-The desktop app renders the same store directly. MCP tools such as
-`audit_status`, `audit_scan`, `audit_run_tools`, `audit_plan`, `audit_review`,
-`audit_record_findings`, `audit_query`, `audit_suppress`, `audit_report`,
-`context`, `flow`, `relations`, and `remember` expose focused slices to coding
-agents without asking them to reread the repository.
+The desktop app renders the same store. The tools that expose focused slices of
+it to a coding agent are in [MCP tools](../../docs/reference/mcp-tools.md).
 
 The deterministic `flow` view currently follows parsed and type-resolved
-references. Evidence-backed relations recorded during enrichment are a
-separate overlay available through `relations`; combining both into one
-computed flow is roadmap work.
+references. Evidence-backed relations recorded during enrichment are a separate
+overlay available through `relations`; combining both into one computed flow is
+roadmap work.
 
-See [docs/STRATEGY.md](docs/STRATEGY.md) for the analysis model. The engine
-source lives in [`packages/engine`](../../packages/engine).
+## Analysis model
+
+See [docs/STRATEGY.md](docs/STRATEGY.md) for how the plugin decides what to
+analyse and in what order. The engine source lives in
+[`packages/engine`](../../packages/engine/README.md).
 
 ## License
 

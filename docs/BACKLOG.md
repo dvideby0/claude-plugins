@@ -1,6 +1,24 @@
 # Product backlog
 
-Status: proposed and prioritized from the 2026-08-05 audit. This is an outcome backlog, not a commitment to a particular sprint length.
+> [Documentation hub](README.md) · [SDLC](../README.md)
+
+This is the canonical home for **unfinished work only**, ordered by expected
+leverage. Each item carries enough context to evaluate and start it without
+opening a separate proposal. It is an outcome backlog, not a commitment to a
+particular sprint length. Prioritized from the 2026-08-05 audit.
+
+Looking for something else?
+
+- What the implementation does today → [current-state audit](CURRENT_STATE_AUDIT.md)
+- What already shipped → [changelog](CHANGELOG.md)
+- Why an approach was chosen → [decisions](DECISIONS.md)
+- Rules that gate a code change → [`../CONVENTIONS.md`](../CONVENTIONS.md)
+
+**When a criterion is met:** move it to [`CHANGELOG.md`](CHANGELOG.md) as a dated
+outcome in the same change, and record an entry in [`DECISIONS.md`](DECISIONS.md)
+if architecture or compatibility moved. **When the last criterion is met:** remove
+the item from this file rather than marking it complete. Nothing here should
+describe finished work — that is what made this file twice its necessary length.
 
 ## Ordering rationale
 
@@ -50,34 +68,7 @@ Acceptance criteria:
 - The implementation does not duplicate TypeScript project or package
   resolution inside SDLC.
 
-Progress (2026-08-10): the app now bundles the maintained SCIP TypeScript
-indexer, supervises bounded evaluation runs, decodes and hashes indexes in Rust,
-stores manifests outside source repositories, reports capabilities in the
-desktop, and preserves Tree-sitter fallback behavior. Rust now copies the exact
-indexed source generation into a private app-owned view, rejects a generation
-mismatch, records every staged input and hash, verifies that view after the
-provider exits, and reports retained output as stale after the source signature
-changes. The app does not yet attest package dependencies or other compiler
-reads outside that source view, so the evaluation remains partial/unverified
-instead of claiming exact provenance. Official SCIP occurrences and
-relationships now project through the provider-neutral evidence envelope with
-artifact/input-manifest validation, workspace ownership, exact staged-root
-binding, portable path confinement, retained case-alias identities, bounded
-collection, conflict-safe local-symbol scope, and explicit ambiguity. Broader
-golden-corpus comparison and complete dependency/read-closure attestation
-remain acceptance-critical next steps. Joern
-is detected but intentionally not bundled before its EVAL-001 spike. Configless
-evaluation now uses an app-owned config rather than allowing the upstream CLI
-to write `tsconfig.json` into the workspace, and Rust comparison aggregates
-deduplicate documents emitted by overlapping project configs. Discovery,
-execution, and decode waits are cancellable; requested projects that the
-upstream tool skips are reported as `partial` rather than a fully successful
-evaluation. Discovery covers both TypeScript and JavaScript configs, invalid
-configs and oversized-source skips remain visible in partial results, and
-flag-like but legal workspace paths cannot be interpreted as provider options.
-Preflight is syntax-only, size/time bounded, and leaves solution-config project
-references to SCIP instead of synchronously duplicating compiler resolution in
-the daemon.
+Shipped so far → [CHANGELOG 2026-08-10](CHANGELOG.md#2026-08-10). Remaining criteria above.
 
 ### INT-001: Canonical fact, edge, and provenance contract
 
@@ -98,14 +89,7 @@ Acceptance criteria:
 - Versioned schema documentation includes compatibility and migration rules.
 - Existing symbols/imports/refs and asserted relations can be projected into the contract.
 
-Progress (2026-08-10): schema version 1 now defines the minimum producer,
-generation, ownership, certainty, freshness, evidence, endpoint, node, and edge
-envelope plus the initial relation vocabulary. The existing files, symbols,
-imports, references, and authored relations project into it without replacing
-their prototype tables; missing legacy import ranges and unresolved endpoints
-remain explicit. Official SCIP occurrences and relationships now project
-through the same envelope with durable workspace/run validation. Persisting
-provider-run ownership and broader query adoption remain open.
+Shipped so far → [CHANGELOG 2026-08-10](CHANGELOG.md#2026-08-10). Remaining criteria above.
 
 ### EVAL-001: Golden corpus and measurement harness
 
@@ -120,54 +104,13 @@ Acceptance criteria:
 - Results are machine-readable and CI fails on agreed correctness regressions.
 - Benchmarks clearly separate cold, warm, and one-file-change runs.
 
-Progress (2026-08-11): the first checked-in TypeScript fixture covers a
-cross-file call, condition, early return, throw, await, and terminal HTTP
-response. `npm run eval` now runs the native scanner, native scanner plus
-TypeScript checker prototype, and SCIP provider in isolated workers; it emits
-machine-readable targeted symbol/reference precision and recall, cold/warm/
-one-file-change timing where supported, prototype-store/artifact size, worker
-peak RSS, missing facts, and threshold failures. CI pins the official SCIP
-v0.9.0 binary and reuses its golden-test format and validator rather than
-reimplementing occurrence truth. Path and retrieval scoring, external-provider
-child memory, broader fixtures, and meaningful promotion thresholds remain
-open. See
-[`EVALUATION.md`](EVALUATION.md).
+Shipped so far → [CHANGELOG 2026-08-11](CHANGELOG.md#2026-08-11). Remaining criteria above.
 
-Progress (2026-08-11, Python slice): oracle schema version 2 now declares
-languages and applicable providers, enforces matching per-provider thresholds,
-and can hold reviewed entrypoint/relation/path truth without pretending it is
-already scored. A small Agent Arena-inspired LangGraph fixture records one
-manifest entrypoint, thirteen framework/effect relations, and four expected paths.
-The native scanner measures 9/9 selected symbols and 8/9 references;
-evaluation-only SCIP-Python 0.6.6 measures 9/9 for both and passes upstream
-`scip test`, but emits no flow relationships.
+Shipped so far → [CHANGELOG 2026-08-11](CHANGELOG.md#2026-08-11). Remaining criteria above.
 
-Progress (2026-08-11, Joern slice): an opt-in, digest-pinned, network-disabled
-Joern container evaluation now consumes the official Python CPG and official
-GraphSON export. A narrow LangGraph adapter scores 12/13 relations at 1.0
-precision/0.923077 recall and 3/4 exact relation-sequence paths at 1.0
-precision/0.75 recall. The missing relation/path is deliberately the
-human-asserted result-store boundary. The 2.17 GB extracted AMD64-only slim
-image and full-GraphSON translation fail packaging criteria, so Joern remains
-evaluation-only rather than becoming a bundled provider. Broader flow fixtures,
-condition/feasibility scoring, external child memory, unified corpus execution,
-and broader provider coverage remain open acceptance criteria.
+Shipped so far → [CHANGELOG 2026-08-11](CHANGELOG.md#2026-08-11). Remaining criteria above.
 
-Progress (2026-08-12, retrieval slice): the ordinary evaluation command now
-runs two task-context scenarios against a digest-pinned artifact generated by
-real Aider 0.86.2 output. A strict checked-in oracle measures recall at K,
-reviewed evidence coverage, irrelevant-path rate, complete response bytes, and
-exact `o200k_base` tokens without installing Aider in normal CI or
-reimplementing its ranking. Both sides stay inside a shared 1,600-token band.
-The idempotency scenario beats the map on recall, reviewed evidence coverage,
-and noise; the review scenario now retrieves its checkout, inventory, and test
-evidence while also beating the map on recall and noise. Both responses use
-less than 1.5 times the map's actual tokens. A third generic review scenario
-now mutates one file after a clean fixture commit and measures exact change
-detection plus graph expansion without giving the query a filename or symbol.
-It reaches 1.0 recall and coverage with zero irrelevant paths. Tightened
-regression floors pass, but promotion remains explicitly blocked on a broader
-corpus and downstream task outcomes.
+Shipped so far → [CHANGELOG 2026-08-12](CHANGELOG.md#2026-08-12). Remaining criteria above.
 
 ### STORE-001: Move workspace state under app ownership
 
@@ -182,46 +125,11 @@ Acceptance criteria:
 - FTS5 is enabled and queried through an internal search interface.
 - Existing prototype stores have either a tested migration or a clearly documented disposable reset path.
 
-Progress (2026-08-12, native-storage foundation): the engine now owns a
-bundled `rusqlite` connection inside the existing Rust N-API module. Stores are
-written directly under `~/.sdlc/stores/<workspace-id>/audit.db` (or
-`SDLC_HOME`), use WAL transactions, and no longer export an in-memory
-`sql.js` image. Opening a repository with a prototype
-`sdlc-audit/audit.db` copies it into app-owned storage and retains the original
-as a recoverable backup; migration and restart behavior are covered by tests.
-That foundation left stable identity across repository relocation,
-versioned/rollback-safe schema migrations and corruption recovery, and an FTS5
-schema exposed through the internal retrieval interface. Bundled SQLite's FTS5
-capability was verified, but capability alone did not satisfy the search
-acceptance criterion.
+Shipped so far → [CHANGELOG 2026-08-12](CHANGELOG.md#2026-08-12). Remaining criteria above.
 
-Progress (2026-08-12, migration-recovery slice): schema v17 establishes
-SQLite `user_version` as the compatibility gate and records an ordered
-`schema_migrations` ledger. The Rust storage owner runs `quick_check` before
-and after migration, rejects newer or conflicting schema versions before
-enabling WAL, creates an atomic online backup that includes committed WAL
-pages, normalizes it into one standalone database, and applies every schema
-step in one immediate transaction. A tested failure rolls back both DDL and
-version metadata while retaining the validated pre-migration image; retries
-keep only the newest image for that target version rather than accumulating
-full copies. The legacy v1-v16 shapes converge through a frozen v17 bootstrap;
-future versions require immutable ordered Rust migration cases. General
-corruption repair still needs an explicit, user-visible restore workflow
-rather than a silent automatic rollback that could discard newer knowledge.
-Stable identity across repository relocation and the internal FTS5 retrieval
-surface also remain open.
+Shipped so far → [CHANGELOG 2026-08-12](CHANGELOG.md#2026-08-12). Remaining criteria above.
 
-Progress (2026-08-12, FTS retrieval slice): schema v18 now uses SQLite's
-external-content FTS5 tables, Unicode tokenizer, prefix indexes, BM25 ranking,
-and snippets as a derived access path over relational facts and authored
-knowledge. SQLite triggers maintain searchable files, symbols, memories,
-findings, components, flows, and asserted relations in the same transaction as
-their authoritative rows, including lifecycle changes and child anchors. One
-bounded Rust query parser prevents callers from injecting raw FTS syntax. The
-existing memory recall, cross-repository search, HTTP search endpoint, and a new
-desktop global-search workspace share that interface; no new MCP tool was
-added. STORE-001 still needs stable identity across repository relocation and
-an explicit user-visible general-corruption restore workflow.
+Shipped so far → [CHANGELOG 2026-08-12](CHANGELOG.md#2026-08-12). Remaining criteria above.
 
 ### INCR-001: Ownership and dependency-directed invalidation
 
@@ -244,23 +152,7 @@ under `release/` caused its bundled `preload.cjs` to enter the live inventory an
 immediately appear as an unexplained, drifting map file. Resolve this as an
 input-boundary rule, not as a one-off special case for this repository.
 
-Progress (2026-08-12, input boundary and signature hierarchy): one Rust
-`input_policy` module now owns a single inclusion decision that returns a typed
-reason, and both the scan walk and the watcher ask it, so the two cannot drift.
-An explicit `EntryKind` settles the hidden-segment rule the previous pair of
-functions disagreed on. The generated-output rule consults the repository's own
-committed `.gitignore` and only that; `.ignore`, the global gitignore,
-`$GIT_DIR/info/exclude` and parent directories stay excluded because determinism
-across clones is what the earlier rule was protecting. Packaged-bundle and
-app-owned-storage rules hold where a repository has no `.gitignore`. Schema v23
-records the decisions the walk actually made — a pruned directory once, never
-its interior — with true per-reason totals beside a bounded sample, surfaced in
-the existing overview and in a file-view error that names the rule. A catch-all
-`.gitignore` relaxes once with a diagnostic rather than reporting an empty
-repository. Measured on this repository: of the files that survived the previous policy,
-`git check-ignore` returns exactly four — the packaged-application paths under
-`release/`, including the desktop app's own bundled `preload.cjs` — and nothing
-else. The whole directory is now one recorded decision rather than four.
+Shipped so far → [CHANGELOG 2026-08-12](CHANGELOG.md#2026-08-12). Remaining criteria above.
 
 Schema v24 adds comment-invariant `syntax_sha` per file, `interface_sha` and
 `body_sha` per symbol, a stable `symbol_key` that survives cosmetic edits, a
@@ -299,25 +191,7 @@ the watcher, a malformed one is reported rather than discarded, truncated
 component dependencies report as partial, and Git renames are read from
 NUL-delimited porcelain so quoted paths still match the inventory.
 
-Progress (2026-08-13, incremental walking and the last correctness gaps): the
-walk now takes a baseline and skips the read for any file whose recorded
-filesystem identity still matches. The key is a digest of device, inode, size,
-modification and change times, compared for equality only — not size and
-modification time, because `cp -p`, `rsync -a`, `tar -xm` and restoring from a
-backup all preserve those while replacing the contents. A file whose
-modification time is not strictly earlier than the walk that saw it records no
-key at all, which is Git's index racy-clean rule moved to write time. Schema
-v25 stores the key beside how each file's facts were established — read,
-verified, or sampled — so a file nobody read stays distinguishable from a file
-confirmed unchanged, and the file view can say which. A bounded rotating sample
-of the files that would have been skipped is read anyway and compared; a single
-disagreement redoes the whole run reading everything and permanently drops that
-workspace back to the slow path. Measured on this repository: a warm rescan
-reads none of 219 files in 162 ms against 638 ms cold, with identical symbol,
-reference and edge counts. What did not get faster is worth naming — every path
-is still visited and stat'ed, which is how a deletion is noticed, and the
-per-file upsert still runs. The saving is the read, the UTF-8 decode, the
-content hash and the parse.
+Shipped so far → [CHANGELOG 2026-08-13](CHANGELOG.md#2026-08-13). Remaining criteria above.
 
 Edge and reference re-resolution is no longer a whole-table pass. It is scoped
 to the files a run re-parsed whenever the resolver's inputs — the set of indexed
@@ -365,50 +239,7 @@ Acceptance criteria:
 - Expected paths in the golden corpus pass precision/recall thresholds set by EVAL-001.
 - Asserted relations can be enabled as a clearly labeled overlay in path queries.
 
-Progress (2026-08-12, HTTP vertical slice): a bounded Rust Tree-sitter
-framework adapter now recognizes explicit TypeScript/JavaScript HTTP route
-guards and persists file-owned execution entries, operations, control edges,
-diagnostics, producer identity, certainty, source evidence, and input hashes in
-schema v19, with exact call-target occurrences added in schema v20. Schema v21
-anchors finding ranges to the source revision that produced them. It retains
-bounded positive boolean route alternatives, `if` branches, caught explicit
-throws, `finally` transitions before deferred returns/throws, awaited calls,
-returns/throws, and recognized HTTP response effects. Conditional operations
-inside expressions, class-definition execution, loops, and switches remain
-explicit gaps; input truncation remains diagnostic. Native path
-enumeration is cycle- and budget-bounded. Reference refresh resolves aliased and
-default imports, incorporates later compiler targets, and removes those targets
-when their compiler generation becomes stale. Normalized method alternatives
-cannot collide in storage, calls in nested conditions are retained, and deferred
-callback bodies are not treated as executed. The existing MCP `flow` operation
-prefers this model when it is
-available, while preserving the older call graph as `mode: calls`, and the
-desktop now presents entry-to-effect paths as its primary Flow workspace. A
-checked-in HTTP fixture measures one entry, eight unique semantic relations,
-nine distinct evidence occurrences, and three paths at 1.0 precision/recall;
-an explicitly required measured provider now fails instead of passing
-unmeasured when its adapter produces no graph. The real `GET /api/search` route
-in this repository produces the same three response paths with resolved imported
-targets. A repository dogfood scan currently recognizes 12 non-fixture daemon
-HTTP entries. A checked-in regression now scans the actual repository and locks
-the exact branches and recognized response effects for `GET /api/search`,
-`ANY /api/watch`, and `POST /api/workspaces`, including the workspace route's
-early returns. This closes the three-real-flow and early-return dogfood gaps,
-but only the standalone `GET /api/search` fixture is scored through the
-provider-neutral EVAL-001 precision/recall report. Switches, loops, uncaught
-exceptions, interprocedural non-response effects, and broader formal path
-evaluation remain outside that scored oracle. Query-level regressions now cover
-explicit returns, uncaught throws, loops, and switches end to end. Execution-flow
-schema v4 gives every path a typed terminal outcome, preserves the legacy
-effect-only field, and presents loop/switch handling as incomplete gaps rather
-than fabricated expansion. It also keeps resolved, unresolved, external, and
-not-applicable target states distinct; unresolved calls count as source-anchored
-gaps and keep traversing paths incomplete. Actual switch-case and loop-iteration
-expansion remains open pending provider evaluation. Current authored
-relations can be requested through the native query, HTTP API, and MCP `flow`
-operation and displayed with the desktop's opt-in Asserted overlay. The overlay
-remains separate from deterministic paths, excludes stale evidence, and cannot
-change path certainty or completeness.
+Shipped so far → [CHANGELOG 2026-08-12](CHANGELOG.md#2026-08-12). Remaining criteria above.
 
 ### UI-001: Question-centered code and flow workspace
 
@@ -423,23 +254,7 @@ Acceptance criteria:
 - Large graphs default to focused neighborhoods and expansion, not an unreadable whole-repository canvas.
 - The workflow remains fully useful with semantic enrichment disabled.
 
-Progress (2026-08-12): the desktop now has a first global search workspace over
-the shared FTS5 index and can open file-backed results in the existing indexed
-file drawer. The first flow-centered entry-to-effect workspace is available for
-supported deterministic entries. Flow steps, call-graph nodes, symbols,
-findings, entries, and resolved call targets now open bounded source slices at
-their indexed ranges. The desktop compares current source signatures with each
-selected evidence generation, visibly marks stale or unattested evidence,
-keeps the selected flow step synchronized with its source preview, and pages
-through source without exposing an unbounded file response. Historical finding
-ranges and authored flow assertions retain their producing source revision;
-live external-tool findings without an attested snapshot remain unverified.
-Resolved execution targets carry their exact declaration range from the Rust
-reference index rather than relying on a same-named-symbol guess; ambiguous
-authored symbol names require an explicit range selection instead of guessing.
-Exact source-text indexing, richer definition/reference and caller/callee
-navigation, graph-canvas selection synchronization, and multi-view selection
-persistence remain open.
+Shipped so far → [CHANGELOG 2026-08-12](CHANGELOG.md#2026-08-12). Remaining criteria above.
 
 ### QUERY-001: One budgeted task-context query
 
@@ -453,53 +268,11 @@ Acceptance criteria:
 - It beats an Aider-style symbol-map baseline on agreed EVAL-001 scenarios or remains an experimental internal path.
 - The public MCP catalog is reviewed for redundant tools after this query is proven.
 
-Progress (2026-08-12, experimental task-context slice): the existing `brief`
-operation now accepts a task, optional targets, intent, and an exact UTF-8 byte
-budget; no 34th MCP tool was added. A Rust planner beside the native SQLite
-owner resolves targets without guessing, combines the shared FTS5 index with
-bounded one-hop reference/import, execution-flow, authored-flow, finding,
-memory, relation, exported-surface, and test evidence, and emits deterministic
-scores with reasons and provenance. The thin TypeScript boundary reads only
-planner-selected source ranges through the existing contained reader, compares
-them with their producing signatures, and packs the complete pretty-printed
-response to the requested byte ceiling. The former TypeScript-only brief
-ranking implementation was removed, while its single-target call remains
-compatible. Focused tests cover task-only and legacy MCP calls, the unchanged
-33-tool catalog, ambiguity, stale evidence, source/fact navigation, and exact
-budget accounting. This path reports itself as experimental: broader corpus
-coverage and task outcomes remain open before QUERY-001 can be called proven
-or redundant public tools can be retired.
+Shipped so far → [CHANGELOG 2026-08-12](CHANGELOG.md#2026-08-12). Remaining criteria above.
 
-Progress (2026-08-12, measured retrieval ranking): QUERY-001 now retrieves all
-reviewed evidence in both first-corpus tasks. Review recall@5 is 0.5 with the
-checkout declaration, inventory declaration, and covering test; debug recall@4
-is 0.75 with the authored constraint and ledger declaration. Both have zero
-irrelevant returned paths and use less than 1.5 times the map's actual tokens.
-The Rust ranker removes the selected intent from lexical subject terms, rewards
-independent corroborating signals, and applies a bounded repeated-path penalty.
-The thin source boundary reserves useful space per admitted fact and no longer
-duplicates ranking/provenance prose in its excerpt view. Tightened regression
-floors preserve the result.
+Shipped so far → [CHANGELOG 2026-08-12](CHANGELOG.md#2026-08-12). Remaining criteria above.
 
-Progress (2026-08-12, change-aware retrieval): a bounded async Rust adapter now
-consumes Git's stable porcelain v2 status instead of implementing a diff engine.
-It distinguishes clean, non-repository, and unavailable states, resolves nested
-workspace roots, rejects escaping/non-UTF-8 paths, and bounds Git status to 30
-seconds, 2 MiB, and 256 normalized changes. It also clears inherited repository
-selectors and merges multiple porcelain records for one path without discarding
-staged state. The task planner preserves explicit targets ahead of unrelated
-dirty files, prioritizes indexed changes before its 24-path graph-expansion cap,
-and treats pre-refresh deletes and renames as stale historical evidence. It
-distinguishes current, historical, absent, and omitted change context. The thin
-TypeScript source packer compacts reported
-change metadata to the caller's byte ceiling while reserving room for useful
-evidence. A clean-baseline fixture
-then changes `src/api.ts` and asks only to review the current change: the brief
-ranks `postCheckout` first, retrieves downstream `submitCheckout`, scores 1.0
-recall and coverage with zero irrelevant paths, and stays below 1.5 times the
-pinned map's tokens. QUERY-001 remains experimental; the next proof work is a
-broader multi-project/language corpus and downstream task outcomes rather than
-retiring MCP tools.
+Shipped so far → [CHANGELOG 2026-08-12](CHANGELOG.md#2026-08-12). Remaining criteria above.
 
 ### SEARCH-001: Lexical, structural, and graph-ranked retrieval
 
@@ -512,11 +285,7 @@ Acceptance criteria:
 - Search refresh is incremental.
 - Saved queries can be re-run against later index generations for desktop insights.
 
-Progress (2026-08-12): the STORE-001 slice establishes the shared incremental
-FTS5 index, identifier/path weighting, safe prefix queries, kind filters, and
-cross-workspace ranking. Structural search remains a separate existing mode.
-Exact source-text/phrase behavior, language filters, graph/change/flow ranking,
-ranking explanations, saved queries, and retrieval evaluation remain open.
+Shipped so far → [CHANGELOG 2026-08-12](CHANGELOG.md#2026-08-12). Remaining criteria above.
 
 ### CONN-001: Idempotent Claude and Codex connector manager
 
@@ -548,13 +317,7 @@ Acceptance criteria:
   discarding valid work, and cannot be presented as a complete map until its
   coverage/finalization contract succeeds.
 
-Progress (2026-08-06): the Claude map runner now eagerly loads only the
-allowlisted SDLC MCP tools even when built-in tools are disabled. A previously
-interrupted 75% map resumed to 98% coverage, and maintenance refreshed six
-drifted components without rebuilding clean work. Finalization rejects stale
-retained components or flows, and the supervisor distinguishes initial drawing
-from maintenance completion. Editing/approval, fine-grained dependency
-invalidation, cancellation UX, and repeatable product evaluation remain open.
+Shipped so far → [CHANGELOG 2026-08-06](CHANGELOG.md#2026-08-06). Remaining criteria above.
 
 ### MEM-001: Trustworthy project memory
 
