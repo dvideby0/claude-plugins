@@ -71,6 +71,16 @@ export interface ScanResult {
   filesSyntaxChanged: number;
   /** Set when the walk relaxed a rule rather than report an empty repository. */
   inputDiagnostic: string | null;
+  /**
+   * How the walk established each file: read, taken on the filesystem's word,
+   * or read anyway to check that word. `filesRead + filesVerified +
+   * filesSampled` is `filesTotal`, so a fast path is never unaccounted for.
+   */
+  filesRead: number;
+  filesVerified: number;
+  filesSampled: number;
+  /** Set once this workspace's filesystem identity has been caught lying. */
+  freshnessDistrusted: string | null;
   /** Renames confirmed well enough to carry authored knowledge across. */
   filesMoved: number;
   /**
@@ -138,8 +148,26 @@ async function doScan(projectRoot: string, options: ScanOptions = {}): Promise<S
   const stale = storedVersion < EXTRACTION_VERSION || storedEngine !== "native";
   const full = options.full || stale;
 
-  const { files, engine, exclusions, exclusionSummary, diagnostic, gitignoreApplied } =
-    await collectFiles(projectRoot, full ? null : db.fileBaseline());
+  // A workspace whose filesystem has been caught claiming an unchanged file
+  // stays on the slow path. One demonstration that the key can lie is enough:
+  // there is no reason to believe the next scan is the one where it tells the
+  // truth, and every skip after that would be a guess.
+  const distrusted =
+    db.get<{ value: string }>("SELECT value FROM meta WHERE key = 'walk_freshness_distrusted'")
+      ?.value ?? null;
+
+  const {
+    files,
+    engine,
+    exclusions,
+    exclusionSummary,
+    diagnostic,
+    gitignoreApplied,
+    filesRead,
+    filesVerified,
+    filesSampled,
+    freshnessMismatches,
+  } = await collectFiles(projectRoot, full || distrusted ? null : db.fileBaseline());
   const aliases = await loadAliases(projectRoot);
 
   const previous = new Map(
@@ -574,6 +602,14 @@ async function doScan(projectRoot: string, options: ScanOptions = {}): Promise<S
   db.run("INSERT OR REPLACE INTO meta(key, value) VALUES('source_signature', ?)", [
     sourceSignature(files),
   ]);
+  // Persisted for the same reason the relaxed input policy is: a daemon
+  // restart would otherwise go back to trusting a filesystem this workspace
+  // has already watched lie about an unchanged file.
+  if (freshnessMismatches > 0) {
+    db.run("INSERT OR REPLACE INTO meta(key, value) VALUES('walk_freshness_distrusted', ?)", [
+      diagnostic ?? "A file's recorded filesystem identity matched while its contents had changed.",
+    ]);
+  }
   // Watch decisions must match the inventory this scan actually produced, not
   // the strict policy it had to abandon. A malformed rule still leaves the
   // rest applied, so only an abandoned matcher relaxes the watcher too.
@@ -612,6 +648,10 @@ async function doScan(projectRoot: string, options: ScanOptions = {}): Promise<S
     filesSyntaxChanged: syntaxChanged.size,
     filesMoved: moves.length,
     findingsRetired,
+    filesRead,
+    filesVerified,
+    filesSampled,
+    freshnessDistrusted: freshnessMismatches > 0 ? (diagnostic ?? "The freshness key was wrong.") : distrusted,
     inputDiagnostic: diagnostic,
     engine,
     upgraded: stale,

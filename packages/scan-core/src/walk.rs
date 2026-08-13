@@ -16,6 +16,7 @@ use ignore::WalkBuilder;
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::path::Path;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 
 pub struct Scanned {
@@ -46,6 +47,9 @@ pub enum Freshness {
     Read,
     /// The filesystem's identity matched the baseline, so the read was skipped.
     Verified,
+    /// The read could have been skipped and was made anyway, to check that the
+    /// identity still agrees with the contents.
+    Sampled,
 }
 
 impl Freshness {
@@ -53,6 +57,7 @@ impl Freshness {
         match self {
             Freshness::Read => "read",
             Freshness::Verified => "verified",
+            Freshness::Sampled => "sampled",
         }
     }
 }
@@ -97,6 +102,39 @@ pub struct WalkOutcome {
     /// thing — and the watcher has to make the same distinction or it stops
     /// refreshing files the scan actually indexed.
     pub gitignore_applied: bool,
+    /// What the walk read, what it took the filesystem's word for, and what it
+    /// checked. Reported so a fast path is never an unexplained one.
+    pub freshness: FreshnessSummary,
+}
+
+#[derive(Default, Clone)]
+pub struct FreshnessSummary {
+    pub read: u32,
+    pub verified: u32,
+    pub sampled: u32,
+    /// Files whose recorded identity matched while their contents did not.
+    /// Any at all means the key cannot be trusted on this filesystem.
+    pub mismatches: u32,
+}
+
+/// Per-walk freshness tallies, incremented from the walker's threads.
+#[derive(Default)]
+struct Counts {
+    read: AtomicU32,
+    verified: AtomicU32,
+    sampled: AtomicU32,
+    mismatches: AtomicU32,
+}
+
+impl Counts {
+    fn summary(&self) -> FreshnessSummary {
+        FreshnessSummary {
+            read: self.read.load(Ordering::Relaxed),
+            verified: self.verified.load(Ordering::Relaxed),
+            sampled: self.sampled.load(Ordering::Relaxed),
+            mismatches: self.mismatches.load(Ordering::Relaxed),
+        }
+    }
 }
 
 #[derive(Default)]
@@ -163,6 +201,24 @@ fn relative_path(root: &Path, entry: &Path) -> Option<String> {
 /// the UTF-8 decode, the content hash and, downstream, the parse.
 pub fn walk(root: &Path, policy: &InputPolicy, mode: WalkMode<'_>) -> WalkOutcome {
     let outcome = walk_with(root, policy, &mode);
+
+    // The sample caught the key claiming a file was unchanged when its contents
+    // had moved. Every other skip this run rests on the same assumption, so the
+    // run is redone reading everything rather than kept with a warning attached
+    // — a correct answer now, and a diagnostic saying why it cost more.
+    if outcome.freshness.mismatches > 0 {
+        let missed = outcome.freshness.mismatches;
+        let mut reread = walk_with(root, policy, &WalkMode::ReadAll);
+        reread.freshness.mismatches = missed;
+        reread.diagnostic = Some(format!(
+            "The filesystem's identity for {missed} file(s) matched while their contents had \
+             changed, so nothing this filesystem reports about a file being unchanged can be \
+             relied on. Every file was read for this scan. Later scans will keep reading every \
+             file until this workspace is indexed on a filesystem where the check passes."
+        ));
+        return reread;
+    }
+
     if !outcome.files.is_empty() || !policy.has_gitignore() {
         return outcome;
     }
@@ -264,6 +320,7 @@ fn walk_with(root: &Path, policy: &InputPolicy, mode: &WalkMode<'_>) -> WalkOutc
     // file modified after it started had settled.
     let started_secs = crate::freshness::now_secs();
     let collector = Arc::new(Mutex::new(Collector::default()));
+    let counts = Arc::new(Counts::default());
     // The walker's closures must be `'static`, so the borrow cannot travel.
     // Compile the matcher once and share it rather than rebuilding per entry.
     let shared = Arc::new(policy.clone());
@@ -308,6 +365,7 @@ fn walk_with(root: &Path, policy: &InputPolicy, mode: &WalkMode<'_>) -> WalkOutc
         let root = root.to_path_buf();
         let policy = Arc::clone(&shared);
         let collector = Arc::clone(&collector);
+        let counts = Arc::clone(&counts);
         Box::new(move |result| {
             let Ok(entry) = result else {
                 return ignore::WalkState::Continue;
@@ -366,24 +424,37 @@ fn walk_with(root: &Path, policy: &InputPolicy, mode: &WalkMode<'_>) -> WalkOutc
                 WalkMode::Incremental(baseline) => baseline.unchanged(&path, stat_key.as_deref()),
             };
 
-            let scanned = match unchanged {
+            // A bounded, rotating slice of the files that could be skipped is
+            // read anyway and compared. The key is evidence of identity, not of
+            // content; this is what turns "we believe it still holds" into
+            // something the system checks rather than assumes.
+            let sample = match (&unchanged, mode) {
+                (Some(_), WalkMode::Incremental(baseline)) => baseline.sampled(&path),
+                _ => false,
+            };
+            let expected_sha = unchanged.map(|entry| (entry.content_sha.clone(), entry.loc));
+
+            let scanned = match &expected_sha {
                 // The filesystem says this is the same file we already read, so
                 // its recorded facts stand. Note what is *not* carried forward:
                 // the content. A caller that needs the text has to say so with
                 // `WalkMode::ReadAll` rather than receive an empty string.
-                Some(entry) => Scanned {
-                    path,
-                    lang: decision.language,
-                    loc: entry.loc,
-                    bytes: metadata.len() as u32,
-                    content_sha: entry.content_sha.clone(),
-                    is_test: decision.is_test,
-                    parseable: decision.parseable(),
-                    stat_key,
-                    freshness: Freshness::Verified,
-                    content: None,
-                },
-                None => {
+                Some((content_sha, loc)) if !sample => {
+                    counts.verified.fetch_add(1, Ordering::Relaxed);
+                    Scanned {
+                        path,
+                        lang: decision.language,
+                        loc: *loc,
+                        bytes: metadata.len() as u32,
+                        content_sha: content_sha.clone(),
+                        is_test: decision.is_test,
+                        parseable: decision.parseable(),
+                        stat_key,
+                        freshness: Freshness::Verified,
+                        content: None,
+                    }
+                }
+                _ => {
                     let bytes = match std::fs::read(entry.path()) {
                         Ok(bytes) => bytes,
                         Err(error) => {
@@ -421,17 +492,44 @@ fn walk_with(root: &Path, policy: &InputPolicy, mode: &WalkMode<'_>) -> WalkOutc
                         content.matches('\n').count() as u32 + 1
                     };
 
-                    Scanned {
-                        path,
-                        lang: decision.language,
-                        loc,
-                        bytes: metadata.len() as u32,
-                        content_sha,
-                        is_test: decision.is_test,
-                        parseable: decision.parseable(),
-                        stat_key,
-                        freshness: Freshness::Read,
-                        content: Some(content),
+                    // A sampled file whose contents still match its key needs
+                    // nothing rebuilt — the stored facts are correct. What the
+                    // read bought is the knowledge that the key is honest. A
+                    // mismatch means it is not, and the caller re-walks.
+                    let held = expected_sha
+                        .as_ref()
+                        .is_some_and(|(expected, _)| *expected == content_sha);
+                    if sample && held {
+                        counts.sampled.fetch_add(1, Ordering::Relaxed);
+                        Scanned {
+                            path,
+                            lang: decision.language,
+                            loc,
+                            bytes: metadata.len() as u32,
+                            content_sha,
+                            is_test: decision.is_test,
+                            parseable: decision.parseable(),
+                            stat_key,
+                            freshness: Freshness::Sampled,
+                            content: None,
+                        }
+                    } else {
+                        if sample {
+                            counts.mismatches.fetch_add(1, Ordering::Relaxed);
+                        }
+                        counts.read.fetch_add(1, Ordering::Relaxed);
+                        Scanned {
+                            path,
+                            lang: decision.language,
+                            loc,
+                            bytes: metadata.len() as u32,
+                            content_sha,
+                            is_test: decision.is_test,
+                            parseable: decision.parseable(),
+                            stat_key,
+                            freshness: Freshness::Read,
+                            content: Some(content),
+                        }
                     }
                 }
             };
@@ -468,12 +566,14 @@ fn walk_with(root: &Path, policy: &InputPolicy, mode: &WalkMode<'_>) -> WalkOutc
         summary,
         diagnostic: policy.gitignore_diagnostic.clone(),
         gitignore_applied: policy.has_gitignore(),
+        freshness: counts.summary(),
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::{walk, WalkMode};
+    use crate::freshness::FileBaseline;
     use crate::input_policy::{EntryKind, InputPolicy};
     use std::collections::HashSet;
     use std::fs;
@@ -489,6 +589,88 @@ mod tests {
             std::env::temp_dir().join(format!("sdlc-walk-{label}-{}-{nonce}", std::process::id()));
         fs::create_dir_all(&root).expect("create fixture");
         root
+    }
+
+    /// A baseline that claims every file is unchanged, with the recorded
+    /// content hash the caller supplies.
+    fn baseline_claiming(root: &PathBuf, policy: &InputPolicy, content_sha: &str) -> FileBaseline {
+        let entries = walk(root, policy, WalkMode::ReadAll)
+            .files
+            .into_iter()
+            .filter_map(|file| {
+                Some((
+                    file.path,
+                    crate::freshness::BaselineEntry {
+                        stat_key: file.stat_key?,
+                        content_sha: content_sha.to_string(),
+                        loc: file.loc,
+                    },
+                ))
+            })
+            .collect::<std::collections::HashMap<_, _>>();
+        FileBaseline::new(entries, 1)
+    }
+
+    #[test]
+    fn a_key_that_disagrees_with_the_contents_makes_the_walk_read_everything() {
+        // The sample exists for exactly this: the recorded identity matches, so
+        // the file would have been skipped, but the bytes it stands for are not
+        // the bytes on disk. One demonstration is enough to stop trusting the
+        // key for the whole run — every other skip rests on the same
+        // assumption, so the run is redone rather than kept with a warning.
+        let root = fixture_root("mismatch");
+        fs::write(root.join("a.ts"), "export const a = 1;\n").expect("write");
+        fs::write(root.join("b.ts"), "export const b = 2;\n").expect("write");
+        // Out of the racy window, so the files are keyable at all.
+        for name in ["a.ts", "b.ts"] {
+            let past = std::time::SystemTime::now() - std::time::Duration::from_secs(60);
+            fs::File::options()
+                .write(true)
+                .open(root.join(name))
+                .expect("reopen")
+                .set_times(fs::FileTimes::new().set_modified(past).set_accessed(past))
+                .expect("age");
+        }
+        let policy = InputPolicy::for_root(&root);
+
+        let honest = baseline_claiming(&root, &policy, "");
+        let outcome = walk(&root, &policy, WalkMode::Incremental(&honest));
+        // Every recorded hash is wrong here, so whichever file the rotation
+        // picks, the sample catches it.
+        assert!(outcome.freshness.mismatches > 0);
+        assert!(outcome.diagnostic.is_some_and(|note| note.contains("Every file was read")));
+        // And the run that comes back is a complete one: everything read, with
+        // its contents, so nothing downstream sees a half-trusted index.
+        assert_eq!(outcome.freshness.verified, 0);
+        assert_eq!(outcome.freshness.sampled, 0);
+        assert!(outcome.files.iter().all(|file| file.content.is_some()));
+    }
+
+    #[test]
+    fn a_key_that_agrees_lets_the_rest_of_the_walk_skip() {
+        let root = fixture_root("agrees");
+        fs::write(root.join("a.ts"), "export const a = 1;\n").expect("write");
+        let past = std::time::SystemTime::now() - std::time::Duration::from_secs(60);
+        fs::File::options()
+            .write(true)
+            .open(root.join("a.ts"))
+            .expect("reopen")
+            .set_times(fs::FileTimes::new().set_modified(past).set_accessed(past))
+            .expect("age");
+        let policy = InputPolicy::for_root(&root);
+
+        let read = walk(&root, &policy, WalkMode::ReadAll);
+        let recorded = read.files[0].content_sha.clone();
+        let honest = baseline_claiming(&root, &policy, &recorded);
+
+        let outcome = walk(&root, &policy, WalkMode::Incremental(&honest));
+        assert_eq!(outcome.freshness.mismatches, 0);
+        assert_eq!(outcome.freshness.read, 0);
+        // A single-file repository is always in the sample, so this is the
+        // checked-and-held path rather than the skipped one — and a checked
+        // file still needs no re-parse, because its stored facts are correct.
+        assert_eq!(outcome.freshness.verified + outcome.freshness.sampled, 1);
+        assert!(outcome.files.iter().all(|file| file.content.is_none()));
     }
 
     #[test]

@@ -132,7 +132,7 @@ export interface SourceFile {
    * Whether this scan read the file or trusted the filesystem's word that it
    * had not changed.
    */
-  freshness: "read" | "verified";
+  freshness: "read" | "verified" | "sampled";
 }
 
 export interface SourceTextFile {
@@ -327,6 +327,10 @@ export interface NativeCore {
     gitignoreApplied: boolean;
     walkMs: number;
     parseMs: number;
+    filesRead: number;
+    filesVerified: number;
+    filesSampled: number;
+    freshnessMismatches: number;
   }>;
   /** Read source text through the same bounded inventory policy used by scans. */
   readRepoFiles(root: string): Promise<SourceTextFile[]>;
@@ -474,6 +478,16 @@ export interface CollectResult {
   engine: "native";
   walkMs: number;
   parseMs: number;
+  /** What the walk read, took the filesystem's word for, and checked anyway. */
+  filesRead: number;
+  filesVerified: number;
+  filesSampled: number;
+  /**
+   * Files whose recorded identity matched while their contents had moved.
+   * Above zero means the walk has already redone this run reading everything,
+   * and that this workspace must stop trusting the key.
+   */
+  freshnessMismatches: number;
 }
 
 export async function collectFiles(
@@ -485,6 +499,10 @@ export async function collectFiles(
     engine: "native",
     walkMs: result.walkMs,
     parseMs: result.parseMs,
+    filesRead: result.filesRead,
+    filesVerified: result.filesVerified,
+    filesSampled: result.filesSampled,
+    freshnessMismatches: result.freshnessMismatches,
     exclusions: result.exclusions,
     exclusionSummary: result.exclusionSummary,
     diagnostic: result.diagnostic ?? null,
@@ -498,10 +516,11 @@ export async function collectFiles(
       isTest: file.isTest,
       parseable: file.parsed,
       statKey: file.statKey ?? null,
-      // A verified file was not read, so it has no parse output — which is not
-      // the same as having none to give. Reading the flag rather than checking
-      // for empty symbols keeps "we did not look" separate from "nothing here".
-      parsed: file.freshness !== "verified" && file.parsed
+      // Only a file this run actually read has parse output. A verified file
+      // was not read at all, and a sampled one was read purely to check its
+      // key, so neither carries symbols — and treating their empty lists as a
+      // parse result would delete the symbols they still correctly have.
+      parsed: file.freshness === "read" && file.parsed
         ? {
             symbols: file.symbols as ParsedSymbol[],
             imports: file.imports,
@@ -510,8 +529,9 @@ export async function collectFiles(
             relationSetSha: file.relationSetSha,
           }
         : null,
-      refs: file.freshness !== "verified" && file.parsed ? file.refs : [],
-      freshness: file.freshness === "verified" ? "verified" : "read",
+      refs: file.freshness === "read" && file.parsed ? file.refs : [],
+      freshness:
+        file.freshness === "verified" || file.freshness === "sampled" ? file.freshness : "read",
     })),
   };
 }

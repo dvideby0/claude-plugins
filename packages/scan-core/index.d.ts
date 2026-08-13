@@ -283,6 +283,16 @@ export interface NativeScan {
   gitignoreApplied: boolean
   walkMs: number
   parseMs: number
+  /** Files read, taken on the filesystem's word, and checked anyway. */
+  filesRead: number
+  filesVerified: number
+  filesSampled: number
+  /**
+   * Files whose recorded identity matched while their contents had moved.
+   * Above zero means this filesystem's identity cannot be trusted here, and
+   * the walk has already redone the run reading everything.
+   */
+  freshnessMismatches: number
 }
 export interface NativeSourceFile {
   path: string

@@ -65,11 +65,37 @@ pub struct FileBaseline {
     entries: HashMap<String, BaselineEntry>,
     /// The run that produced this baseline, so sampling can rotate.
     pub last_run: i64,
+    /// One in this many skippable files is read anyway to check the key.
+    period: u64,
 }
 
 impl FileBaseline {
     pub fn new(entries: HashMap<String, BaselineEntry>, last_run: i64) -> Self {
-        Self { entries, last_run }
+        let period = sample_period(entries.len());
+        Self {
+            entries,
+            last_run,
+            period,
+        }
+    }
+
+    /// Whether this file is in this run's verification sample.
+    ///
+    /// The key is evidence of identity, not of content, and every field it is
+    /// built from can in principle be preserved across a change by some tool.
+    /// Rather than argue about which, a bounded slice of the files that *would*
+    /// have been skipped is read anyway and compared, so a key that has started
+    /// lying is discovered by this system rather than by a user wondering why
+    /// an answer is wrong.
+    ///
+    /// Selection rotates with the run id, so successive scans cover different
+    /// files and the whole tree is checked over time. It is deterministic, so a
+    /// scan can be repeated and get the same sample.
+    pub fn sampled(&self, path: &str) -> bool {
+        if self.period <= 1 {
+            return true;
+        }
+        stable_hash(path) % self.period == (self.last_run as u64) % self.period
     }
 
     /// The recorded entry for a path whose current identity matches it.
@@ -87,6 +113,41 @@ impl FileBaseline {
     pub fn len(&self) -> usize {
         self.entries.len()
     }
+}
+
+/// How many skippable files to check per run, as one in every `period`.
+///
+/// About one percent of the tree, at least one file so the check never lapses
+/// entirely, and at most five hundred so a large repository stays bounded.
+/// Windows takes twice as many, because its key has neither a `ctime` with the
+/// Unix meaning nor a stable file index, and a weaker key deserves more
+/// checking rather than the same amount.
+///
+/// The floor is one file, not some larger number: because selection rotates
+/// with the run id, a small repository is covered completely within a few
+/// scans anyway. A floor high enough to cover a small repository in one run
+/// would mean sampling all of it every run, which is the slow path with extra
+/// steps.
+fn sample_period(files: usize) -> u64 {
+    if files == 0 {
+        return 1;
+    }
+    let mut target = (files / 100).clamp(1, 512);
+    if cfg!(windows) {
+        target = target.saturating_mul(2);
+    }
+    (files.div_ceil(target.max(1))).max(1) as u64
+}
+
+/// FNV-1a. Not a signature — just a stable, cheap spread of paths across the
+/// sampling buckets that does not change between runs or between machines.
+fn stable_hash(path: &str) -> u64 {
+    let mut hash = 0xcbf2_9ce4_8422_2325u64;
+    for byte in path.as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x1000_0000_01b3);
+    }
+    hash
 }
 
 /// Read a baseline produced by the store owner.
@@ -132,8 +193,9 @@ pub fn parse_baseline(json: &str) -> napi::Result<FileBaseline> {
 
 /// Seconds since the epoch, for stamping the start of a walk.
 ///
-/// A clock before 1970 is not a case worth modelling; it yields a negative
-/// value, every file looks racy, and every file is read.
+/// A clock before 1970 is not a case worth modelling: it reads as zero, every
+/// file's modification time is at or after that, so every file looks racy and
+/// every file is read.
 pub fn now_secs() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -221,6 +283,24 @@ mod tests {
         stat_key(&fs::metadata(path).expect("metadata"), started)
     }
 
+    /// Put a fixture's timestamps a minute in the past.
+    ///
+    /// Without this a test cannot tell a real change from an unobservable one.
+    /// Linux stamps inode times from a coarse per-tick clock, so two writes in
+    /// a row leave mtime, ctime and size bit-identical and the key genuinely
+    /// cannot move — the racy rule is what covers that case, and it is asserted
+    /// separately. Ageing the file first makes the *observable* change
+    /// observable on every filesystem instead of only fine-grained ones.
+    fn age(path: &Path) {
+        let past = SystemTime::now() - std::time::Duration::from_secs(60);
+        fs::File::options()
+            .write(true)
+            .open(path)
+            .expect("reopen")
+            .set_times(fs::FileTimes::new().set_modified(past).set_accessed(past))
+            .expect("age the fixture");
+    }
+
     /// The argument is when the *walk* started, so a walk that began after the
     /// file settled can trust it, and one that began before it cannot.
     const WALK_AFTER_FILE: i64 = i64::MAX;
@@ -244,6 +324,7 @@ mod tests {
         let root = fixture_root("contents");
         let path = root.join("a.txt");
         fs::write(&path, b"one").expect("write");
+        age(&path);
         let before = key(&path, WALK_AFTER_FILE).expect("key");
 
         // Same length, so a size-only key would call this unchanged.
@@ -251,6 +332,30 @@ mod tests {
         assert_ne!(before, key(&path, WALK_AFTER_FILE).expect("key"));
     }
 
+    #[test]
+    fn a_rewrite_the_filesystem_cannot_distinguish_is_covered_by_the_racy_rule() {
+        // Two writes inside one clock tick leave every field the key is built
+        // from identical. On Linux that is the ordinary case, not a corner:
+        // inode times come from a coarse per-tick clock. The key genuinely
+        // cannot see it, and pretending otherwise in a test would only assert
+        // that the developer's filesystem happens to be fine-grained.
+        //
+        // What protects the index is that such a file is inside the racy
+        // window and gets no key at all, so the next scan reads it.
+        let root = fixture_root("tick");
+        let path = root.join("a.txt");
+        fs::write(&path, b"one").expect("write");
+        assert!(key(&path, WALK_BEFORE_FILE).is_none());
+        fs::write(&path, b"two").expect("rewrite");
+        assert!(key(&path, WALK_BEFORE_FILE).is_none());
+    }
+
+    // Unix only. The Windows key has no `ctime` with the Unix meaning and no
+    // stable file index, and NTFS tunnelling hands a file recreated at a path
+    // within about fifteen seconds its original creation time — which is
+    // exactly this fixture. The module doc says the Windows key is weaker; a
+    // test that asserted otherwise would be asserting something untrue.
+    #[cfg(unix)]
     #[test]
     fn the_key_moves_when_a_replacement_preserves_the_modification_time() {
         // What `cp -p`, `rsync -a`, `tar -xm` and restoring from a backup all

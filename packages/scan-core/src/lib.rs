@@ -216,6 +216,14 @@ pub struct NativeScan {
     pub gitignore_applied: bool,
     pub walk_ms: u32,
     pub parse_ms: u32,
+    /// Files read, taken on the filesystem's word, and checked anyway.
+    pub files_read: u32,
+    pub files_verified: u32,
+    pub files_sampled: u32,
+    /// Files whose recorded identity matched while their contents had moved.
+    /// Above zero means this filesystem's identity cannot be trusted here, and
+    /// the walk has already redone the run reading everything.
+    pub freshness_mismatches: u32,
 }
 
 #[napi(object)]
@@ -428,6 +436,10 @@ fn assemble_scan(
                 recorded: count.recorded,
             })
             .collect(),
+        files_read: outcome.freshness.read,
+        files_verified: outcome.freshness.verified,
+        files_sampled: outcome.freshness.sampled,
+        freshness_mismatches: outcome.freshness.mismatches,
         diagnostic: outcome.diagnostic,
         gitignore_applied: outcome.gitignore_applied,
         walk_ms,

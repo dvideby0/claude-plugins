@@ -47,8 +47,15 @@ describe("the walk skips a file the filesystem says did not change", () => {
 
     expect(warm.filesChanged).toBe(0);
     expect(warm.filesParsed).toBe(0);
+    // Not every file is necessarily verified — a rotating slice is read anyway
+    // to check the key. What must hold is that none was read because it looked
+    // changed, and that every file is accounted for one way or the other.
+    expect(warm.filesRead).toBe(0);
+    expect(warm.filesVerified + warm.filesSampled).toBe(ALL.length);
     expect(
-      db.count("SELECT COUNT(*) AS n FROM files WHERE present = 1 AND freshness_basis = 'verified'"),
+      db.count(
+        "SELECT COUNT(*) AS n FROM files WHERE present = 1 AND freshness_basis IN ('verified','sampled')",
+      ),
     ).toBe(ALL.length);
 
     // The facts a skipped file already had are still there — this is the whole
@@ -64,10 +71,9 @@ describe("the walk skips a file the filesystem says did not change", () => {
     // And it can say how it knows, naming the run that actually read the bytes
     // rather than the one that trusted the filesystem.
     const evidence = fileEvidenceBasis(db, "src/lib/hash.ts");
-    expect(evidence.basis).toBe("verified");
+    expect(["verified", "sampled"]).toContain(evidence.basis);
     expect(evidence.lastReadRun).toBe(1);
     expect(evidence.lastSeenRun).toBe(2);
-    expect(evidence.reason).toContain("did not read it again");
   });
 
   it("still notices a change that keeps the file the same size", async () => {
@@ -91,7 +97,7 @@ describe("the walk skips a file the filesystem says did not change", () => {
         "SELECT freshness_basis FROM files WHERE path = 'src/lib/hash.ts'",
       )?.freshness_basis,
     ).toBe("read");
-    expect(fileEvidenceBasis(db, "src/lib/util.ts").basis).toBe("verified");
+    expect(["verified", "sampled"]).toContain(fileEvidenceBasis(db, "src/lib/util.ts").basis);
   });
 
   it("rebuilds an unchanged caller whose target was deleted", async () => {
@@ -137,7 +143,11 @@ describe("the walk skips a file the filesystem says did not change", () => {
     await scan(root, { kind: "full", full: true });
 
     const db = await getDb(root);
-    expect(db.count("SELECT COUNT(*) AS n FROM files WHERE freshness_basis = 'verified'")).toBe(0);
+    expect(
+      db.count(
+        "SELECT COUNT(*) AS n FROM files WHERE freshness_basis IN ('verified','sampled')",
+      ),
+    ).toBe(0);
     expect(db.count("SELECT COUNT(*) AS n FROM files WHERE freshness_basis = 'read'")).toBe(
       ALL.length,
     );
