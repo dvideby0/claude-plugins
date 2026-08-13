@@ -255,8 +255,14 @@ pub fn walk(root: &Path, policy: &InputPolicy, mode: WalkMode<'_>) -> WalkOutcom
 /// — the exact case the sampled-read fallback exists for — reaches Rust as
 /// `Uncategorized`, which cannot even be named on stable. Naming the kinds that
 /// mean absence and treating everything else as "still there, try again later"
-/// keeps the fallback working on the platform that needs it, and the one thing
-/// it must not do — resurrect a deleted file — is what the list covers.
+/// keeps the fallback working on the platform that needs it.
+///
+/// It is a best effort at the thing that must not happen, not a guarantee of
+/// it. A deletion can surface as something else — on Windows, delete-pending
+/// semantics report access denied — and such a file keeps its facts for one
+/// scan before the ordinary not-walked path removes it. That is the direction
+/// to be wrong in: a file briefly kept is repaired by the next scan, while a
+/// file wrongly dropped loses its symbols, edges and findings immediately.
 fn read_failure_is_absence(error: &std::io::Error) -> bool {
     matches!(
         error.kind(),
@@ -797,12 +803,24 @@ mod tests {
         assert!(!read_failure_is_absence(&Error::from(ErrorKind::TimedOut)));
 
         // The one that matters most, and the reason the test is written this
-        // way round: a Windows sharing violation — an antivirus or an editor
-        // holding the file, which is the case the fallback exists for — reaches
-        // Rust as `Uncategorized`, which cannot be named on stable. Enumerating
-        // the recoverable kinds would have excluded exactly it.
+        // way round. An error Rust has no mapping for arrives as
+        // `Uncategorized`, which cannot be named in a `matches!` on stable — so
+        // an allow-list of recoverable kinds could never have contained it. The
+        // Windows sharing violation an antivirus or an editor produces, which
+        // is the case the fallback exists for, is exactly such an error.
+        assert!(!read_failure_is_absence(&Error::from_raw_os_error(UNMAPPED_ERRNO)));
+
+        // Named on Windows, where it is that violation. Elsewhere 32 is EPIPE,
+        // so asserting it there would pin a different error entirely — and
+        // `cargo test` only runs on Linux in CI, so it would have pinned
+        // nothing at all on the platform this is about.
+        #[cfg(windows)]
         assert!(!read_failure_is_absence(&Error::from_raw_os_error(32)));
     }
+
+    /// An errno with no `ErrorKind` mapping, so `kind()` is `Uncategorized`.
+    /// High enough to stay unassigned on the platforms this crate builds for.
+    const UNMAPPED_ERRNO: i32 = 9999;
 
     #[test]
     fn a_file_written_during_the_walk_is_not_evidence_that_the_key_lies() {

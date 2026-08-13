@@ -32,6 +32,13 @@ jobs:
       # This job invokes the native build explicitly below. Avoid unrelated
       # workspace install hooks (notably Electron downloads) in the Rust matrix.
       - run: npm ci --ignore-scripts
+      # The crate's own tests, on every runner in the matrix. The `test` job
+      # below covers Linux only, and this crate's behaviour genuinely differs
+      # per platform: the freshness key is built from different fields on
+      # Windows, and filesystem timestamp granularity differs enough that a
+      # test passing on one has already been found failing on another. Every
+      # runner here is native, so the host-targeted test build runs.
+      - run: cargo test --manifest-path packages/scan-core/Cargo.toml
       - run: npm run build -w @sdlc/scan-core -- --target ${{ matrix.target }}
       - uses: actions/upload-artifact@v4
         with:
