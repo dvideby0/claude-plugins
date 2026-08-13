@@ -331,6 +331,7 @@ export interface NativeCore {
     filesVerified: number;
     filesSampled: number;
     freshnessMismatches: number;
+    freshnessRaced: number;
   }>;
   /** Read source text through the same bounded inventory policy used by scans. */
   readRepoFiles(root: string): Promise<SourceTextFile[]>;
@@ -488,11 +489,14 @@ export interface CollectResult {
   filesVerified: number;
   filesSampled: number;
   /**
-   * Files whose recorded identity matched while their contents had moved.
-   * Above zero means the walk has already redone this run reading everything,
-   * and that this workspace must stop trusting the key.
+   * Files whose recorded identity matched while their contents had moved, and
+   * still matched on a second look. Above zero means the walk has already
+   * redone this run reading everything, and that this workspace must stop
+   * trusting the key.
    */
   freshnessMismatches: number;
+  /** Sampled files written mid-scan. The run is redone; nothing is distrusted. */
+  freshnessRaced: number;
 }
 
 export async function collectFiles(
@@ -508,6 +512,7 @@ export async function collectFiles(
     filesVerified: result.filesVerified,
     filesSampled: result.filesSampled,
     freshnessMismatches: result.freshnessMismatches,
+    freshnessRaced: result.freshnessRaced,
     exclusions: result.exclusions,
     exclusionSummary: result.exclusionSummary,
     diagnostic: result.diagnostic ?? null,

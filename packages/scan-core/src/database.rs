@@ -1778,10 +1778,11 @@ impl NativeDatabase {
     ///
     /// Rows without a `stat_key` are omitted: an absent key is not a baseline.
     ///
-    /// `lastRun` is the newest run id at the moment of the call, which is the
-    /// run about to consume this baseline — `startRun` has already inserted it.
-    /// It is used only to rotate the verification sample, so what matters is
-    /// that it advances, not which run it names.
+    /// `lastRun` is a counter that advances by one per baseline, used only to
+    /// rotate the verification sample. It is deliberately not the run id: the
+    /// runs table is also advanced by analyzer runs, so scans would see a
+    /// stride of two or more, and any stride sharing a factor with the sampling
+    /// period leaves a fixed share of files that are never checked at all.
     #[napi]
     pub fn file_baseline(&self) -> Result<String> {
         let connection = self.connection()?;
@@ -1789,8 +1790,19 @@ impl NativeDatabase {
             Error::new(Status::GenericFailure, "SQLite store is closed".to_string())
         })?;
         let last_run: i64 = connection
-            .query_row("SELECT COALESCE(MAX(id), 0) FROM runs", [], |row| row.get(0))
-            .map_err(|error| database_error("Cannot read the last run id", error))?;
+            .query_row(
+                "SELECT COALESCE(CAST(value AS INTEGER), 0) FROM meta WHERE key = 'walk_sample_round'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap_or(0)
+            + 1;
+        connection
+            .execute(
+                "INSERT OR REPLACE INTO meta(key, value) VALUES('walk_sample_round', ?1)",
+                [last_run.to_string()],
+            )
+            .map_err(|error| database_error("Cannot advance the sampling round", error))?;
         let files = query_json(
             connection,
             "SELECT path, stat_key AS statKey, content_sha AS contentSha, loc

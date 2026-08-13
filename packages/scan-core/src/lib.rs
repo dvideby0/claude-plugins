@@ -220,10 +220,14 @@ pub struct NativeScan {
     pub files_read: u32,
     pub files_verified: u32,
     pub files_sampled: u32,
-    /// Files whose recorded identity matched while their contents had moved.
-    /// Above zero means this filesystem's identity cannot be trusted here, and
-    /// the walk has already redone the run reading everything.
+    /// Files whose recorded identity matched while their contents had moved,
+    /// and still matched when checked again straight afterwards. Above zero
+    /// means this filesystem's identity cannot be trusted here, and the walk
+    /// has already redone the run reading everything.
     pub freshness_mismatches: u32,
+    /// Sampled files written between the stat and the read. Ordinary timing
+    /// against a live editor; the run is redone but nothing is distrusted.
+    pub freshness_raced: u32,
 }
 
 #[napi(object)]
@@ -440,6 +444,7 @@ fn assemble_scan(
         files_verified: outcome.freshness.verified,
         files_sampled: outcome.freshness.sampled,
         freshness_mismatches: outcome.freshness.mismatches,
+        freshness_raced: outcome.freshness.raced,
         diagnostic: outcome.diagnostic,
         gitignore_applied: outcome.gitignore_applied,
         walk_ms,

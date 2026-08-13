@@ -68,11 +68,14 @@ describe("the walk skips a file the filesystem says did not change", () => {
     ).toBeTruthy();
     expect(db.count("SELECT COUNT(*) AS n FROM edges WHERE src_path = 'src/api/caller.ts'")).toBe(1);
 
-    // And it can say how it knows, naming the run that actually read the bytes
-    // rather than the one that trusted the filesystem.
+    // And it can say how it knows. A verified file names the run that actually
+    // read the bytes rather than the one that trusted the filesystem; a sampled
+    // one was read by this run, so it names this run. Asserting the first
+    // unconditionally would contradict the line above it and would break the
+    // moment the rotation happened to pick this file.
     const evidence = fileEvidenceBasis(db, "src/lib/hash.ts");
     expect(["verified", "sampled"]).toContain(evidence.basis);
-    expect(evidence.lastReadRun).toBe(1);
+    expect(evidence.lastReadRun).toBe(evidence.basis === "sampled" ? 2 : 1);
     expect(evidence.lastSeenRun).toBe(2);
   });
 

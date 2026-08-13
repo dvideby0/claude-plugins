@@ -288,11 +288,17 @@ export interface NativeScan {
   filesVerified: number
   filesSampled: number
   /**
-   * Files whose recorded identity matched while their contents had moved.
-   * Above zero means this filesystem's identity cannot be trusted here, and
-   * the walk has already redone the run reading everything.
+   * Files whose recorded identity matched while their contents had moved,
+   * and still matched when checked again straight afterwards. Above zero
+   * means this filesystem's identity cannot be trusted here, and the walk
+   * has already redone the run reading everything.
    */
   freshnessMismatches: number
+  /**
+   * Sampled files written between the stat and the read. Ordinary timing
+   * against a live editor; the run is redone but nothing is distrusted.
+   */
+  freshnessRaced: number
 }
 export interface NativeSourceFile {
   path: string
@@ -403,10 +409,11 @@ export declare class NativeDatabase {
    *
    * Rows without a `stat_key` are omitted: an absent key is not a baseline.
    *
-   * `lastRun` is the newest run id at the moment of the call, which is the
-   * run about to consume this baseline — `startRun` has already inserted it.
-   * It is used only to rotate the verification sample, so what matters is
-   * that it advances, not which run it names.
+   * `lastRun` is a counter that advances by one per baseline, used only to
+   * rotate the verification sample. It is deliberately not the run id: the
+   * runs table is also advanced by analyzer runs, so scans would see a
+   * stride of two or more, and any stride sharing a factor with the sampling
+   * period leaves a fixed share of files that are never checked at all.
    */
   fileBaseline(): string
   all(sql: string, paramsJson: string): string

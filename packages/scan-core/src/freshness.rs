@@ -88,9 +88,15 @@ impl FileBaseline {
     /// lying is discovered by this system rather than by a user wondering why
     /// an answer is wrong.
     ///
-    /// Selection rotates with the run id, so successive scans cover different
-    /// files and the whole tree is checked over time. It is deterministic, so a
-    /// scan can be repeated and get the same sample.
+    /// Selection rotates with a counter that advances by one per scan, so
+    /// consecutive scans take different buckets and every bucket comes round
+    /// within `period` scans. It is deterministic, so a scan can be repeated
+    /// and check the same files.
+    ///
+    /// Note what that does and does not promise. Files are spread across
+    /// buckets by a hash, so bucket sizes vary and a given scan may sample
+    /// nothing at all; the guarantee is that no file is systematically skipped
+    /// forever, not that every scan checks a file.
     pub fn sampled(&self, path: &str) -> bool {
         if self.period <= 1 {
             return true;
@@ -117,8 +123,9 @@ impl FileBaseline {
 
 /// How many skippable files to check per run, as one in every `period`.
 ///
-/// About one percent of the tree, at least one file so the check never lapses
-/// entirely, and at most five hundred so a large repository stays bounded.
+/// About one percent of the tree, and at most five hundred so a large
+/// repository stays bounded. The floor of one is a floor on the *target*: a
+/// hash bucket can be empty, so some scans sample nothing.
 /// Windows takes twice as many, because its key has neither a `ctime` with the
 /// Unix meaning nor a stable file index, and a weaker key deserves more
 /// checking rather than the same amount.

@@ -112,9 +112,13 @@ pub struct FreshnessSummary {
     pub read: u32,
     pub verified: u32,
     pub sampled: u32,
-    /// Files whose recorded identity matched while their contents did not.
+    /// Files whose recorded identity matched while their contents did not, and
+    /// whose identity was still the same when checked again straight after.
     /// Any at all means the key cannot be trusted on this filesystem.
     pub mismatches: u32,
+    /// Sampled files that were written between the stat and the read. Ordinary
+    /// timing against a live editor, not evidence of anything.
+    pub raced: u32,
 }
 
 /// Per-walk freshness tallies, incremented from the walker's threads.
@@ -124,6 +128,9 @@ struct Counts {
     verified: AtomicU32,
     sampled: AtomicU32,
     mismatches: AtomicU32,
+    /// Sampled files that changed between the stat and the read. Counted apart
+    /// from a mismatch because the key was not wrong about anything.
+    raced: AtomicU32,
 }
 
 impl Counts {
@@ -133,6 +140,7 @@ impl Counts {
             verified: self.verified.load(Ordering::Relaxed),
             sampled: self.sampled.load(Ordering::Relaxed),
             mismatches: self.mismatches.load(Ordering::Relaxed),
+            raced: self.raced.load(Ordering::Relaxed),
         }
     }
 }
@@ -200,25 +208,54 @@ fn relative_path(root: &Path, entry: &Path) -> Option<String> {
 /// how a deletion is noticed. What [`WalkMode::Incremental`] saves is the read,
 /// the UTF-8 decode, the content hash and, downstream, the parse.
 pub fn walk(root: &Path, policy: &InputPolicy, mode: WalkMode<'_>) -> WalkOutcome {
-    let outcome = walk_with(root, policy, &mode);
+    let outcome = inventory(root, policy, &mode);
 
     // The sample caught the key claiming a file was unchanged when its contents
     // had moved. Every other skip this run rests on the same assumption, so the
     // run is redone reading everything rather than kept with a warning attached
     // — a correct answer now, and a diagnostic saying why it cost more.
-    if outcome.freshness.mismatches > 0 {
-        let missed = outcome.freshness.mismatches;
-        let mut reread = walk_with(root, policy, &WalkMode::ReadAll);
-        reread.freshness.mismatches = missed;
-        reread.diagnostic = Some(format!(
-            "The filesystem's identity for {missed} file(s) matched while their contents had \
-             changed, so nothing this filesystem reports about a file being unchanged can be \
-             relied on. Every file was read for this scan. Later scans will keep reading every \
-             file until this workspace is indexed on a filesystem where the check passes."
-        ));
-        return reread;
+    //
+    // Checked here, around the whole inventory, rather than inside it: the
+    // empty-repository retry samples too, and a lie caught only on that path
+    // would otherwise flow straight out with the skips it had just disproved.
+    if outcome.freshness.mismatches == 0 {
+        return outcome;
     }
 
+    let missed = outcome.freshness.mismatches;
+    let earlier = outcome.diagnostic.clone();
+    let mut reread = inventory(root, policy, &WalkMode::ReadAll);
+    reread.freshness.mismatches = missed;
+    let note = format!(
+        "The filesystem's identity for {missed} file(s) matched while their contents had \
+         changed, so nothing this filesystem reports about a file being unchanged can be \
+         relied on. Every file was read for this scan, and this workspace will keep reading \
+         every file until somebody clears that."
+    );
+    // Whatever the first pass had to say about the input policy is a separate
+    // problem from the key being wrong, and is not dropped for this scan.
+    reread.diagnostic = Some(match earlier {
+        Some(existing) => format!("{existing} {note}"),
+        None => note,
+    });
+    reread
+}
+
+/// Whether a sampled disagreement means the key is unreliable.
+///
+/// `observed` is the identity the walk stat'ed before reading; `current` is the
+/// identity a moment after. Equal means the file did not move under us, so the
+/// key really did stand for contents that were not there. Anything else — a
+/// different identity, or none because the file has now entered the racy window
+/// — means it was written between the two calls, which says nothing about the
+/// filesystem and happens constantly to a scan racing an editor save.
+fn key_was_wrong(observed: &Option<String>, current: &Option<String>) -> bool {
+    observed == current
+}
+
+/// The walk, plus the one retry that keeps an empty inventory from standing.
+fn inventory(root: &Path, policy: &InputPolicy, mode: &WalkMode<'_>) -> WalkOutcome {
+    let outcome = walk_with(root, policy, mode);
     if !outcome.files.is_empty() || !policy.has_gitignore() {
         return outcome;
     }
@@ -242,7 +279,7 @@ pub fn walk(root: &Path, policy: &InputPolicy, mode: WalkMode<'_>) -> WalkOutcom
          Narrow the rule, or index a directory where the source lives."
     );
     let relaxed = policy.without_gitignore(diagnostic.clone());
-    let mut retried = walk_with(root, &relaxed, &mode);
+    let mut retried = walk_with(root, &relaxed, mode);
     retried.gitignore_applied = false;
     // Keep any earlier complaint about the file itself: "some rules could not
     // be read" and "the rules matched everything" are separate problems.
@@ -455,7 +492,34 @@ fn walk_with(root: &Path, policy: &InputPolicy, mode: &WalkMode<'_>) -> WalkOutc
                     }
                 }
                 _ => {
-                    let bytes = match std::fs::read(entry.path()) {
+                    let read = std::fs::read(entry.path());
+                    // A sampled file is one we were entitled to skip. If the
+                    // extra read fails — an antivirus or editor holding a lock,
+                    // which is routine on Windows, where twice as many files
+                    // are sampled — the file has not gone anywhere and its
+                    // recorded facts still stand. Dropping it here would delete
+                    // its symbols and retire its findings on the strength of a
+                    // transient lock and a rotation coin flip.
+                    if let (Err(_), Some((content_sha, loc))) = (&read, &expected_sha) {
+                        counts.verified.fetch_add(1, Ordering::Relaxed);
+                        let _ = sender.send(Scanned {
+                            path: path.clone(),
+                            lang: decision.language,
+                            loc: *loc,
+                            bytes: metadata.len() as u32,
+                            content_sha: content_sha.clone(),
+                            is_test: decision.is_test,
+                            parseable: decision.parseable(),
+                            stat_key,
+                            freshness: Freshness::Verified,
+                            content: None,
+                        });
+                        if let Ok(mut collector) = collector.lock() {
+                            collector.count(&decision);
+                        }
+                        return ignore::WalkState::Continue;
+                    }
+                    let bytes = match read {
                         Ok(bytes) => bytes,
                         Err(error) => {
                             let decision = policy.unreadable(&path, error.to_string());
@@ -515,7 +579,29 @@ fn walk_with(root: &Path, policy: &InputPolicy, mode: &WalkMode<'_>) -> WalkOutc
                         }
                     } else {
                         if sample {
-                            counts.mismatches.fetch_add(1, Ordering::Relaxed);
+                            // The bytes disagree with the recorded hash, and
+                            // there are two ways that happens. The filesystem's
+                            // identity is unreliable — what the sample is for —
+                            // or somebody wrote the file between our stat and
+                            // our read a moment later, which the racy rule
+                            // cannot cover because the mtime we captured was
+                            // genuinely settled at the time. A watcher-driven
+                            // scan races editor saves constantly, and treating
+                            // that as proof of a lying filesystem would drop a
+                            // workspace onto the slow path for good on the
+                            // strength of ordinary timing.
+                            //
+                            // Re-stat to tell them apart: if the identity has
+                            // moved since, or has entered the racy window, the
+                            // file changed under us and nothing was disproved.
+                            let now = std::fs::metadata(entry.path())
+                                .ok()
+                                .and_then(|fresh| crate::freshness::stat_key(&fresh, started_secs));
+                            if key_was_wrong(&stat_key, &now) {
+                                counts.mismatches.fetch_add(1, Ordering::Relaxed);
+                            } else {
+                                counts.raced.fetch_add(1, Ordering::Relaxed);
+                            }
                         }
                         counts.read.fetch_add(1, Ordering::Relaxed);
                         Scanned {
@@ -572,7 +658,7 @@ fn walk_with(root: &Path, policy: &InputPolicy, mode: &WalkMode<'_>) -> WalkOutc
 
 #[cfg(test)]
 mod tests {
-    use super::{walk, WalkMode};
+    use super::{key_was_wrong, walk, WalkMode};
     use crate::freshness::FileBaseline;
     use crate::input_policy::{EntryKind, InputPolicy};
     use std::collections::HashSet;
@@ -644,6 +730,27 @@ mod tests {
         assert_eq!(outcome.freshness.verified, 0);
         assert_eq!(outcome.freshness.sampled, 0);
         assert!(outcome.files.iter().all(|file| file.content.is_some()));
+    }
+
+    #[test]
+    fn a_file_written_during_the_walk_is_not_evidence_that_the_key_lies() {
+        // The race itself cannot be staged from outside — it needs a write to
+        // land between the walk's stat and its read a moment later, and a test
+        // that tried would mostly be testing its own luck. The decision the
+        // walk makes when it sees a disagreement is what matters, and that is
+        // a plain comparison.
+        let observed = Some("abc123".to_string());
+
+        // Same identity a moment later: the file did not move under us, so the
+        // key really did stand for contents that were not there.
+        assert!(key_was_wrong(&observed, &observed.clone()));
+
+        // A different identity: written since the stat.
+        assert!(!key_was_wrong(&observed, &Some("def456".to_string())));
+
+        // No identity at all, because the file has just entered the racy
+        // window — which is precisely what a write during the walk looks like.
+        assert!(!key_was_wrong(&observed, &None));
     }
 
     #[test]

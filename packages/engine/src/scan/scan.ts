@@ -79,6 +79,8 @@ export interface ScanResult {
   filesRead: number;
   filesVerified: number;
   filesSampled: number;
+  /** Sampled files written between the stat and the read, which prove nothing. */
+  filesRacedDuringScan: number;
   /** Set once this workspace's filesystem identity has been caught lying. */
   freshnessDistrusted: string | null;
   /** Renames confirmed well enough to carry authored knowledge across. */
@@ -172,6 +174,7 @@ async function doScan(projectRoot: string, options: ScanOptions = {}): Promise<S
     filesVerified,
     filesSampled,
     freshnessMismatches,
+    freshnessRaced,
   } = await collectFiles(projectRoot, full || distrusted ? null : db.fileBaseline());
   const aliases = await loadAliases(projectRoot);
 
@@ -630,7 +633,15 @@ async function doScan(projectRoot: string, options: ScanOptions = {}): Promise<S
     // Scoped to the files this run re-parsed, because those are the only rows
     // that were deleted and reinserted without a destination. Everything else
     // was resolved against these same inputs and still holds.
-    const needResolve = inputsUnchanged ? [...parsed.keys()] : null;
+    // Every scoped path becomes a bind variable, and SQLite takes at most
+    // 32766 of them. A mass reformat in a very large repository could exceed
+    // that, and the throw would roll the transaction back — including the
+    // content hashes — so the next scan would re-parse the same set and fail
+    // the same way, wedged until somebody forced a full scan. Above the cap the
+    // whole-table pass costs about the same anyway, so it just runs.
+    const scopeCap = 4_000;
+    const reparsed = inputsUnchanged ? [...parsed.keys()] : null;
+    const needResolve = reparsed !== null && reparsed.length <= scopeCap ? reparsed : null;
     const scope = needResolve === null ? "" : ` WHERE src_path IN (${placeholders(needResolve)})`;
     const scopeParams = needResolve ?? [];
 
@@ -720,6 +731,11 @@ async function doScan(projectRoot: string, options: ScanOptions = {}): Promise<S
   // Persisted for the same reason the relaxed input policy is: a daemon
   // restart would otherwise go back to trusting a filesystem this workspace
   // has already watched lie about an unchanged file.
+  //
+  // A file written between the stat and the read is counted apart and does not
+  // reach here. It proves nothing about the filesystem, it happens routinely to
+  // a watcher-driven scan racing an editor save, and treating it as proof would
+  // cost a workspace its fast path permanently on the strength of timing.
   if (freshnessMismatches > 0) {
     db.run("INSERT OR REPLACE INTO meta(key, value) VALUES('walk_freshness_distrusted', ?)", [
       diagnostic ?? "A file's recorded filesystem identity matched while its contents had changed.",
@@ -766,7 +782,9 @@ async function doScan(projectRoot: string, options: ScanOptions = {}): Promise<S
     filesRead,
     filesVerified,
     filesSampled,
-    freshnessDistrusted: freshnessMismatches > 0 ? (diagnostic ?? "The freshness key was wrong.") : distrusted,
+    filesRacedDuringScan: freshnessRaced,
+    freshnessDistrusted:
+      freshnessMismatches > 0 ? (diagnostic ?? "The freshness key was wrong.") : distrusted,
     inputDiagnostic: [diagnostic, rebuildDiagnostic].filter(Boolean).join(" ") || null,
     engine,
     upgraded: stale,

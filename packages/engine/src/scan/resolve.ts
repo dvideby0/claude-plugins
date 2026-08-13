@@ -142,11 +142,26 @@ export function resolutionInputs(
     hash.update(path);
     hash.update("\0");
   }
-  hash.update("");
-  for (const alias of [...aliases].sort((a, b) => a.prefix.localeCompare(b.prefix))) {
+  hash.update("|aliases|");
+  // In the order the resolver reads them, not sorted. `resolve` takes the first
+  // alias whose prefix matches, and then tries that alias's targets in tsconfig
+  // order — which is what TypeScript's `paths` fallback means. Reordering
+  // either is a real change in what resolves where, so canonicalising the order
+  // away would hash two genuinely different configurations identically, and the
+  // gate would go on serving the answers from the old one indefinitely.
+  //
+  // Sorting bought nothing anyway: `parseTsAliases` yields deterministic JSON
+  // key order, and `localeCompare` made the identity depend on the machine's
+  // locale.
+  for (const alias of aliases) {
     hash.update(alias.prefix);
     hash.update("\0");
-    hash.update([...alias.targets].sort().join(","));
+    for (const target of alias.targets) {
+      hash.update(target);
+      // Framed rather than joined with a comma: two targets `a` and `b` must
+      // not hash the same as one directory named `a,b`.
+      hash.update("\0");
+    }
     hash.update("\n");
   }
   return {

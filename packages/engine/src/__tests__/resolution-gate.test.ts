@@ -148,6 +148,56 @@ describe("edges are re-resolved only where the relation set moved", () => {
     ).toBe("src/other/hash.ts");
   });
 
+  it("re-resolves when tsconfig paths are only reordered", async () => {
+    // `resolve` takes the first alias prefix that matches and tries that
+    // alias's targets in tsconfig order, which is what TypeScript's `paths`
+    // fallback means. So a pure reorder changes what resolves where while every
+    // file, every specifier and every alias mapping stays the same — and an
+    // identity that sorted them would hash the two configurations identically
+    // and keep serving the old answer for good.
+    root = await makeProject({
+      ...PROJECT,
+      "tsconfig.json": JSON.stringify({
+        compilerOptions: { baseUrl: ".", paths: { "@shared/*": ["src/a/*", "src/b/*"] } },
+      }),
+      "src/a/util.ts": "export const util = 'a';\n",
+      "src/b/util.ts": "export const util = 'b';\n",
+      "src/api/shared.ts": 'import { util } from "@shared/util.js";\n\nexport const use = util;\n',
+    });
+    await settle(root, [
+      ...Object.keys(PROJECT),
+      "src/a/util.ts",
+      "src/b/util.ts",
+      "src/api/shared.ts",
+    ]);
+    await scan(root, { kind: "full" });
+    let db = await getDb(root);
+    expect(
+      db.get<{ dst_path: string | null }>(
+        "SELECT dst_path FROM edges WHERE src_path = 'src/api/shared.ts'",
+      )?.dst_path,
+    ).toBe("src/a/util.ts");
+
+    await writeFile(
+      join(root, "tsconfig.json"),
+      JSON.stringify({
+        compilerOptions: { baseUrl: ".", paths: { "@shared/*": ["src/b/*", "src/a/*"] } },
+      }),
+    );
+    await scan(root, { kind: "incremental" });
+
+    const incremental = await resolutions(root);
+    db = await getDb(root);
+    expect(
+      db.get<{ dst_path: string | null }>(
+        "SELECT dst_path FROM edges WHERE src_path = 'src/api/shared.ts'",
+      )?.dst_path,
+    ).toBe("src/b/util.ts");
+
+    await scan(root, { kind: "full", full: true });
+    expect(incremental).toEqual(await resolutions(root));
+  });
+
   it("leaves every resolved edge exactly as it was when only a comment changes", async () => {
     root = await makeProject(PROJECT);
     await settle(root, Object.keys(PROJECT));
