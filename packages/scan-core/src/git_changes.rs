@@ -195,19 +195,32 @@ fn bounded_diagnostic(bytes: &[u8]) -> Option<String> {
 /// it everywhere.
 pub(crate) fn confined_relative_path(value: &str) -> Option<String> {
     let path = value.replace('\\', "/");
-    if path.is_empty()
-        || path.len() > MAX_CHANGE_PATH_BYTES
-        || Path::new(&path).components().any(|component| {
-            matches!(
-                component,
-                Component::ParentDir | Component::RootDir | Component::Prefix(_)
-            )
-        })
-    {
+    if path.is_empty() || path.len() > MAX_CHANGE_PATH_BYTES {
         return None;
     }
-    let normalized = path.trim_start_matches("./");
-    (!normalized.is_empty()).then(|| normalized.to_string())
+
+    // Rebuilt from the components that were checked, rather than checked and
+    // then edited as text. Those are two different strings, and the difference
+    // is an escape: `.//escape.ts` parses as a current-directory component
+    // followed by a name — nothing rooted for the check to object to — while
+    // stripping the leading `./` from the text leaves `/escape.ts` behind.
+    // Returning what was inspected is the only version of this with one answer.
+    let mut parts: Vec<&str> = Vec::new();
+    for component in Path::new(&path).components() {
+        match component {
+            Component::Normal(part) => parts.push(part.to_str()?),
+            // `.` is noise wherever it appears, and dropping it here also means
+            // `src/./x.ts` and `src/x.ts` cannot arrive as two different keys
+            // for one file.
+            Component::CurDir => {}
+            // Rooted, above, or a drive: all outside, or naming the workspace
+            // rather than something in it.
+            Component::ParentDir | Component::RootDir | Component::Prefix(_) => return None,
+        }
+    }
+    // Empty means the input named the workspace itself, which is not a change
+    // inside it.
+    (!parts.is_empty()).then(|| parts.join("/"))
 }
 
 fn normalized_path(bytes: &[u8]) -> Option<String> {
@@ -650,6 +663,11 @@ mod tests {
         // A backslash is a separator, not a name, so this is the same path.
         assert_eq!(confined_relative_path("\\escape.ts"), None);
 
+        // Naming the workspace is not naming a change inside it.
+        for root in [".", "./.", "./"] {
+            assert_eq!(confined_relative_path(root), None, "{root} is the root");
+        }
+
         for inside in ["src/inside.ts", "./src/inside.ts", "inside.ts"] {
             assert!(
                 confined_relative_path(inside).is_some(),
@@ -660,6 +678,32 @@ mod tests {
             confined_relative_path("./src/inside.ts").as_deref(),
             Some("src/inside.ts")
         );
+        // One key per file: `.` in the middle is dropped rather than preserved.
+        assert_eq!(
+            confined_relative_path("src/./x.ts").as_deref(),
+            Some("src/x.ts")
+        );
+
+        // Whatever comes back is itself confined. Asserting only that rooted
+        // *inputs* are rejected missed that `.//escape.ts` was accepted and
+        // handed back rooted: the check ran on one string and the return value
+        // was built from another.
+        for accepted in [
+            "src/inside.ts",
+            "./src/inside.ts",
+            ".//escape.ts",
+            "././src/x.ts",
+            "src/./x.ts",
+        ] {
+            let Some(confined) = confined_relative_path(accepted) else {
+                continue;
+            };
+            assert_eq!(
+                confined_relative_path(&confined).as_deref(),
+                Some(confined.as_str()),
+                "{accepted} produced {confined}, which is not itself confined"
+            );
+        }
     }
 
     #[test]
