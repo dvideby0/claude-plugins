@@ -277,8 +277,8 @@ Acceptance criteria:
   cleared only at its predeclared confidence bound — a point estimate alone
   promotes nothing. Until all of that holds it remains an experimental
   internal path; when it does, the label is replaced by an evaluation status
-  scoped to the languages the pilot measured, and unmeasured languages stay
-  labeled unverified.
+  scoped to the repositories, task classes, and languages the pilot measured,
+  and unmeasured domains stay labeled unverified.
 - After EVAL-002 proves the query, the public MCP catalog is reviewed against
   a named target shape — brief, expand, read_file, search, and the
   knowledge-authoring tools as the primary tier — and tools that tier composes
@@ -305,10 +305,12 @@ Acceptance criteria (Phase 1, the pilot):
   tests live outside the writable checkout, and a trial that edited verifier
   files is rejected before scoring — an agent must not be able to make the
   oracle pass by editing it.
-- Every trial starts from the same immutable commit with a fresh or
-  byte-identical isolated store and session — a per-trial `SDLC_HOME` — and
-  arm order is randomized or counterbalanced, so no run's edits, rescans, or
-  persisted memories become another run's inputs.
+- Every trial starts from the same immutable commit in a fresh disposable
+  checkout with freshly installed or verified byte-identical dependencies, and
+  a fresh or byte-identical isolated store and session — a per-trial
+  `SDLC_HOME` — with arm order randomized or counterbalanced. A reused
+  checkout contaminates later arms through untracked, ignored, and
+  `node_modules` state even when the commit matches.
 - The decision rule — success aggregation across trials, the non-inferiority
   margin, the brief-harm ceiling, the regression bound for exact-string and
   small-target tasks, the Aider token-cost band and success margin, and the
@@ -320,9 +322,11 @@ Acceptance criteria (Phase 1, the pilot):
   brief-supplied context with source reads forbidden. The last arm exists to
   falsify context-only, not to promote it.
 - The primary metric is task success. Diagnostics include tokens, tool calls,
-  wall time, brief-harm rate (the hybrid arm fails where the stock arm
-  succeeds), and search-escape rate (the hybrid arm abandons the brief for raw
-  search), taken from harness transcripts rather than self-report.
+  wall time, brief harm, and search-escape rate (the hybrid arm abandons the
+  brief for raw search), taken from harness transcripts rather than
+  self-report. Brief harm is task-level net discordance — stock-beats-hybrid
+  minus hybrid-beats-stock, with clustered uncertainty — not raw discordant
+  pairs, which stochastic trials produce even between identical arms.
 - Results are machine-readable; unmeasured cells are labeled gaps, not zeros.
 
 Phase 2 begins only after Phase 1 reports: more repositories and languages,

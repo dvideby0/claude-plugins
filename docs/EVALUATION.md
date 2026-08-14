@@ -251,8 +251,8 @@ evidence instead of being reported as current. The corpus still blocks promotion
 a broader multi-project sample and downstream task outcomes are measured —
 EVAL-002 Phase 1 is designed to supply both. Language breadth beyond
 TypeScript is Phase 2 evidence: it does not gate promotion, but a promotion
-earned on TypeScript pilots is scoped to the languages measured, and
-unmeasured languages keep their experimental label. The source packer avoids spending a tight budget on overlapping
+earned on TypeScript pilots is scoped to the repositories, task classes, and
+languages measured, and unmeasured domains keep their experimental label. The source packer avoids spending a tight budget on overlapping
 excerpts from one path, then restores those excerpts in rank order when a
 larger budget has room.
 

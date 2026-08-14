@@ -26,7 +26,7 @@ The commands need a running engine. Setup is in
 
 | Command | What it does |
 |---|---|
-| [`/implement`](../../plugins/sdlc/commands/implement.md) | Implement a change through subagents, each briefed by the engine rather than by reading the codebase, and verified against what actually depends on the code |
+| [`/implement`](../../plugins/sdlc/commands/implement.md) | Implement a change through subagents briefed by the engine — the brief decides where source reading starts — and verified against what actually depends on the code |
 | [`/debug`](../../plugins/sdlc/commands/debug.md) | Find the root cause of a bug by following the graph rather than guessing, then record it so it is never re-diagnosed |
 | [`/handoff`](../../plugins/sdlc/commands/handoff.md) | Persist where this session got to, into the store rather than a summary — so the next session, in any harness, picks it up by asking |
 

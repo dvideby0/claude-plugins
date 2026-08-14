@@ -1,5 +1,5 @@
 ---
-description: Implement a change through subagents, each briefed by the engine rather than by reading the codebase, and verified against what actually depends on the code
+description: Implement a change through subagents briefed by the engine — the brief decides where source reading starts — and verified against what actually depends on the code
 allowed-tools: Task, Read, Edit, Write, Bash, Grep, Glob, AskUserQuestion, mcp__sdlc__brief, mcp__sdlc__context, mcp__sdlc__impact, mcp__sdlc__references, mcp__sdlc__recall, mcp__sdlc__remember, mcp__sdlc__audit_query, mcp__sdlc__audit_scan
 ---
 
