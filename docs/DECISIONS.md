@@ -16,6 +16,7 @@ this file. The store is primary; this is the readable summary.
 | [Native SQLite through rusqlite inside the existing Rust module](#native-sqlite-through-rusqlite-inside-the-existing-rust-module) | Accepted | 2026-08-12 |
 | [First FLOW-001 production slice](#first-flow-001-production-slice) | Accepted | 2026-08-12 |
 | [Completed work leaves the backlog](#completed-work-leaves-the-backlog) | Accepted | 2026-08-13 |
+| [Context-first retrieval, gated by task outcomes](#context-first-retrieval-gated-by-task-outcomes) | Accepted | 2026-08-13 |
 
 ## Provider-first code intelligence
 
@@ -160,6 +161,52 @@ Alternatives considered:
 Nothing is lost by moving history: git holds the diff, the changelog holds the
 outcome, and this file holds the reasoning. The migration was a harvest — no
 changelog entry was invented, and no acceptance criterion was deleted.
+
+## Context-first retrieval, gated by task outcomes
+
+> **Status:** Accepted · **Decided:** 2026-08-13 · **Recorded:** 2026-08-13
+
+An external strategic review of the retrieval bet was weighed against the
+evidence in [`EVALUATION.md`](EVALUATION.md). Its verdict — the validated
+thesis is context-first, not context-only, and the product-level benefit of
+`brief` is unproven — was accepted and landed in the backlog and command prose
+in the same change:
+
+- **Context-first is not context-only.** `/implement`'s prose said "do not
+  read the repository at large" three times while its own tool list kept
+  Read, Grep and Glob; the prose now matches the tool policy and
+  [`PRODUCT_VISION.md`](PRODUCT_VISION.md).
+- **Task outcomes become QUERY-001's promotion gate through EVAL-002**,
+  because the retrieval corpus measures brief contents under a budget cap —
+  recall ceilings set by the evidence budget, a memory-evidence asymmetry no
+  map can win — not whether briefs help an agent finish work. Phase 1 runs on
+  TypeScript only, where the audited slice is complete, so a negative result
+  indicts the thesis rather than unfinished language support.
+- **Failure evidence joins working-tree changes as retrieval seeds**
+  (QUERY-001): failing-test output, stack traces, error strings.
+- **The progressive surface — QUERY-002's retrieval ids, expand, and feedback
+  — is contract-defined now but built only after the pilot**, with the pilot
+  instrumented from harness transcripts, because the feedback operation it
+  would otherwise lean on is part of what the pilot must justify.
+
+Declined, and what lost:
+
+- **An auto-generated Aider-style map as a product capability.** The pinned
+  map is the baseline the query must beat; shipping it as a feature would bet
+  against the product's own architecture before the measurement is in.
+- **Non-code knowledge ingestion (tickets, PRs, CI history).** Deferred in the
+  backlog: the evidence model should not be diluted with sources that have no
+  anchors in the graph while the anchored sources are still unproven.
+- **Artifact handles and lazy tool loading.** The harnesses already provide
+  this at the host layer; duplicating it in the engine buys nothing
+  measurable.
+- **A separate tool-surface-reduction item.** QUERY-001 already carried the
+  criterion; it was sharpened to name the target tier rather than duplicated.
+
+The same review prompted a positioning change: the repository was renamed
+`code-context-engine`, while the `@sdlc` package scope, plugin name, and state
+directory stay unchanged — the category descriptor moved into the repository
+identity, not the product internals.
 
 ---
 

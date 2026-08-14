@@ -223,15 +223,18 @@ FTS5 with bounded one-hop graph, execution/authored flow, test, finding, memory,
 relation, and exported-symbol evidence; the Node boundary reads only selected
 contained source ranges and enforces an exact byte ceiling on the complete MCP
 response. It exposes ranking reasons, provenance, freshness, omissions,
-uncertainty, and recommended reads without adding another tool to the 33-tool
+uncertainty, and recommended reads without adding another tool to the public
 catalog. The path is not yet proven. A checked-in corpus now compares it with
 actual digest-pinned Aider 0.86.2 output. The review task retrieves its checkout,
 inventory, and covering-test evidence at 0.5 recall@5; the authored-memory debug
 task retrieves its constraint and ledger declaration at 0.75 recall@4. Both
 return zero irrelevant paths, cover all reviewed evidence, stay below 1,500
-tokens, and use less than 1.5 times the map's actual tokens. Change relevance
-and broader corpora remain open, so the response labels itself experimental
-and no redundant public tools have been retired.
+tokens, and use less than 1.5 times the map's actual tokens. A generic
+working-tree review task attests the exact changed path with 1.0 recall and
+zero irrelevant paths without the query naming it. Broader corpora and
+downstream task outcomes remain open — EVAL-002 in [BACKLOG.md](BACKLOG.md)
+defines that study — so the response labels itself experimental and no
+redundant public tools have been retired.
 
 ### Desktop application
 

@@ -216,9 +216,21 @@ commits a clean fixture baseline and then modifies `src/api.ts` without putting
 that path or its symbols in the query. SDLC reports the exact changed path,
 ranks its `postCheckout` declaration first, and includes the downstream
 `submitCheckout` graph neighbor in its first three paths. It scores 1.0 recall,
-1.0 reviewed-evidence coverage, and zero irrelevant paths in 4,901 bytes and
-1,393 tokens. The static Aider map scores 0.5 recall and 0.9 irrelevant paths;
-SDLC uses 1.418534 times its tokens.
+1.0 reviewed-evidence coverage, and zero irrelevant paths in 4,826 bytes and
+1,374 tokens. The static Aider map scores 0.5 recall and 0.9 irrelevant paths;
+SDLC uses 1.399185 times its tokens.
+
+Three caps sit inside these numbers and are stated so nobody reads them as
+ranking quality. The 6,000-byte budget admits three evidence units — one per
+reserved 2,000 bytes — so recall@K cannot exceed what three units cover: 0.5
+and 0.75 are those oracles' budget ceilings, hit exactly, not ranking misses.
+Memory-kind required evidence cannot match a repository map by construction,
+so Aider's coverage deficit on the debug scenario is structural. And the map
+is static and query-independent, so the working-tree scenario measures
+change-awareness the map does not attempt. What these scenarios do support:
+within budget, ranking wastes nothing, and change awareness works on one
+fixture. Whether any of it changes task outcomes is EVAL-002's question, not
+this corpus's.
 
 These measurements clear tightened checked-in regression floors, but they do
 not promote QUERY-001. Intent words no longer become redundant lexical terms,
@@ -236,10 +248,31 @@ templates so the checked-in measurement cannot be redirected by the caller's
 environment. Explicit targets also remain ahead of unrelated dirty paths, while
 deletes and renames detected before watcher refresh retain stale historical
 evidence instead of being reported as current. The corpus still blocks promotion until
-a broader multi-project/language sample and downstream task outcomes are
-measured. The source packer avoids spending a tight budget on overlapping
+a broader multi-project sample and downstream task outcomes are measured —
+EVAL-002 Phase 1 is designed to supply both. Language breadth beyond
+TypeScript is Phase 2 evidence: it does not gate promotion, but a promotion
+earned on TypeScript pilots is scoped to the repositories, task classes, and
+languages measured, and unmeasured domains keep their experimental label. The source packer avoids spending a tight budget on overlapping
 excerpts from one path, then restores those excerpts in rank order when a
 larger budget has room.
+
+### Planned promotion protocol (EVAL-002)
+
+The numeric gate for promoting QUERY-001 lives here, not in the backlog, so
+the predeclared protocol has exactly one authoritative home. The values below
+are proposals, draft until the predeclaration that must precede the first
+pilot run replaces them. The primary endpoint is task success versus the
+stock arm, with at least five absolute points as the promotion margin at the
+predeclared confidence bound. The alternative endpoint — non-inferior success
+at twenty-five percent fewer tokens or tool calls — enters only under a
+multiplicity-controlled fallback procedure that spends error probability
+across both endpoints and fixes the token-versus-tool-call choice in advance;
+a bare hierarchical order cannot rescue a failed primary, and nothing gets a
+second independent chance to pass. The hybrid arm must be no worse than the
+Aider-map arm on task success within a predeclared token-cost band, the
+brief-harm ceiling binds per task class, and the per-task-and-arm trial
+count, retry policy, and stopping rule are fixed before any outcome is
+observed.
 
 To run only one retrieval fixture while retaining the provider corpus:
 
@@ -296,7 +329,8 @@ measurements as zeros:
 - entry-to-effect path precision and recall outside the one opt-in
   Python/LangGraph Joern scenario and the measured TypeScript HTTP adapter;
 - downstream retrieval task/answer quality and retrieval quality outside the
-  first TypeScript checkout fixture;
+  first TypeScript checkout fixture — the study that would measure this is
+  EVAL-002 in [`BACKLOG.md`](BACKLOG.md);
 - warm and one-file-change SCIP indexing;
 - invalidation caused by anything other than the comment-only probe, including
   interface changes and renames, which have contract regressions but no

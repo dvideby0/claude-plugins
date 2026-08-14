@@ -1,7 +1,8 @@
 # SDLC
 
-A local code-intelligence engine, a desktop app that installs and supervises
-it, and thin companion plugins for coding harnesses.
+A local, evidence-backed code context engine: a persistent model of your
+codebase that briefs humans and AI agents, a desktop app that installs and
+supervises it, and thin companion plugins for coding harnesses.
 
 The durable product direction, implementation audit, prior-art research, and
 prioritized backlog are indexed in [`docs/README.md`](docs/README.md).
@@ -203,7 +204,7 @@ capability exists, and what it cannot see, is in
 ## Plugins
 
 ```
-/plugin marketplace add dvideby0/claude-plugins
+/plugin marketplace add dvideby0/code-context-engine
 /plugin install sdlc
 ```
 

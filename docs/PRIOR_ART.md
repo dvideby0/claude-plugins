@@ -2,7 +2,7 @@
 
 > [Documentation hub](README.md) · [SDLC](../README.md)
 
-Research date: 2026-08-05. The goal is not to reproduce any one product. It is to identify proven ideas, reusable standards, and places where a local desktop product can be simpler or more useful.
+Research date: 2026-08-05; rows added 2026-08-13 (Serena, Greptile). The goal is not to reproduce any one product. It is to identify proven ideas, reusable standards, and places where a local desktop product can be simpler or more useful.
 
 ## Conclusions to carry into the architecture
 
@@ -35,6 +35,8 @@ Research date: 2026-08-05. The goal is not to reproduce any one product. It is t
 | [Sourcetrail](https://github.com/CoatiSoftware/Sourcetrail) | A local desktop source explorer can synchronize code and graph navigation | Direct manipulation, local operation, focused neighborhoods | Its archived status is a reminder that graph exploration needs durable everyday workflows |
 | [OpenGrok](https://github.com/oracle/opengrok) | Fast search, cross-reference, and history remain a valuable baseline | Identifier/text search and history-linked navigation | Semantic layers should not make exact search slower or harder |
 | [Augment Context Services](https://docs.augmentcode.com/context-services/overview) | A context engine can be exposed to external agents through MCP | Treat MCP as an access surface and support cross-tool context | Vendor performance claims should be treated as positioning unless independently reproduced |
+| [Serena](https://github.com/oraios/serena) | An open-source MCP server can expose LSP-grade symbol navigation — find symbol, references, targeted edits — to any agent harness | A free comparator arm for EVAL-002 Phase 2, and evidence that a small symbol-level tool surface works across harnesses without a proprietary index | Per-request language-server navigation is not a budgeted, ranked context model, and its session lifecycle and latency are unproven for a local product |
+| [Greptile](https://www.greptile.com/docs/how-greptile-works/graph-based-codebase-context) | A code-graph index seeded by diffs, failing tests, and stack traces can drive useful automated PR review | Failure evidence — failing-test output, traces, error strings — as first-class retrieval seeds beside git changes (QUERY-001) | Its cloud indexing and PR-review framing do not transfer to a local-first app, and vendor accuracy claims are positioning until independently reproduced |
 
 ## Storage and retrieval options
 

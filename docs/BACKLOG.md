@@ -5,7 +5,8 @@
 This is the canonical home for **unfinished work only**, ordered by expected
 leverage. Each item carries enough context to evaluate and start it without
 opening a separate proposal. It is an outcome backlog, not a commitment to a
-particular sprint length. Prioritized from the 2026-08-05 audit.
+particular sprint length. Prioritized from the 2026-08-05 audit and the
+2026-08-13 strategic review recorded in [DECISIONS.md](DECISIONS.md).
 
 Looking for something else?
 
@@ -22,7 +23,7 @@ describe finished work — that is what made this file twice its necessary lengt
 
 ## Ordering rationale
 
-The next phase should make one end-to-end path trustworthy before broadening language coverage, adding more MCP tools, or committing to vector infrastructure. The dependency order is:
+The next phase should make one end-to-end path trustworthy before broadening language coverage, adding more MCP tools, or committing to vector infrastructure. The outcome study sits between the task query and everything that would grow it — expand, feedback, and vectors are built on measured need, not anticipated need. The dependency order is:
 
 ```mermaid
 flowchart LR
@@ -32,7 +33,9 @@ flowchart LR
   B --> C
   C --> D["Human flow workspace"]
   C --> E["Task context query"]
-  E --> F["Optional semantic and vector enrichment"]
+  E --> H["Agent outcome study"]
+  H --> I["Progressive context surface"]
+  H --> F["Optional semantic and vector enrichment"]
   B --> G["Reliable Claude and Codex connectors"]
 ```
 
@@ -254,13 +257,97 @@ Add an internal query planner and expose one primary agent operation such as `ge
 
 Acceptance criteria:
 
-- Inputs include the task, optional known targets, intent, and a token/byte budget.
+- Inputs include the task, optional known targets, intent, a token/byte
+  budget, and optional failure evidence — failing-test output, a stack trace,
+  an error string — which seeds ranking the way working-tree changes already
+  do. At least one retrieval scenario exercises each seed kind.
 - Results contain a ranked evidence package, omissions, uncertainty, freshness, and recommended follow-up reads.
+- The response carries an explicit sufficiency verdict — target exact, minimal
+  context sufficient; cross-file context required; low confidence, explore;
+  stale evidence, reindex first; exact-text search recommended — and the
+  retrieval corpus scores the verdict, because a wrong "sufficient" is how a
+  brief does harm.
 - Every excerpt or conclusion has a navigable source/fact reference.
-- It beats an Aider-style symbol-map baseline on agreed EVAL-001 scenarios or remains an experimental internal path.
-- The public MCP catalog is reviewed for redundant tools after this query is proven.
+- It beats the pinned Aider-map baseline on the retrieval corpus and clears
+  the EVAL-002 promotion protocol: materially better task success than the
+  stock arm, or non-inferior success at materially lower cost, and no worse
+  than the Aider-map arm. Every numeric threshold lives in exactly one place —
+  the protocol in [EVALUATION.md](EVALUATION.md), predeclared before the pilot
+  runs — which names the primary endpoint, controls the alternative endpoints,
+  and clears a margin only at its predeclared confidence bound. Until all of
+  that holds it remains an experimental internal path; when it does, the
+  label is replaced by an evaluation status scoped to the repositories, task
+  classes, and languages the pilot measured, and unmeasured domains stay
+  labeled unverified.
+- After EVAL-002 proves the query, the public MCP catalog is reviewed against
+  a named target shape — brief, expand, read_file, search, and the
+  knowledge-authoring tools as the primary tier — and tools that tier composes
+  internally are demoted or retired.
 
 Shipped so far → [CHANGELOG 2026-08-12](CHANGELOG.md#2026-08-12). Remaining criteria above.
+
+### EVAL-002: Agent task-outcome study
+
+The retrieval corpus measures what a brief contains, not what an agent does
+with one. Its recall is capped by the evidence budget, its evidence matching
+cannot credit the baseline for memories, and downstream task success is
+measured nowhere. Before the query surface grows — expand, feedback, vectors —
+run a study sized for one developer that measures whether briefs change task
+outcomes. Tasks are scoped to capabilities the current-state audit marks
+measured, so a negative result indicts the thesis rather than unfinished
+implementation.
+
+Acceptance criteria (Phase 1, the pilot):
+
+- 20–30 held-out tasks across two or three TypeScript repositories, each with
+  a per-task verification command, run under one pinned harness, model, and
+  prompt set, with multiple trials per task and arm. The verifier and its
+  tests live outside the writable checkout, and a trial whose agent edited or
+  attempted to edit verifier files scores as a failure — not an exclusion,
+  since exclusion is treatment-dependent and would drop a tampering arm's
+  failures from its own denominator.
+- The intervention is pinned too: every trial records the engine and query
+  build and the store/provider manifest that produced its briefs, and a
+  behavior-changing retrieval update invalidates the gate. Promotion attaches
+  to the build that was measured, not to whatever the brief later became.
+- The task and verifier corpus is frozen the same way: its content digest is
+  recorded per trial, and dropping or revising a task after outcomes are
+  observed starts a new pilot rather than editing this one.
+- Every trial starts from the same immutable commit in a fresh disposable
+  checkout with freshly installed or verified byte-identical dependencies, and
+  a fresh or byte-identical isolated store and session — a per-trial
+  `SDLC_HOME` — with arm order randomized or counterbalanced. A reused
+  checkout contaminates later arms through untracked, ignored, and
+  `node_modules` state even when the commit matches.
+- The decision rule is predeclared in [EVALUATION.md](EVALUATION.md) before
+  any outcome is observed: one primary endpoint (with a multiplicity-
+  controlled fallback procedure for the alternatives), the success and
+  non-inferiority margins, the brief-harm ceiling, the regression bound for
+  exact-string and small-target tasks, the Aider token-cost band and success
+  margin, the uncertainty test (paired or task-clustered, with the confidence
+  bound each margin must clear), and the per-task-and-arm trial count with
+  its retry and stopping policy — extending trials after peeking at outcomes
+  is a new pilot, not more of this one.
+- Four arms: a stock agent; the agent plus the pinned Aider map; the agent
+  plus `brief` with ordinary tools retained; the agent restricted to
+  brief-supplied context with source reads forbidden. The last arm exists to
+  falsify context-only, not to promote it.
+- The primary metric is task success. Diagnostics include tokens, tool calls,
+  wall time, brief harm, and search-escape rate (the hybrid arm abandons the
+  brief for raw search), taken from harness transcripts rather than
+  self-report. Brief harm is scored per task and task class: the ceiling binds
+  on tasks or classes the hybrid arm materially degrades relative to stock,
+  with clustered uncertainty, counted separately from the tasks it improves —
+  an aggregate win must not conceal a class the brief breaks, and raw
+  discordant pairs are not the metric, since stochastic trials produce them
+  even between identical arms.
+- Results are machine-readable; unmeasured cells are labeled gaps, not zeros.
+
+Phase 2 begins only after Phase 1 reports: more repositories and languages,
+ablations (no graph, no git, no tests, no memories, no flows), and optionally
+a Serena comparator arm — instrumented from harness transcripts like every
+other arm, since QUERY-002's feedback records only cover SDLC's own surfaces.
+QUERY-001's promotion gate consumes these results.
 
 ### SEARCH-001: Lexical, structural, and graph-ranked retrieval
 
@@ -315,12 +402,43 @@ Acceptance criteria:
 
 - Memories support authorship, evidence, anchors at symbol/range/component/flow level, status, supersession, and review dates.
 - Users can create, edit, validate, reject, and resolve stale memories in the desktop app.
-- Recall combines FTS, graph proximity, task intent, freshness, and approval state.
+- Recall combines FTS, graph proximity, task intent, freshness, approval
+  state, and recorded utilization: memories whose feedback marks them helpful
+  rank up; stale or weakly anchored memories rank down rather than being
+  served at full confidence.
+- Each time a memory is served into a brief or recall, the service and any
+  feedback on it are recorded, so unused and harmful memories are discoverable
+  (feedback arrives via QUERY-002).
 - Agent-created assertions never silently become approved team facts.
+
+### QUERY-002: Progressive context surface and retrieval feedback
+
+Only start after the EVAL-002 Phase 1 pilot reports; its brief-harm and
+search-escape numbers decide what this surface must fix. The contract is
+defined now so the pilot knows what it informs: `brief` opens, `expand`
+deepens, `read_file` stays the authoritative final step, and a feedback
+operation closes the loop.
+
+Acceptance criteria:
+
+- Every retrieval response — brief, expand, and recall — carries a stable
+  retrieval id that read and feedback calls reference, with brief evidence
+  items individually addressable beneath it; feedback on a recall result needs
+  no prior brief to correlate against.
+- `expand` deepens one named evidence item from a prior brief within a budget,
+  without re-running the query.
+- A feedback operation records, per evidence item, helpful, unhelpful,
+  ignored, or misleading — consulted-but-rejected is unhelpful, not helpful —
+  and whether the session escaped to raw search; EVAL-002 Phase 2 diagnostics
+  and MEM-001 recall ranking consume those records.
+- The surface ships only if the pilot shows briefs earning it; otherwise this
+  item is re-argued in [DECISIONS.md](DECISIONS.md) rather than silently
+  built.
 
 ### VEC-001: Evaluated optional semantic retrieval
 
-Only start after SEARCH-001 and QUERY-001 establish baselines. Embed compact units such as symbol summaries, component descriptions, workflows, documentation, and memories rather than arbitrary fixed-size source chunks by default.
+Only start after SEARCH-001 and QUERY-001 establish baselines and the EVAL-002
+Phase 1 pilot reports. Embed compact units such as symbol summaries, component descriptions, workflows, documentation, and memories rather than arbitrary fixed-size source chunks by default.
 
 Acceptance criteria:
 
@@ -390,9 +508,16 @@ Deliver FLOW-001 for one daemon route all the way through the UI and MCP query. 
 
 Deliver the focused portion of UI-001 needed to search, inspect, and correct that flow, then implement CONN-001 so both Claude and Codex can consume it through thin, supported integrations.
 
+### Slice 5: Prove it helps
+
+Run the EVAL-002 Phase 1 pilot against the existing experimental brief before
+building expand, feedback, or vector retrieval. The pilot's brief-harm and
+search-escape rates are the design input for QUERY-002, and its success delta
+is the promotion gate for QUERY-001.
+
 ## Explicitly deferred
 
-Until the first four slices are measured and usable, defer:
+Until the recommended slices are measured and usable, defer:
 
 - a standalone graph database;
 - a production vector database or repository-wide embedding pass;
@@ -400,6 +525,10 @@ Until the first four slices are measured and usable, defer:
 - many additional MCP tools;
 - broad language count as a vanity metric;
 - cloud collaboration infrastructure;
+- Augment-style non-code knowledge — tickets, pull requests, CI history — as
+  retrieval inputs;
+- an auto-generated Aider-style repository map as a product capability — the
+  pinned map stays an evaluation baseline only;
 - full CodeQL/Joern-style data-flow and security-query breadth.
 
 These may become valuable. Deferral protects the evidence model and core user workflow from being buried under infrastructure.
