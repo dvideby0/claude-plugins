@@ -269,16 +269,16 @@ Acceptance criteria:
   brief does harm.
 - Every excerpt or conclusion has a navigable source/fact reference.
 - It beats the pinned Aider-map baseline on the retrieval corpus and clears
-  the EVAL-002 Phase 1 gate: at least five points more task success than the
-  stock arm, or non-inferior success at twenty-five percent fewer tokens or
-  tool calls — and no worse than the Aider-map arm on task success within a
-  predeclared token-cost band. Every margin is predeclared in
-  [EVALUATION.md](EVALUATION.md) before the pilot runs, and a margin counts as
-  cleared only at its predeclared confidence bound — a point estimate alone
-  promotes nothing. Until all of that holds it remains an experimental
-  internal path; when it does, the label is replaced by an evaluation status
-  scoped to the repositories, task classes, and languages the pilot measured,
-  and unmeasured domains stay labeled unverified.
+  the EVAL-002 promotion protocol: materially better task success than the
+  stock arm, or non-inferior success at materially lower cost, and no worse
+  than the Aider-map arm. Every numeric threshold lives in exactly one place —
+  the protocol in [EVALUATION.md](EVALUATION.md), predeclared before the pilot
+  runs — which names the primary endpoint, controls the alternative endpoints,
+  and clears a margin only at its predeclared confidence bound. Until all of
+  that holds it remains an experimental internal path; when it does, the
+  label is replaced by an evaluation status scoped to the repositories, task
+  classes, and languages the pilot measured, and unmeasured domains stay
+  labeled unverified.
 - After EVAL-002 proves the query, the public MCP catalog is reviewed against
   a named target shape — brief, expand, read_file, search, and the
   knowledge-authoring tools as the primary tier — and tools that tier composes
@@ -319,12 +319,15 @@ Acceptance criteria (Phase 1, the pilot):
   `SDLC_HOME` — with arm order randomized or counterbalanced. A reused
   checkout contaminates later arms through untracked, ignored, and
   `node_modules` state even when the commit matches.
-- The decision rule — success aggregation across trials, the non-inferiority
-  margin, the brief-harm ceiling, the regression bound for exact-string and
-  small-target tasks, the Aider token-cost band and success margin, and the
-  uncertainty test (paired or task-clustered, with the confidence bound each
-  margin must clear) — is predeclared in [EVALUATION.md](EVALUATION.md)
-  before the first pilot run.
+- The decision rule is predeclared in [EVALUATION.md](EVALUATION.md) before
+  any outcome is observed: one primary endpoint (with an explicit multiplicity
+  correction or hierarchical order for the alternatives), the success and
+  non-inferiority margins, the brief-harm ceiling, the regression bound for
+  exact-string and small-target tasks, the Aider token-cost band and success
+  margin, the uncertainty test (paired or task-clustered, with the confidence
+  bound each margin must clear), and the per-task-and-arm trial count with
+  its retry and stopping policy — extending trials after peeking at outcomes
+  is a new pilot, not more of this one.
 - Four arms: a stock agent; the agent plus the pinned Aider map; the agent
   plus `brief` with ordinary tools retained; the agent restricted to
   brief-supplied context with source reads forbidden. The last arm exists to
