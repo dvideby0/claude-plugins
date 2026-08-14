@@ -271,13 +271,14 @@ Acceptance criteria:
 - It beats the pinned Aider-map baseline on the retrieval corpus and clears
   the EVAL-002 Phase 1 gate: at least five points more task success than the
   stock arm, or non-inferior success at twenty-five percent fewer tokens or
-  tool calls — and no worse than the Aider-map arm on task success at
-  comparable token cost, with the non-inferiority margin, brief-harm ceiling,
-  exact-string regression bound, and trial-aggregation rule predeclared in
-  [EVALUATION.md](EVALUATION.md) before the pilot runs. Until all of that
-  holds it remains an experimental internal path; when it does, the label is
-  replaced by an evaluation status scoped to the languages the pilot measured,
-  and unmeasured languages stay labeled unverified.
+  tool calls — and no worse than the Aider-map arm on task success within a
+  predeclared token-cost band. Every margin is predeclared in
+  [EVALUATION.md](EVALUATION.md) before the pilot runs, and a margin counts as
+  cleared only at its predeclared confidence bound — a point estimate alone
+  promotes nothing. Until all of that holds it remains an experimental
+  internal path; when it does, the label is replaced by an evaluation status
+  scoped to the languages the pilot measured, and unmeasured languages stay
+  labeled unverified.
 - After EVAL-002 proves the query, the public MCP catalog is reviewed against
   a named target shape — brief, expand, read_file, search, and the
   knowledge-authoring tools as the primary tier — and tools that tier composes
@@ -300,14 +301,19 @@ Acceptance criteria (Phase 1, the pilot):
 
 - 20–30 held-out tasks across two or three TypeScript repositories, each with
   a per-task verification command, run under one pinned harness, model, and
-  prompt set, with multiple trials per task and arm.
+  prompt set, with multiple trials per task and arm. The verifier and its
+  tests live outside the writable checkout, and a trial that edited verifier
+  files is rejected before scoring — an agent must not be able to make the
+  oracle pass by editing it.
 - Every trial starts from the same immutable commit with a fresh or
   byte-identical isolated store and session — a per-trial `SDLC_HOME` — and
   arm order is randomized or counterbalanced, so no run's edits, rescans, or
   persisted memories become another run's inputs.
 - The decision rule — success aggregation across trials, the non-inferiority
-  margin, the brief-harm ceiling, and the regression bound for exact-string
-  and small-target tasks — is predeclared in [EVALUATION.md](EVALUATION.md)
+  margin, the brief-harm ceiling, the regression bound for exact-string and
+  small-target tasks, the Aider token-cost band and success margin, and the
+  uncertainty test (paired or task-clustered, with the confidence bound each
+  margin must clear) — is predeclared in [EVALUATION.md](EVALUATION.md)
   before the first pilot run.
 - Four arms: a stock agent; the agent plus the pinned Aider map; the agent
   plus `brief` with ordinary tools retained; the agent restricted to
@@ -379,9 +385,9 @@ Acceptance criteria:
 - Memories support authorship, evidence, anchors at symbol/range/component/flow level, status, supersession, and review dates.
 - Users can create, edit, validate, reject, and resolve stale memories in the desktop app.
 - Recall combines FTS, graph proximity, task intent, freshness, approval
-  state, and recorded utilization: memories feedback marked useful rank up;
-  stale or weakly anchored memories rank down rather than being served at full
-  confidence.
+  state, and recorded utilization: memories whose feedback marks them helpful
+  rank up; stale or weakly anchored memories rank down rather than being
+  served at full confidence.
 - Each time a memory is served into a brief or recall, the service and any
   feedback on it are recorded, so unused and harmful memories are discoverable
   (feedback arrives via QUERY-002).
@@ -403,9 +409,10 @@ Acceptance criteria:
   no prior brief to correlate against.
 - `expand` deepens one named evidence item from a prior brief within a budget,
   without re-running the query.
-- A feedback operation records, per evidence item, used/ignored/misleading and
-  whether the session escaped to raw search; EVAL-002 Phase 2 diagnostics and
-  MEM-001 recall ranking consume those records.
+- A feedback operation records, per evidence item, helpful, unhelpful,
+  ignored, or misleading — consulted-but-rejected is unhelpful, not helpful —
+  and whether the session escaped to raw search; EVAL-002 Phase 2 diagnostics
+  and MEM-001 recall ranking consume those records.
 - The surface ships only if the pilot shows briefs earning it; otherwise this
   item is re-argued in [DECISIONS.md](DECISIONS.md) rather than silently
   built.
