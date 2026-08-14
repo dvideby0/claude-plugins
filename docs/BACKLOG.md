@@ -320,8 +320,8 @@ Acceptance criteria (Phase 1, the pilot):
   checkout contaminates later arms through untracked, ignored, and
   `node_modules` state even when the commit matches.
 - The decision rule is predeclared in [EVALUATION.md](EVALUATION.md) before
-  any outcome is observed: one primary endpoint (with an explicit multiplicity
-  correction or hierarchical order for the alternatives), the success and
+  any outcome is observed: one primary endpoint (with a multiplicity-
+  controlled fallback procedure for the alternatives), the success and
   non-inferiority margins, the brief-harm ceiling, the regression bound for
   exact-string and small-target tasks, the Aider token-cost band and success
   margin, the uncertainty test (paired or task-clustered, with the confidence

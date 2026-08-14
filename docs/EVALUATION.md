@@ -264,9 +264,11 @@ are proposals, draft until the predeclaration that must precede the first
 pilot run replaces them. The primary endpoint is task success versus the
 stock arm, with at least five absolute points as the promotion margin at the
 predeclared confidence bound. The alternative endpoint — non-inferior success
-at twenty-five percent fewer tokens or tool calls — enters only through a
-predeclared hierarchical order or multiplicity correction, never as a second
-independent chance to pass. The hybrid arm must be no worse than the
+at twenty-five percent fewer tokens or tool calls — enters only under a
+multiplicity-controlled fallback procedure that spends error probability
+across both endpoints and fixes the token-versus-tool-call choice in advance;
+a bare hierarchical order cannot rescue a failed primary, and nothing gets a
+second independent chance to pass. The hybrid arm must be no worse than the
 Aider-map arm on task success within a predeclared token-cost band, the
 brief-harm ceiling binds per task class, and the per-task-and-arm trial
 count, retry policy, and stopping rule are fixed before any outcome is
