@@ -302,13 +302,17 @@ Acceptance criteria (Phase 1, the pilot):
 - 20–30 held-out tasks across two or three TypeScript repositories, each with
   a per-task verification command, run under one pinned harness, model, and
   prompt set, with multiple trials per task and arm. The verifier and its
-  tests live outside the writable checkout, and a trial that edited verifier
-  files is rejected before scoring — an agent must not be able to make the
-  oracle pass by editing it.
+  tests live outside the writable checkout, and a trial whose agent edited or
+  attempted to edit verifier files scores as a failure — not an exclusion,
+  since exclusion is treatment-dependent and would drop a tampering arm's
+  failures from its own denominator.
 - The intervention is pinned too: every trial records the engine and query
   build and the store/provider manifest that produced its briefs, and a
   behavior-changing retrieval update invalidates the gate. Promotion attaches
   to the build that was measured, not to whatever the brief later became.
+- The task and verifier corpus is frozen the same way: its content digest is
+  recorded per trial, and dropping or revising a task after outcomes are
+  observed starts a new pilot rather than editing this one.
 - Every trial starts from the same immutable commit in a fresh disposable
   checkout with freshly installed or verified byte-identical dependencies, and
   a fresh or byte-identical isolated store and session — a per-trial
