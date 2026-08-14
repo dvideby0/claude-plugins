@@ -184,8 +184,8 @@ in the same change:
   indicts the thesis rather than unfinished language support.
 - **Failure evidence joins working-tree changes as retrieval seeds**
   (QUERY-001): failing-test output, stack traces, error strings.
-- **The progressive surface — QUERY-002's brief_id, expand, and feedback — is
-  contract-defined now but built only after the pilot**, with Phase 1
+- **The progressive surface — QUERY-002's retrieval ids, expand, and feedback
+  — is contract-defined now but built only after the pilot**, with the pilot
   instrumented from harness transcripts, because the feedback operation it
   would otherwise lean on is part of what the pilot must justify.
 

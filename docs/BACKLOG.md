@@ -269,11 +269,15 @@ Acceptance criteria:
   brief does harm.
 - Every excerpt or conclusion has a navigable source/fact reference.
 - It beats the pinned Aider-map baseline on the retrieval corpus and clears
-  the EVAL-002 Phase 1 gate — at least five points more task success than the
+  the EVAL-002 Phase 1 gate: at least five points more task success than the
   stock arm, or non-inferior success at twenty-five percent fewer tokens or
-  tool calls, with a low brief-harm rate and no regression on exact-string or
-  small-target tasks. Until both hold, it remains an experimental internal
-  path.
+  tool calls — and no worse than the Aider-map arm on task success at
+  comparable token cost, with the non-inferiority margin, brief-harm ceiling,
+  exact-string regression bound, and trial-aggregation rule predeclared in
+  [EVALUATION.md](EVALUATION.md) before the pilot runs. Until all of that
+  holds it remains an experimental internal path; when it does, the label is
+  replaced by an evaluation status scoped to the languages the pilot measured,
+  and unmeasured languages stay labeled unverified.
 - After EVAL-002 proves the query, the public MCP catalog is reviewed against
   a named target shape — brief, expand, read_file, search, and the
   knowledge-authoring tools as the primary tier — and tools that tier composes
@@ -297,6 +301,14 @@ Acceptance criteria (Phase 1, the pilot):
 - 20–30 held-out tasks across two or three TypeScript repositories, each with
   a per-task verification command, run under one pinned harness, model, and
   prompt set, with multiple trials per task and arm.
+- Every trial starts from the same immutable commit with a fresh or
+  byte-identical isolated store and session — a per-trial `SDLC_HOME` — and
+  arm order is randomized or counterbalanced, so no run's edits, rescans, or
+  persisted memories become another run's inputs.
+- The decision rule — success aggregation across trials, the non-inferiority
+  margin, the brief-harm ceiling, and the regression bound for exact-string
+  and small-target tasks — is predeclared in [EVALUATION.md](EVALUATION.md)
+  before the first pilot run.
 - Four arms: a stock agent; the agent plus the pinned Aider map; the agent
   plus `brief` with ordinary tools retained; the agent restricted to
   brief-supplied context with source reads forbidden. The last arm exists to
@@ -309,7 +321,8 @@ Acceptance criteria (Phase 1, the pilot):
 
 Phase 2 begins only after Phase 1 reports: more repositories and languages,
 ablations (no graph, no git, no tests, no memories, no flows), and optionally
-a Serena comparator arm instrumented through QUERY-002's feedback records.
+a Serena comparator arm — instrumented from harness transcripts like every
+other arm, since QUERY-002's feedback records only cover SDLC's own surfaces.
 QUERY-001's promotion gate consumes these results.
 
 ### SEARCH-001: Lexical, structural, and graph-ranked retrieval
@@ -384,8 +397,10 @@ operation closes the loop.
 
 Acceptance criteria:
 
-- Every brief response carries a stable `brief_id` that expand, read, and
-  feedback calls reference.
+- Every retrieval response — brief, expand, and recall — carries a stable
+  retrieval id that read and feedback calls reference, with brief evidence
+  items individually addressable beneath it; feedback on a recall result needs
+  no prior brief to correlate against.
 - `expand` deepens one named evidence item from a prior brief within a budget,
   without re-running the query.
 - A feedback operation records, per evidence item, used/ignored/misleading and
