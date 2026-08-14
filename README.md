@@ -1,4 +1,4 @@
-# SDLC
+# Code Context Engine
 
 A local, evidence-backed code context engine: a persistent model of your
 codebase that briefs humans and AI agents, a desktop app that installs and
