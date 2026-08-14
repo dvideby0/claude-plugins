@@ -29,7 +29,8 @@ Each task must be:
 
 - **One concern.** If the title needs "and", split it.
 - **Anchored.** Name the exact files surfaced by the task context. If none are
-  credible, refine the task or ask rather than reading the repository at large.
+  credible, refine the task or ask before falling back to exploration;
+  unanchored exploration is the expensive last resort, not a forbidden one.
 - **Verifiable.** State the command that proves it worked, or the behaviour to
   observe. "It compiles" is not verification.
 - **Ordered.** Note which tasks depend on which. Independent ones can run
@@ -50,13 +51,17 @@ Dispatch a subagent with `Task`, and give it:
 1. The task, and its verification command.
 2. The `brief` text, verbatim.
 3. The `readFirst` paths — where to start, so it does not go hunting.
-4. This instruction: *call `context` or `references` if you need more; do not
-   read the repository at large.*
+4. This instruction: *start from the brief and its evidence; call `context`,
+   `references`, or search — and read further source — when uncertainty,
+   omissions, or verification demand it. Expansion is expected; unanchored
+   wandering is not.*
 
 Why this way: a subagent that greps its way to understanding spends most of its
 window before it edits anything, and still misses constraints because they are
 not in the files. The briefing has a measured byte ceiling and says what it
-could not fit instead of silently overflowing the context.
+could not fit instead of silently overflowing the context. Context-first is
+not context-only: reading source stays available and authoritative; the brief
+decides where reading starts, not whether it happens.
 
 Run independent tasks in parallel — one message, several `Task` calls.
 

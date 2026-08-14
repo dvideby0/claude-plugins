@@ -216,9 +216,21 @@ commits a clean fixture baseline and then modifies `src/api.ts` without putting
 that path or its symbols in the query. SDLC reports the exact changed path,
 ranks its `postCheckout` declaration first, and includes the downstream
 `submitCheckout` graph neighbor in its first three paths. It scores 1.0 recall,
-1.0 reviewed-evidence coverage, and zero irrelevant paths in 4,901 bytes and
-1,393 tokens. The static Aider map scores 0.5 recall and 0.9 irrelevant paths;
-SDLC uses 1.418534 times its tokens.
+1.0 reviewed-evidence coverage, and zero irrelevant paths in 4,826 bytes and
+1,374 tokens. The static Aider map scores 0.5 recall and 0.9 irrelevant paths;
+SDLC uses 1.399185 times its tokens.
+
+Three caps sit inside these numbers and are stated so nobody reads them as
+ranking quality. The 6,000-byte budget admits three evidence units — one per
+reserved 2,000 bytes — so recall@K cannot exceed what three units cover: 0.5
+and 0.75 are those oracles' budget ceilings, hit exactly, not ranking misses.
+Memory-kind required evidence cannot match a repository map by construction,
+so Aider's coverage deficit on the debug scenario is structural. And the map
+is static and query-independent, so the working-tree scenario measures
+change-awareness the map does not attempt. What these scenarios do support:
+within budget, ranking wastes nothing, and change awareness works on one
+fixture. Whether any of it changes task outcomes is EVAL-002's question, not
+this corpus's.
 
 These measurements clear tightened checked-in regression floors, but they do
 not promote QUERY-001. Intent words no longer become redundant lexical terms,
@@ -296,7 +308,8 @@ measurements as zeros:
 - entry-to-effect path precision and recall outside the one opt-in
   Python/LangGraph Joern scenario and the measured TypeScript HTTP adapter;
 - downstream retrieval task/answer quality and retrieval quality outside the
-  first TypeScript checkout fixture;
+  first TypeScript checkout fixture — the study that would measure this is
+  EVAL-002 in [`BACKLOG.md`](BACKLOG.md);
 - warm and one-file-change SCIP indexing;
 - invalidation caused by anything other than the comment-only probe, including
   interface changes and renames, which have contract regressions but no
