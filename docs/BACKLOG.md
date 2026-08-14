@@ -305,6 +305,10 @@ Acceptance criteria (Phase 1, the pilot):
   tests live outside the writable checkout, and a trial that edited verifier
   files is rejected before scoring — an agent must not be able to make the
   oracle pass by editing it.
+- The intervention is pinned too: every trial records the engine and query
+  build and the store/provider manifest that produced its briefs, and a
+  behavior-changing retrieval update invalidates the gate. Promotion attaches
+  to the build that was measured, not to whatever the brief later became.
 - Every trial starts from the same immutable commit in a fresh disposable
   checkout with freshly installed or verified byte-identical dependencies, and
   a fresh or byte-identical isolated store and session — a per-trial
@@ -324,9 +328,12 @@ Acceptance criteria (Phase 1, the pilot):
 - The primary metric is task success. Diagnostics include tokens, tool calls,
   wall time, brief harm, and search-escape rate (the hybrid arm abandons the
   brief for raw search), taken from harness transcripts rather than
-  self-report. Brief harm is task-level net discordance — stock-beats-hybrid
-  minus hybrid-beats-stock, with clustered uncertainty — not raw discordant
-  pairs, which stochastic trials produce even between identical arms.
+  self-report. Brief harm is scored per task and task class: the ceiling binds
+  on tasks or classes the hybrid arm materially degrades relative to stock,
+  with clustered uncertainty, counted separately from the tasks it improves —
+  an aggregate win must not conceal a class the brief breaks, and raw
+  discordant pairs are not the metric, since stochastic trials produce them
+  even between identical arms.
 - Results are machine-readable; unmeasured cells are labeled gaps, not zeros.
 
 Phase 2 begins only after Phase 1 reports: more repositories and languages,
